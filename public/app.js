@@ -129,11 +129,12 @@ function watchUserDoc(uid) {
     $("country").textContent = data.country ?? "—";
     $("lang").textContent = data.language ?? "—";
 
-    // onboarding if missing
     const needs = !data.country || !data.language;
     $("onboarding").style.display = needs ? "block" : "none";
+
     if (needs) {
-      $("inpLang").value = (navigator.language || "en").slice(0,2);
+      $("inpLang").value = "en";
+      if (!$("inpCountry").value) $("inpCountry").value = "US";
     }
   });
 }

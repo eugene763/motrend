@@ -7,52 +7,66 @@
 
   <style>
     /* Fonts (Tilda: Coolvetica) */
-    @font-face{
-      font-family: "Coolvetica";
-      src: url("/fonts/CoolveticaRg-Regular.woff") format("woff");
-      font-weight: 400;
-      font-style: normal;
-      font-display: swap;
-    }
-    @font-face{
-      font-family: "Coolvetica";
-      src: url("/fonts/CoolveticaRg-Bold.woff") format("woff");
-      font-weight: 700;
-      font-style: normal;
-      font-display: swap;
-    }
+@font-face{font-family:"Coolvetica";src:url("/fonts/CoolveticaRg-Regular.woff") format("woff");font-weight:400;font-style:normal;font-display:swap;}
+@font-face{font-family:"Coolvetica";src:url("/fonts/CoolveticaRg-Bold.woff") format("woff");font-weight:700;font-style:normal;font-display:swap;}
 
-    :root{
-      --t-text-font: "Coolvetica", Arial, sans-serif;
-      --t-title-font: "Coolvetica", Arial, sans-serif;
-      --bg: #0b0b0b;
-      --card: #151515;
-      --border: #2a2a2a;
-      --text: #ffffff;
-      --muted: rgba(255,255,255,.7);
-    }
+:root{
+  --t-text-font:"Coolvetica", Arial, sans-serif;
+  --t-title-font:"Coolvetica", Arial, sans-serif;
+  --bg:#0b0b0b;
+  --card:#151515;
+  --border:#2a2a2a;
+  --text:#ffffff;
+  --muted:rgba(255,255,255,.7);
+  --accent:#8BFFB0;
+}
 
-    body{
-      font-family: var(--t-text-font);
-      margin:0;
-      background: var(--bg);
-      color: var(--text);
-    }
+*{box-sizing:border-box;}
 
-    h1,h2,h3{ font-family: var(--t-title-font); }
+body{font-family:var(--t-text-font);margin:0;background:var(--bg);color:var(--text);}
+h1,h2,h3{font-family:var(--t-title-font);}
 
-    .wrap{max-width:900px;margin:0 auto;padding:24px}
-    .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;margin:12px 0}
-    button{border:0;border-radius:12px;padding:12px 14px;font-weight:600;cursor:pointer}
-    .btn{background:#fff;color:#000}
-    .btn2{background:var(--border);color:#fff}
-    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-    img{width:100%;border-radius:12px;display:block}
-    input,select{width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);background:#0f0f0f;color:#fff}
+.wrap{max-width:900px;margin:0 auto;padding:24px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;margin:12px 0}
+button{border:0;border-radius:12px;padding:12px 14px;font-weight:600;cursor:pointer}
+.btn{background:#fff;color:#000}
+.btn2{background:var(--border);color:#fff}
 
-    .muted{opacity:.7;font-size:13px}
-    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-    a{color:#fff}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.grid>*{min-width:0;}
+
+img{width:100%;border-radius:12px;display:block}
+input,select{width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);background:#0f0f0f;color:#fff}
+
+.muted{opacity:.7;font-size:13px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+a{color:#fff}
+
+/* Template cards */
+.tplCard{border:1px solid var(--border);}
+.tplCard.isHot{border-color:var(--accent);}
+.tplCard.isSelected{border-color:var(--accent);box-shadow:0 0 0 2px rgba(139,255,176,.25);}
+.tplMedia{border-radius:12px;overflow:hidden;background:#000;}
+.tplMedia img,.tplMedia video{
+  width:100%;
+  display:block;
+  aspect-ratio:9/16;
+  object-fit:cover;
+  border-radius:12px;
+}
+
+/* Templates grid: desktop fixed 240px, mobile 2 per row */
+.templatesGrid{grid-template-columns:repeat(auto-fill,240px);justify-content:start;}
+
+@media (max-width: 640px){
+  .wrap{padding:16px;}
+  .grid{grid-template-columns:1fr;}                 /* формы в 1 колонку */
+  input,select,button{width:100%;}
+  input,select{font-size:16px;}                     /* iOS не зумит */
+  input[type="file"]{width:100%;max-width:100%;}
+  .templatesGrid{grid-template-columns:repeat(2,minmax(0,1fr));} /* темплейты 2 в ряд */
+}
+
   </style>
 </head>
 
@@ -61,18 +75,33 @@
     <h1 style="margin:0 0 6px">MoTrend</h1>
     <div class="muted">Make trends in minutes.</div>
 
-    <div id="auth" class="card">
-      <div class="row" style="justify-content:space-between">
-        <div>
-          <div style="font-weight:700">Sign in</div>
-          <div class="muted">Use Google to continue.</div>
-        </div>
-        <button id="btnLogin" class="btn">Continue with Google</button>
-      </div>
-    </div>
+    <div id="auth" class="card" style="display:none">
+  <div style="font-weight:700;margin-bottom:6px">Sign in</div>
 
-    <div id="app" style="display:none">
-      <div class="card">
+  <div class="grid">
+    <div>
+      <div class="muted">Email</div>
+      <input id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" />
+    </div>
+    <div>
+      <div class="muted">Password</div>
+      <input id="authPass" type="password" placeholder="••••••••" autocomplete="current-password" />
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:12px">
+    <button id="btnEmailSignIn" class="btn">Sign in</button>
+    <button id="btnEmailSignUp" class="btn2">Create account</button>
+
+    <!-- Google оставляем, но будем скрывать в in-app браузерах -->
+    <button id="btnLogin" class="btn2" style="margin-left:auto">Continue with Google</button>
+  </div>
+
+  <div id="authError" class="muted" style="margin-top:10px;display:none"></div>
+</div>
+
+    <div id="app">
+      <div class="card" id="userCard">
         <div class="row" style="justify-content:space-between">
           <div>
             <div id="userLine" style="font-weight:700"></div>
@@ -111,7 +140,7 @@
 
       <div class="card">
         <div style="font-weight:700;margin-bottom:8px">Templates</div>
-        <div id="templates" class="grid"></div>
+        <div id="templates" class="grid templatesGrid"></div>
         <div class="muted" style="margin-top:8px">Tip: full-body photo works best.</div>
       </div>
 
@@ -136,10 +165,10 @@
         </div>
       </div>
 
-      <div class="card">
-        <div style="font-weight:700;margin-bottom:8px">Jobs</div>
-        <div id="jobs" class="muted">No jobs yet.</div>
-      </div>
+      <div class="card" id="jobsCard">
+  <div style="font-weight:700;margin-bottom:8px">Jobs</div>
+  <div id="jobs" class="muted">No jobs yet.</div>
+</div>
     </div>
   </div>
 

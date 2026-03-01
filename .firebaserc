@@ -1,11 +1,7 @@
 {
   "projects": {
     "default": "gen-lang-client-0651837818",
-    "alias: dev": "gen-lang-client-0651837818",
-    "alias: prod": "gen-lang-client-0651837818",
-    "dev": "motrend-dev",
-    "prod": "gen-lang-client-0651837818"
-  },
-  "targets": {},
-  "etags": {}
+    "prod": "gen-lang-client-0651837818",
+    "dev": "motrend-dev"
+  }
 }

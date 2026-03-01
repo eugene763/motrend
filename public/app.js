@@ -147,31 +147,69 @@ function escapeHtml(s) {
   el.textContent = s;
   return el.innerHTML;
 }
+function safeUrl(u) {
+  if (typeof u !== "string") return "";
+  const trimmed = u.trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed, window.location.origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
 function renderTemplateCard(t) {
   const div = document.createElement("div");
   div.className = "card tplCard";
   div.style.margin = "0";
 
-  const thumbUrl = t.preview?.thumbnailUrl || "";
-  const videoUrl = t.preview?.previewVideoUrl || "";
+  const thumbUrl = safeUrl(t.preview?.thumbnailUrl || "");
+  const videoUrl = safeUrl(t.preview?.previewVideoUrl || "");
   const mode = t.modeDefault || "std";
-  const title = escapeHtml(t.title || "Template");
+  const titleText = t.title || "Template";
 
-  div.innerHTML = `
-    <div class="tplMedia">
-      ${videoUrl
-        ? `<video class="tplVideo" src="${videoUrl}" poster="${thumbUrl}" playsinline muted loop autoplay preload="metadata"></video>`
-        : `<img src="${thumbUrl}" alt="">`
-      }
-    </div>
-    <div style="font-weight:700;margin-top:8px">${title}</div>
-    <div class="muted">${t.durationSec ?? "—"}s • ${escapeHtml(mode)}</div>
-    <button class="btn tplUse" style="margin-top:10px;width:100%">Use</button>
-  `;
+  const media = document.createElement("div");
+  media.className = "tplMedia";
 
-  const media = div.querySelector(".tplMedia");
-  const vid = div.querySelector(".tplVideo");
-  const useBtn = div.querySelector(".tplUse");
+  let vid = null;
+  if (videoUrl) {
+    vid = document.createElement("video");
+    vid.className = "tplVideo";
+    vid.playsInline = true;
+    vid.muted = true;
+    vid.loop = true;
+    vid.autoplay = true;
+    vid.preload = "metadata";
+    vid.src = videoUrl;
+    if (thumbUrl) vid.poster = thumbUrl;
+    media.appendChild(vid);
+  } else if (thumbUrl) {
+    const img = document.createElement("img");
+    img.src = thumbUrl;
+    img.alt = "";
+    media.appendChild(img);
+  }
+
+  const titleEl = document.createElement("div");
+  titleEl.style.fontWeight = "700";
+  titleEl.style.marginTop = "8px";
+  titleEl.textContent = titleText;
+
+  const meta = document.createElement("div");
+  meta.className = "muted";
+  meta.textContent = `${t.durationSec ?? "—"}s • ${mode}`;
+
+  const useBtn = document.createElement("button");
+  useBtn.className = "btn tplUse";
+  useBtn.style.marginTop = "10px";
+  useBtn.style.width = "100%";
+  useBtn.textContent = "Use";
+
+  div.appendChild(media);
+  div.appendChild(titleEl);
+  div.appendChild(meta);
+  div.appendChild(useBtn);
 
   if (vid) setTimeout(() => { vid.play().catch(() => {}); }, 50);
 
@@ -239,20 +277,26 @@ function watchLatestJobs(uid) {
       $("jobs").textContent = "No jobs yet.";
       return;
     }
-    const rows = [];
+    const jobsEl = $("jobs");
+    jobsEl.innerHTML = "";
     snap.forEach(d => {
-      const j = d.data();
-      rows.push(`${d.id.slice(0,6)}… • ${j.status} • ${j.outputVideoUrl ? "✅" : ""}`);
-      if (j.outputVideoUrl && j.status === "done") {
+      const j = d.data() || {};
+      const status = typeof j.status === "string" ? j.status : "";
+
+      const row = document.createElement("div");
+      row.textContent = `${d.id.slice(0,6)}… • ${status} • ${j.outputVideoUrl ? "✅" : ""}`;
+      jobsEl.appendChild(row);
+
+      const outputUrl = safeUrl(j.outputVideoUrl || "");
+      if (outputUrl && status === "done") {
         $("status").textContent = "Done.";
         $("result").style.display = "block";
-        $("downloadLink").href = j.outputVideoUrl;
+        $("downloadLink").href = outputUrl;
       }
-      if (j.status === "failed") {
+      if (status === "failed") {
         $("status").textContent = `Failed: ${j.errorMessage || "try another photo/template"}`;
       }
     });
-    $("jobs").innerHTML = rows.map(r => `<div>${r}</div>`).join("");
   });
 }
 
@@ -291,6 +335,17 @@ $("btnGenerate").onclick = async () => {
     btn.disabled = false;
   }
 };
+
+// Require auth before interacting with file upload
+const fileInput = $("filePhoto");
+if (fileInput) {
+  fileInput.addEventListener("click", (e) => {
+    if (!currentUser) {
+      e.preventDefault();
+      openAuth("Sign in to upload a photo.");
+    }
+  });
+}
 
 onAuthStateChanged(auth, async (u) => {
   if (typeof unsubscribeUserDoc === "function") {

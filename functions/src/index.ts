@@ -14,6 +14,10 @@ export const createJob = onCall({cors: true}, async (req) => {
   if (!templateId || typeof templateId !== "string") {
     throw new HttpsError("invalid-argument", "templateId is required");
   }
+  // Firestore doc ID: letters, digits, underscore, hyphen only
+  if (!/^[\w-]+$/.test(templateId)) {
+    throw new HttpsError("invalid-argument", "Invalid templateId");
+  }
 
   const tpl = await db.doc(`templates/${templateId}`).get();
   if (!tpl.exists || tpl.data()?.isActive !== true) {

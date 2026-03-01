@@ -58,7 +58,7 @@ release-prod.sh
 backups/
 
 # cursor local
-.cursor/
+.cursor/*
+!.cursor/
+!.cursor/rules.md
 
-# build outputs
-functions/lib/

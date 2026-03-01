@@ -80,6 +80,8 @@ function closeAuth() {
 
 let currentUser = null;
 let selectedTemplate = null;
+let unsubscribeUserDoc = null;
+let unsubscribeLatestJobs = null;
 
 $("btnEmailSignIn").onclick = async () => {
   clearAuthError();
@@ -291,6 +293,15 @@ $("btnGenerate").onclick = async () => {
 };
 
 onAuthStateChanged(auth, async (u) => {
+  if (typeof unsubscribeUserDoc === "function") {
+    unsubscribeUserDoc();
+    unsubscribeUserDoc = null;
+  }
+  if (typeof unsubscribeLatestJobs === "function") {
+    unsubscribeLatestJobs();
+    unsubscribeLatestJobs = null;
+  }
+
   currentUser = u;
 
   $("app").style.display = "block";
@@ -330,6 +341,6 @@ onAuthStateChanged(auth, async (u) => {
   }, { merge: true });
 
   try { await loadTemplates(); } catch (e) { console.warn(e); }
-  watchUserDoc(u.uid);
-  watchLatestJobs(u.uid);
+  unsubscribeUserDoc = watchUserDoc(u.uid);
+  unsubscribeLatestJobs = watchLatestJobs(u.uid);
 });

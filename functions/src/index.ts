@@ -5,10 +5,27 @@ import * as admin from "firebase-admin";
 admin.initializeApp();
 const db = admin.firestore();
 
-export const createJob = onCall({cors: true}, async (req) => {
+interface UserDoc {
+  creditsBalance?: number;
+}
+
+interface TemplateDoc {
+  isActive?: boolean;
+  durationSec?: number;
+  costCredits?: number;
+}
+
+const corsAllowedOrigins = [
+  /gen-lang-client-0651837818\.(web|firebaseapp)\.com$/,
+  /^https?:\/\/localhost(:\d+)?$/,
+];
+
+export const createJob = onCall({cors: corsAllowedOrigins}, async (req) => {
   if (!req.auth) {
     throw new HttpsError("unauthenticated", "Sign in first");
   }
+
+  const uid = req.auth.uid;
 
   const templateId = req.data?.templateId;
   if (!templateId || typeof templateId !== "string") {
@@ -19,22 +36,60 @@ export const createJob = onCall({cors: true}, async (req) => {
     throw new HttpsError("invalid-argument", "Invalid templateId");
   }
 
-  const tpl = await db.doc(`templates/${templateId}`).get();
-  if (!tpl.exists || tpl.data()?.isActive !== true) {
+  const tplSnap = await db.doc(`templates/${templateId}`).get();
+  const tplData = (tplSnap.data() as TemplateDoc | undefined) ?? {};
+  if (!tplSnap.exists || tplData.isActive !== true) {
     throw new HttpsError("failed-precondition", "Template is not active");
   }
 
-  const jobRef = db.collection("jobs").doc();
-  await jobRef.set({
-    uid: req.auth.uid,
-    templateId,
-    status: "queued",
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  const hasDuration = typeof tplData.durationSec === "number" &&
+    tplData.durationSec > 0;
+  const durationSec: number = hasDuration ? tplData.durationSec as number : 10;
+
+  const hasCostOverride = typeof tplData.costCredits === "number" &&
+    tplData.costCredits > 0;
+  const costCredits = hasCostOverride ?
+    Math.floor(tplData.costCredits as number) :
+    Math.max(1, Math.ceil(durationSec));
+
+  const {jobId, uploadPath} = await db.runTransaction(async (tx) => {
+    const userRef = db.collection("users").doc(uid);
+    const userSnap = await tx.get(userRef);
+    const userData = (userSnap.data() as UserDoc | undefined) ?? {};
+    const currentCredits = userData.creditsBalance;
+
+    if (typeof currentCredits === "number" && currentCredits < costCredits) {
+      throw new HttpsError(
+        "resource-exhausted",
+        "Not enough credits for this generation."
+      );
+    }
+
+    if (typeof currentCredits === "number") {
+      tx.set(
+        userRef,
+        {
+          creditsBalance: currentCredits - costCredits,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        {merge: true}
+      );
+    }
+
+    const jobRef = db.collection("jobs").doc();
+    tx.set(jobRef, {
+      uid,
+      templateId,
+      status: "queued",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const uploadPathForJob = `user_uploads/${uid}/${jobRef.id}/photo.jpg`;
+    return {jobId: jobRef.id, uploadPath: uploadPathForJob};
   });
 
-  const uploadPath = `user_uploads/${req.auth.uid}/${jobRef.id}/photo.jpg`;
-  return {jobId: jobRef.id, uploadPath};
+  return {jobId, uploadPath};
 });
 
 export const processJobTrigger001 = onDocumentUpdated(

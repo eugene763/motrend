@@ -27,5 +27,6 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['inputImageUrl', 'inputImagePath', 'updatedAt']);
       allow delete: if false;
     }
+
   }
 }

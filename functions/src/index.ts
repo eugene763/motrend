@@ -33,7 +33,7 @@ export const createJob = onCall({cors: true}, async (req) => {
   return {jobId: jobRef.id, uploadPath};
 });
 
-export const processJobStubV3 = onDocumentUpdated(
+export const processJobTrigger001 = onDocumentUpdated(
   "jobs/{jobId}",
   async (event) => {
     const before = event.data?.before.data();

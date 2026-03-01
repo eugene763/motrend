@@ -1,4 +1,4 @@
-# Project Rules (MoTrend)
+# Project Rules (MoTrends©)
 
 - We deploy ONLY to Firebase prod by default.
 - Before any deploy: run lint + build.

@@ -1,4 +1,4 @@
-# Security audit — MoTrend
+# Security audit — MoTrends©
 
 **Дата:** 2025-03-01  
 **Область:** Firestore rules, Auth flow, Storage upload, Cloud Functions triggers.

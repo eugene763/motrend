@@ -55,3 +55,4 @@ yarn-error.log*
 # build outputs
 save.sh
 release-prod.sh
+functions/lib/

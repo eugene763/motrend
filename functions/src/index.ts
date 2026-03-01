@@ -56,25 +56,27 @@ export const createJob = onCall({cors: corsAllowedOrigins}, async (req) => {
     const userRef = db.collection("users").doc(uid);
     const userSnap = await tx.get(userRef);
     const userData = (userSnap.data() as UserDoc | undefined) ?? {};
-    const currentCredits = userData.creditsBalance;
+    const rawCredits = userData.creditsBalance;
+    const currentCredits =
+      typeof rawCredits === "number" && Number.isFinite(rawCredits) ?
+        rawCredits :
+        0;
 
-    if (typeof currentCredits === "number" && currentCredits < costCredits) {
+    if (currentCredits < costCredits) {
       throw new HttpsError(
         "resource-exhausted",
         "Not enough credits for this generation."
       );
     }
 
-    if (typeof currentCredits === "number") {
-      tx.set(
-        userRef,
-        {
-          creditsBalance: currentCredits - costCredits,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        {merge: true}
-      );
-    }
+    tx.set(
+      userRef,
+      {
+        creditsBalance: currentCredits - costCredits,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      {merge: true}
+    );
 
     const jobRef = db.collection("jobs").doc();
     tx.set(jobRef, {

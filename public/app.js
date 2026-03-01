@@ -53,6 +53,18 @@ function clearAuthError() {
   el.style.display = "none";
   el.textContent = "";
 }
+function showFormError(msg) {
+  const el = $("formError");
+  if (!el) return;
+  el.style.display = "block";
+  el.textContent = msg;
+}
+function clearFormError() {
+  const el = $("formError");
+  if (!el) return;
+  el.style.display = "none";
+  el.textContent = "";
+}
 function openAuth(msg = "") {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "block";
@@ -128,6 +140,11 @@ function stopAllTemplateVideos(exceptEl = null) {
   });
 }
 
+function escapeHtml(s) {
+  const el = document.createElement("span");
+  el.textContent = s;
+  return el.innerHTML;
+}
 function renderTemplateCard(t) {
   const div = document.createElement("div");
   div.className = "card tplCard";
@@ -136,6 +153,7 @@ function renderTemplateCard(t) {
   const thumbUrl = t.preview?.thumbnailUrl || "";
   const videoUrl = t.preview?.previewVideoUrl || "";
   const mode = t.modeDefault || "std";
+  const title = escapeHtml(t.title || "Template");
 
   div.innerHTML = `
     <div class="tplMedia">
@@ -144,8 +162,8 @@ function renderTemplateCard(t) {
         : `<img src="${thumbUrl}" alt="">`
       }
     </div>
-    <div style="font-weight:700;margin-top:8px">${t.title || "Template"}</div>
-    <div class="muted">${t.durationSec || "—"}s • ${mode}</div>
+    <div style="font-weight:700;margin-top:8px">${title}</div>
+    <div class="muted">${t.durationSec ?? "—"}s • ${escapeHtml(mode)}</div>
     <button class="btn tplUse" style="margin-top:10px;width:100%">Use</button>
   `;
 
@@ -175,18 +193,25 @@ function renderTemplateCard(t) {
 }
 
 async function loadTemplates() {
-  const qy = query(
-    collection(db, "templates"),
-    where("isActive", "==", true),
-    orderBy("order", "asc"),
-    limit(30)
-  );
-  const snap = await getDocs(qy);
-  $("templates").innerHTML = "";
-  snap.forEach(d => {
-    const t = { id: d.id, ...d.data() };
-    $("templates").appendChild(renderTemplateCard(t));
-  });
+  const container = $("templates");
+  container.innerHTML = '<div class="templatesLoading"><span class="spinner"></span> Loading templates…</div>';
+  try {
+    const qy = query(
+      collection(db, "templates"),
+      where("isActive", "==", true),
+      orderBy("order", "asc"),
+      limit(30)
+    );
+    const snap = await getDocs(qy);
+    container.innerHTML = "";
+    snap.forEach(d => {
+      const t = { id: d.id, ...d.data() };
+      container.appendChild(renderTemplateCard(t));
+    });
+  } catch (e) {
+    container.innerHTML = '<div class="templatesLoading muted">Failed to load templates. Try again later.</div>';
+    console.warn(e);
+  }
 }
 
 function watchUserDoc(uid) {
@@ -230,33 +255,39 @@ function watchLatestJobs(uid) {
 }
 
 $("btnGenerate").onclick = async () => {
+  clearFormError();
   if (!currentUser) { openAuth("Sign in to upload a photo and generate."); return; }
-  if (!selectedTemplate) return alert("Pick a template first.");
+  if (!selectedTemplate) { showFormError("Pick a template first."); return; }
   const file = $("filePhoto").files?.[0];
-  if (!file) return alert("Upload a photo.");
+  if (!file) { showFormError("Upload a photo."); return; }
 
+  const btn = $("btnGenerate");
+  btn.disabled = true;
   $("status").textContent = "Uploading photo…";
   $("result").style.display = "none";
   $("downloadLink").href = "#";
 
-  // 1) create job on server
-  const resp = await createJob({ templateId: selectedTemplate.id });
-  const jobId = resp.data.jobId;
-  const path = resp.data.uploadPath;
+  try {
+    const resp = await createJob({ templateId: selectedTemplate.id });
+    const jobId = resp.data.jobId;
+    const path = resp.data.uploadPath;
 
-  // 2) upload photo
-  const r = ref(st, path);
-  await uploadBytes(r, file, { contentType: file.type || "image/jpeg" });
-  const photoUrl = await getDownloadURL(r);
+    const r = ref(st, path);
+    await uploadBytes(r, file, { contentType: file.type || "image/jpeg" });
+    const photoUrl = await getDownloadURL(r);
 
-  // 3) write input to job doc (триггер увидит inputImageUrl)
-  await updateDoc(doc(db, "jobs", jobId), {
-    inputImageUrl: photoUrl,
-    inputImagePath: path,
-    updatedAt: serverTimestamp(),
-  });
-
-  $("status").textContent = "Queued. Generating…";
+    await updateDoc(doc(db, "jobs", jobId), {
+      inputImageUrl: photoUrl,
+      inputImagePath: path,
+      updatedAt: serverTimestamp(),
+    });
+    $("status").textContent = "Queued. Generating…";
+  } catch (e) {
+    $("status").textContent = "";
+    showFormError(e?.message || "Something went wrong. Try again.");
+  } finally {
+    btn.disabled = false;
+  }
 };
 
 onAuthStateChanged(auth, async (u) => {

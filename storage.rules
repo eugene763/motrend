@@ -8,10 +8,12 @@ service firebase.storage {
       allow write: if false;
     }
 
-    // Фото юзера (только image/*)
+    // Фото юзера: read — владелец; write — владелец и только image/*
     match /user_uploads/{uid}/{allPaths=**} {
-      allow read, write: if request.auth != null && request.auth.uid == uid
-        && (request.resource == null || request.resource.contentType.matches('image/.*'));
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null && request.auth.uid == uid
+        && request.resource != null
+        && request.resource.contentType.matches('image/.*');
     }
 
     // (на будущее) результаты

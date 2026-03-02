@@ -1,5 +1,7 @@
 import {onCall, HttpsError} from "firebase-functions/v2/https";
-import {onDocumentUpdated} from "firebase-functions/v2/firestore";
+import {
+  onDocumentUpdated,
+} from "firebase-functions/v2/firestore";
 import {defineSecret} from "firebase-functions/params";
 import * as admin from "firebase-admin";
 
@@ -102,7 +104,10 @@ export const createJob = onCall(
   });
 
 export const processJobTrigger001 = onDocumentUpdated(
-  {document: "jobs/{jobId}", secrets: [klingAccessKey, klingSecretKey]},
+  {
+    document: "jobs/{jobId}",
+    secrets: [klingAccessKey, klingSecretKey],
+  },
   async (event) => {
     const before = event.data?.before.data();
     const afterSnap = event.data?.after;

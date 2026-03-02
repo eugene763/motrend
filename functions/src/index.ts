@@ -27,6 +27,8 @@ interface TemplateDoc {
 }
 
 const KLING_BASE = "https://api.klingapi.com";
+/** Motion-control (trend dance) uses Singapore endpoint. */
+const KLING_MOTION_CONTROL_BASE = "https://api-singapore.klingai.com";
 
 type SubmitKlingResult = {
   providerJobId?: string;
@@ -142,7 +144,7 @@ async function submitKlingMotionControl(
   console.log(
     "CALL Kling motion-control payload=" + JSON.stringify(payload) + " jobId=" + jobId
   );
-  const endpointUrl = `${KLING_BASE}/v1/videos/motion-control`;
+  const endpointUrl = `${KLING_MOTION_CONTROL_BASE}/v1/videos/motion-control`;
   console.log("Kling endpointUrl=" + endpointUrl + " jobId=" + jobId);
   let res: Response;
   try {
@@ -216,9 +218,9 @@ async function pollKlingJob(
   jobId: string,
   providerType?: "image2video" | "motion-control"
 ): Promise<PollKlingResult> {
-  const endpointUrl = providerType === "motion-control" ?
-    `${KLING_BASE}/v1/videos/motion-control/${providerJobId}` :
-    `${KLING_BASE}/v1/videos/${providerJobId}`;
+  const endpointUrl = providerType === "motion-control"
+    ? `${KLING_MOTION_CONTROL_BASE}/v1/videos/motion-control/${providerJobId}`
+    : `${KLING_BASE}/v1/videos/${providerJobId}`;
   console.log("Kling poll endpointUrl=" + endpointUrl + " jobId=" + jobId);
   let statusRes: Response;
   try {

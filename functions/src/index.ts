@@ -1,5 +1,5 @@
 import {onCall, HttpsError} from "firebase-functions/v2/https";
-import {onDocumentUpdated} from "firebase-functions/v2/firestore";
+import {onDocumentCreated, onDocumentUpdated} from "firebase-functions/v2/firestore";
 import {defineSecret} from "firebase-functions/params";
 import * as admin from "firebase-admin";
 
@@ -132,6 +132,21 @@ export const createJob = onCall(
 
     return {jobId, uploadPath};
   });
+
+/** При создании документа пользователя начисляем 20 кредитов (1 кредит = 1 сек генерации). */
+const INITIAL_CREDITS = 20;
+
+export const onUserDocCreated = onDocumentCreated(
+  "users/{userId}",
+  async (event) => {
+    const ref = event.data?.ref;
+    if (!ref) return;
+    await ref.update({
+      creditsBalance: INITIAL_CREDITS,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+);
 
 export const processJobTrigger001 = onDocumentUpdated(
   {document: "jobs/{jobId}", secrets: [klingAccessKey, klingSecretKey]},

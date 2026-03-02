@@ -392,7 +392,6 @@ onAuthStateChanged(auth, async (u) => {
     email: u.email,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-    creditsBalance: 0
   }, { merge: true });
 
   try { await loadTemplates(); } catch (e) { console.warn(e); }

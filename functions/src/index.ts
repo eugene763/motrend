@@ -202,6 +202,7 @@ export const processJobTrigger001 = onDocumentUpdated(
   {
     document: "jobs/{jobId}",
     secrets: [klingAccessKey, klingSecretKey],
+    timeoutSeconds: 600,
   },
   async (event) => {
     const before = event.data?.before.data();
@@ -223,48 +224,57 @@ export const processJobTrigger001 = onDocumentUpdated(
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    const apiKey = (await klingAccessKey.value()).trim();
-    if (!apiKey) {
+    try {
+      const apiKey = (await klingAccessKey.value()).trim();
+      if (!apiKey) {
+        await ref.update({
+          status: "failed",
+          errorMessage:
+            "Kling API key not set. Add KLING_ACCESS_KEY in Firebase secrets.",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        return;
+      }
+
+      const tplSnap = await db.doc(`templates/${templateId}`).get();
+      const tplData = (tplSnap.data() as TemplateDoc | undefined) ?? {};
+      const durationSec =
+        typeof tplData.durationSec === "number" && tplData.durationSec > 0 ?
+          tplData.durationSec :
+          10;
+      const mode =
+        tplData.modeDefault === "professional" ?
+          "professional" :
+          "standard";
+      const prompt =
+        typeof tplData.prompt === "string" && tplData.prompt ?
+          tplData.prompt :
+          "Person in gentle motion, natural movement.";
+
+      const result = await runKlingImage2Video(apiKey, inputImageUrl, {
+        durationSec,
+        mode,
+        prompt,
+      });
+
+      if (result.videoUrl) {
+        await ref.update({
+          status: "done",
+          outputVideoUrl: result.videoUrl,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      } else {
+        await ref.update({
+          status: "failed",
+          errorMessage: result.error ?? "Video generation failed.",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       await ref.update({
         status: "failed",
-        errorMessage:
-          "Kling API key not set. Add KLING_ACCESS_KEY in Firebase secrets.",
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      return;
-    }
-
-    const tplSnap = await db.doc(`templates/${templateId}`).get();
-    const tplData = (tplSnap.data() as TemplateDoc | undefined) ?? {};
-    const durationSec =
-      typeof tplData.durationSec === "number" && tplData.durationSec > 0 ?
-        tplData.durationSec :
-        10;
-    const mode =
-      tplData.modeDefault === "professional" ?
-        "professional" :
-        "standard";
-    const prompt =
-      typeof tplData.prompt === "string" && tplData.prompt ?
-        tplData.prompt :
-        "Person in gentle motion, natural movement.";
-
-    const result = await runKlingImage2Video(apiKey, inputImageUrl, {
-      durationSec,
-      mode,
-      prompt,
-    });
-
-    if (result.videoUrl) {
-      await ref.update({
-        status: "done",
-        outputVideoUrl: result.videoUrl,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    } else {
-      await ref.update({
-        status: "failed",
-        errorMessage: result.error ?? "Video generation failed.",
+        errorMessage: `Processing error: ${msg}`,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }

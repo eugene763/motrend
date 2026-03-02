@@ -23,6 +23,7 @@ interface TemplateDoc {
   costCredits?: number;
   modeDefault?: string;
   prompt?: string;
+  kling?: { referenceVideoUrl?: string };
 }
 
 const KLING_BASE = "https://api.klingapi.com";
@@ -30,6 +31,7 @@ const KLING_BASE = "https://api.klingapi.com";
 type SubmitKlingResult = {
   providerJobId?: string;
   providerRequestId?: string;
+  providerType?: "image2video" | "motion-control";
   error?: string;
 };
 
@@ -58,14 +60,31 @@ async function submitKlingImage2Video(
   console.log(
     "CALL Kling payload=" + JSON.stringify(payload) + " jobId=" + jobId
   );
-  const res = await fetch(`${KLING_BASE}/v1/videos/image2video`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  const endpointUrl = `${KLING_BASE}/v1/videos/image2video`;
+  console.log("Kling endpointUrl=" + endpointUrl + " jobId=" + jobId);
+  let res: Response;
+  try {
+    res = await fetch(endpointUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    const e = err as Error & { cause?: unknown };
+    console.error(
+      "Kling fetch failed jobId=" + jobId,
+      "name=" + (e?.name ?? "?"),
+      "message=" + (e?.message ?? "?"),
+      "cause=" + (e?.cause != null ? String(e.cause) : "undefined"),
+      "stack=" + (e?.stack ?? "?")
+    );
+    return {
+      error: "Processing error: " + (e?.message ?? "fetch failed"),
+    };
+  }
   const bodyText = await res.text();
   const providerRequestId =
     res.headers.get("x-request-id") ??
@@ -96,7 +115,89 @@ async function submitKlingImage2Video(
       providerRequestId,
     };
   }
-  return {providerJobId: taskId, providerRequestId};
+  return {providerJobId: taskId, providerRequestId, providerType: "image2video"};
+}
+
+/**
+ * Submit Kling motion-control (reference video + image).
+ * POST /v1/videos/motion-control
+ */
+async function submitKlingMotionControl(
+  jobId: string,
+  apiKey: string,
+  videoUrl: string,
+  imageUrl: string,
+  opts: {durationSec: number; mode: string; prompt: string}
+): Promise<SubmitKlingResult> {
+  const duration = opts.durationSec >= 10 ? 10 : 5;
+  const payload = {
+    model: "kling-v2.6-pro",
+    video_url: videoUrl,
+    image_url: imageUrl,
+    prompt: opts.prompt,
+    duration,
+    aspect_ratio: "9:16",
+    mode: opts.mode === "professional" ? "professional" : "standard",
+  };
+  console.log(
+    "CALL Kling motion-control payload=" + JSON.stringify(payload) + " jobId=" + jobId
+  );
+  const endpointUrl = `${KLING_BASE}/v1/videos/motion-control`;
+  console.log("Kling endpointUrl=" + endpointUrl + " jobId=" + jobId);
+  let res: Response;
+  try {
+    res = await fetch(endpointUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    const e = err as Error & { cause?: unknown };
+    console.error(
+      "Kling motion-control fetch failed jobId=" + jobId,
+      "name=" + (e?.name ?? "?"),
+      "message=" + (e?.message ?? "?"),
+      "cause=" + (e?.cause != null ? String(e.cause) : "undefined"),
+      "stack=" + (e?.stack ?? "?")
+    );
+    return {
+      error: "Processing error: " + (e?.message ?? "fetch failed"),
+    };
+  }
+  const bodyText = await res.text();
+  const providerRequestId =
+    res.headers.get("x-request-id") ??
+    res.headers.get("request-id") ??
+    undefined;
+  console.log(
+    "Kling motion-control response status=" + res.status +
+    " body=" + bodyText.slice(0, 500) + " jobId=" + jobId
+  );
+  if (!res.ok) {
+    return {
+      error: `Kling API error ${res.status}: ${bodyText}`,
+      providerRequestId,
+    };
+  }
+  type KlingCreate = {task_id?: string; code?: number; message?: string};
+  const data = JSON.parse(bodyText) as KlingCreate;
+  if (data.code && data.code !== 0) {
+    return {
+      error: data.message ?? `Kling error ${data.code}`,
+      providerRequestId,
+    };
+  }
+  const taskId = data.task_id;
+  if (!taskId) {
+    return {
+      error: "Kling API did not return task_id",
+      providerRequestId,
+    };
+  }
+  return {providerJobId: taskId, providerRequestId, providerType: "motion-control"};
 }
 
 type PollKlingResult = {
@@ -107,18 +208,42 @@ type PollKlingResult = {
 
 /**
  * Polls Kling once for task status.
- * @param {string} apiKey - Kling API key.
- * @param {string} providerJobId - Kling task_id.
- * @param {string} jobId - Firestore job id (for logs).
+ * GET /v1/videos/{task_id} for image2video, GET /v1/videos/motion-control/{task_id} for motion-control.
  */
 async function pollKlingJob(
   apiKey: string,
   providerJobId: string,
-  jobId: string
+  jobId: string,
+  providerType?: "image2video" | "motion-control"
 ): Promise<PollKlingResult> {
-  const statusRes = await fetch(`${KLING_BASE}/v1/videos/${providerJobId}`, {
-    headers: {"Authorization": `Bearer ${apiKey}`},
-  });
+  const endpointUrl = providerType === "motion-control"
+    ? `${KLING_BASE}/v1/videos/motion-control/${providerJobId}`
+    : `${KLING_BASE}/v1/videos/${providerJobId}`;
+  console.log("Kling poll endpointUrl=" + endpointUrl + " jobId=" + jobId);
+  let statusRes: Response;
+  try {
+    statusRes = await fetch(endpointUrl, {
+      headers: {"Authorization": `Bearer ${apiKey}`},
+    });
+  } catch (err) {
+    const e = err as Error & { cause?: unknown };
+    console.error(
+      "Kling poll fetch failed jobId=" + jobId,
+      "name=" + (e?.name ?? "?"),
+      "message=" + (e?.message ?? "?"),
+      "cause=" + (e?.cause != null ? String(e.cause) : "undefined"),
+      "stack=" + (e?.stack ?? "?")
+    );
+    return {
+      status: "failed",
+      error: "Poll error: " + (e?.message ?? "fetch failed"),
+    };
+  }
+  const statusBodyText = await statusRes.text();
+  console.log(
+    "Kling poll response status=" + statusRes.status +
+    " body=" + statusBodyText.slice(0, 500) + " jobId=" + jobId
+  );
   if (!statusRes.ok) {
     return {
       status: "failed",
@@ -132,7 +257,7 @@ async function pollKlingJob(
       task_status_msg?: string;
     };
   };
-  const statusData = (await statusRes.json()) as KlingStatus;
+  const statusData = JSON.parse(statusBodyText) as KlingStatus;
   const taskStatus = statusData.data?.task_status;
   console.log(
     "POLL Kling status=" + (taskStatus ?? "unknown") + " jobId=" + jobId
@@ -325,10 +450,16 @@ export const processJobTrigger001 = onDocumentUpdated(
 
       console.log("FETCH template OK jobId=" + jobId);
 
-      const result = await submitKlingImage2Video(
-        jobId, apiKey, inputImageUrl,
-        {durationSec, mode, prompt}
-      );
+      const referenceVideoUrl = tplData.kling?.referenceVideoUrl;
+      const result = typeof referenceVideoUrl === "string" && referenceVideoUrl
+        ? await submitKlingMotionControl(
+            jobId, apiKey, referenceVideoUrl, inputImageUrl,
+            {durationSec, mode, prompt}
+          )
+        : await submitKlingImage2Video(
+            jobId, apiKey, inputImageUrl,
+            {durationSec, mode, prompt}
+          );
 
       if (result.error) {
         const integration: Record<string, unknown> = {
@@ -352,6 +483,7 @@ export const processJobTrigger001 = onDocumentUpdated(
         provider: "kling",
         providerJobId: result.providerJobId,
         providerStatus: "queued",
+        providerType: result.providerType ?? "image2video",
         startedAt,
       };
       if (result.providerRequestId) {
@@ -404,11 +536,11 @@ export const pollKlingScheduled = onSchedule(
       const jobId = d.id;
       const data = d.data();
       const integration =
-        (data.integration as {providerJobId?: string} | undefined) ?? {};
+        (data.integration as {providerJobId?: string; providerType?: "image2video" | "motion-control"} | undefined) ?? {};
       const providerJobId = integration.providerJobId;
       if (!providerJobId || typeof providerJobId !== "string") continue;
 
-      const pollResult = await pollKlingJob(apiKey, providerJobId, jobId);
+      const pollResult = await pollKlingJob(apiKey, providerJobId, jobId, integration.providerType);
       const ref = d.ref;
       const finishedAt = admin.firestore.FieldValue.serverTimestamp();
 
@@ -462,7 +594,7 @@ export const refreshJobStatus = onCall(
       return {status: data.status, message: "Job is not processing"};
     }
     const integration =
-      (data.integration as {providerJobId?: string} | undefined) ?? {};
+      (data.integration as {providerJobId?: string; providerType?: "image2video" | "motion-control"} | undefined) ?? {};
     const providerJobId = integration.providerJobId;
     if (!providerJobId || typeof providerJobId !== "string") {
       return {status: "processing", message: "No provider job id yet"};
@@ -471,7 +603,7 @@ export const refreshJobStatus = onCall(
     const apiKey = (await klingAccessKey.value()).trim();
     if (!apiKey) throw new HttpsError("internal", "Kling not configured");
 
-    const pollResult = await pollKlingJob(apiKey, providerJobId, jobId);
+    const pollResult = await pollKlingJob(apiKey, providerJobId, jobId, integration.providerType);
     const finishedAt = admin.firestore.FieldValue.serverTimestamp();
 
     if (pollResult.status === "succeed" && pollResult.videoUrl) {

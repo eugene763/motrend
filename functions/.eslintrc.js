@@ -30,4 +30,16 @@ module.exports = {
     "import/no-unresolved": 0,
     "indent": ["error", 2],
   },
+  overrides: [
+    {
+      files: ["src/**/*.ts"],
+      rules: {
+        "valid-jsdoc": "off",
+        "max-len": "off",
+        "operator-linebreak": "off",
+        "indent": "off",
+        "quote-props": "off",
+      },
+    },
+  ],
 };

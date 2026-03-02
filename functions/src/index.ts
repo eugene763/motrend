@@ -216,9 +216,9 @@ async function pollKlingJob(
   jobId: string,
   providerType?: "image2video" | "motion-control"
 ): Promise<PollKlingResult> {
-  const endpointUrl = providerType === "motion-control"
-    ? `${KLING_BASE}/v1/videos/motion-control/${providerJobId}`
-    : `${KLING_BASE}/v1/videos/${providerJobId}`;
+  const endpointUrl = providerType === "motion-control" ?
+    `${KLING_BASE}/v1/videos/motion-control/${providerJobId}` :
+    `${KLING_BASE}/v1/videos/${providerJobId}`;
   console.log("Kling poll endpointUrl=" + endpointUrl + " jobId=" + jobId);
   let statusRes: Response;
   try {
@@ -451,15 +451,15 @@ export const processJobTrigger001 = onDocumentUpdated(
       console.log("FETCH template OK jobId=" + jobId);
 
       const referenceVideoUrl = tplData.kling?.referenceVideoUrl;
-      const result = typeof referenceVideoUrl === "string" && referenceVideoUrl
-        ? await submitKlingMotionControl(
-            jobId, apiKey, referenceVideoUrl, inputImageUrl,
-            {durationSec, mode, prompt}
-          )
-        : await submitKlingImage2Video(
-            jobId, apiKey, inputImageUrl,
-            {durationSec, mode, prompt}
-          );
+      const result = typeof referenceVideoUrl === "string" && referenceVideoUrl ?
+        await submitKlingMotionControl(
+          jobId, apiKey, referenceVideoUrl, inputImageUrl,
+          {durationSec, mode, prompt}
+        ) :
+        await submitKlingImage2Video(
+          jobId, apiKey, inputImageUrl,
+          {durationSec, mode, prompt}
+        );
 
       if (result.error) {
         const integration: Record<string, unknown> = {

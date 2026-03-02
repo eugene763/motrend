@@ -6,9 +6,27 @@ import {
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import {defineSecret} from "firebase-functions/params";
 import * as admin from "firebase-admin";
+import jwt from "jsonwebtoken";
 
-const klingAccessKey = defineSecret("KLING_ACCESS_KEY");
-const klingSecretKey = defineSecret("KLING_SECRET_KEY");
+const KLING_ACCESS_KEY = defineSecret("KLING_ACCESS_KEY");
+const KLING_SECRET_KEY = defineSecret("KLING_SECRET_KEY");
+
+/**
+ * Builds a JWT for Kling API auth (HS256, 30 min expiry).
+ * @param accessKey - Kling access key (iss).
+ * @param secretKey - Kling secret key (signing).
+ * @returns Signed JWT string.
+ */
+function makeKlingJwt(accessKey: string, secretKey: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: accessKey,
+    iat: now - 5,
+    nbf: now - 5,
+    exp: now + 30 * 60, // 30 минут
+  };
+  return jwt.sign(payload, secretKey, {algorithm: "HS256"});
+}
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -27,8 +45,6 @@ interface TemplateDoc {
 }
 
 const KLING_BASE = "https://api.klingapi.com";
-/** Motion-control (trend dance) uses Singapore endpoint. */
-const KLING_MOTION_CONTROL_BASE = "https://api-singapore.klingai.com";
 
 type SubmitKlingResult = {
   providerJobId?: string;
@@ -69,8 +85,8 @@ async function submitKlingImage2Video(
     res = await fetch(endpointUrl, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify(payload),
     });
@@ -144,15 +160,15 @@ async function submitKlingMotionControl(
   console.log(
     "CALL Kling motion-control payload=" + JSON.stringify(payload) + " jobId=" + jobId
   );
-  const endpointUrl = `${KLING_MOTION_CONTROL_BASE}/v1/videos/motion-control`;
+  const endpointUrl = `${KLING_BASE}/v1/videos/motion-control`;
   console.log("Kling endpointUrl=" + endpointUrl + " jobId=" + jobId);
   let res: Response;
   try {
     res = await fetch(endpointUrl, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify(payload),
     });
@@ -219,7 +235,7 @@ async function pollKlingJob(
   providerType?: "image2video" | "motion-control"
 ): Promise<PollKlingResult> {
   const endpointUrl = providerType === "motion-control"
-    ? `${KLING_MOTION_CONTROL_BASE}/v1/videos/motion-control/${providerJobId}`
+    ? `${KLING_BASE}/v1/videos/motion-control/${providerJobId}`
     : `${KLING_BASE}/v1/videos/${providerJobId}`;
   console.log("Kling poll endpointUrl=" + endpointUrl + " jobId=" + jobId);
   let statusRes: Response;
@@ -285,7 +301,7 @@ const corsAllowedOrigins = [
 ];
 
 export const createJob = onCall(
-  {cors: corsAllowedOrigins, secrets: [klingAccessKey, klingSecretKey]},
+  {cors: corsAllowedOrigins, secrets: [KLING_ACCESS_KEY, KLING_SECRET_KEY]},
   async (req) => {
     if (!req.auth) {
       throw new HttpsError("unauthenticated", "Sign in first");
@@ -380,7 +396,7 @@ export const onUserDocCreated = onDocumentCreated(
 export const processJobTrigger001 = onDocumentUpdated(
   {
     document: "jobs/{jobId}",
-    secrets: [klingAccessKey, klingSecretKey],
+    secrets: [KLING_ACCESS_KEY, KLING_SECRET_KEY],
     timeoutSeconds: 60,
   },
   async (event) => {
@@ -417,22 +433,17 @@ export const processJobTrigger001 = onDocumentUpdated(
       });
 
     try {
-      const apiKey = (await klingAccessKey.value()).trim();
-      if (!apiKey) {
-        await updateIntegration({
-          status: "failed",
-          errorMessage:
-            "Kling API key not set. Add KLING_ACCESS_KEY in Firebase secrets.",
-          integration: {
-            provider: "kling",
-            providerStatus: "failed",
-            providerError: "Kling API key not set",
-            startedAt,
-            finishedAt: admin.firestore.FieldValue.serverTimestamp(),
-          },
-        });
-        return;
+      const accessKey = await KLING_ACCESS_KEY.value();
+      const secretKey = await KLING_SECRET_KEY.value();
+      if (!accessKey || !secretKey) {
+        throw new Error("Kling secrets missing (KLING_ACCESS_KEY / KLING_SECRET_KEY)");
       }
+      const token = makeKlingJwt(accessKey, secretKey);
+      // безопасная отладка (не печатай токен!)
+      console.log("Kling auth debug", {
+        tokenLen: token.length,
+        tokenParts: token.split(".").length,
+      });
 
       const tplSnap = await db.doc(`templates/${templateId}`).get();
       const tplData = (tplSnap.data() as TemplateDoc | undefined) ?? {};
@@ -453,15 +464,15 @@ export const processJobTrigger001 = onDocumentUpdated(
       console.log("FETCH template OK jobId=" + jobId);
 
       const referenceVideoUrl = tplData.kling?.referenceVideoUrl;
-      const result = typeof referenceVideoUrl === "string" && referenceVideoUrl ?
-        await submitKlingMotionControl(
-          jobId, apiKey, referenceVideoUrl, inputImageUrl,
-          {durationSec, mode, prompt}
-        ) :
-        await submitKlingImage2Video(
-          jobId, apiKey, inputImageUrl,
-          {durationSec, mode, prompt}
-        );
+      const result = typeof referenceVideoUrl === "string" && referenceVideoUrl
+        ? await submitKlingMotionControl(
+            jobId, token, referenceVideoUrl, inputImageUrl,
+            {durationSec, mode, prompt}
+          )
+        : await submitKlingImage2Video(
+            jobId, token, inputImageUrl,
+            {durationSec, mode, prompt}
+          );
 
       if (result.error) {
         const integration: Record<string, unknown> = {
@@ -520,12 +531,14 @@ export const processJobTrigger001 = onDocumentUpdated(
 export const pollKlingScheduled = onSchedule(
   {
     schedule: "every 2 minutes",
-    secrets: [klingAccessKey, klingSecretKey],
+    secrets: [KLING_ACCESS_KEY, KLING_SECRET_KEY],
     timeoutSeconds: 540,
   },
   async () => {
-    const apiKey = (await klingAccessKey.value()).trim();
-    if (!apiKey) return;
+    const accessKey = await KLING_ACCESS_KEY.value();
+    const secretKey = await KLING_SECRET_KEY.value();
+    if (!accessKey || !secretKey) return;
+    const token = makeKlingJwt(accessKey, secretKey);
 
     const snap = await db
       .collection("jobs")
@@ -542,7 +555,7 @@ export const pollKlingScheduled = onSchedule(
       const providerJobId = integration.providerJobId;
       if (!providerJobId || typeof providerJobId !== "string") continue;
 
-      const pollResult = await pollKlingJob(apiKey, providerJobId, jobId, integration.providerType);
+      const pollResult = await pollKlingJob(token, providerJobId, jobId, integration.providerType);
       const ref = d.ref;
       const finishedAt = admin.firestore.FieldValue.serverTimestamp();
 
@@ -574,7 +587,7 @@ export const pollKlingScheduled = onSchedule(
 
 /** Callable: poll Kling once for one job (owner only). */
 export const refreshJobStatus = onCall(
-  {cors: corsAllowedOrigins, secrets: [klingAccessKey, klingSecretKey]},
+  {cors: corsAllowedOrigins, secrets: [KLING_ACCESS_KEY, KLING_SECRET_KEY]},
   async (req) => {
     if (!req.auth) throw new HttpsError("unauthenticated", "Sign in first");
     const jobId = req.data?.jobId;
@@ -602,10 +615,12 @@ export const refreshJobStatus = onCall(
       return {status: "processing", message: "No provider job id yet"};
     }
 
-    const apiKey = (await klingAccessKey.value()).trim();
-    if (!apiKey) throw new HttpsError("internal", "Kling not configured");
+    const accessKey = await KLING_ACCESS_KEY.value();
+    const secretKey = await KLING_SECRET_KEY.value();
+    if (!accessKey || !secretKey) throw new HttpsError("internal", "Kling not configured");
+    const token = makeKlingJwt(accessKey, secretKey);
 
-    const pollResult = await pollKlingJob(apiKey, providerJobId, jobId, integration.providerType);
+    const pollResult = await pollKlingJob(token, providerJobId, jobId, integration.providerType);
     const finishedAt = admin.firestore.FieldValue.serverTimestamp();
 
     if (pollResult.status === "succeed" && pollResult.videoUrl) {

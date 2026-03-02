@@ -48,7 +48,7 @@ interface JobDoc {
 }
 
 const corsAllowedOrigins = [
-  /gen-lang-client-0651837818\.(web|firebaseapp)\.com$/,
+  /gen-lang-client-0651837818\.(web\.app|firebaseapp\.com)$/,
   /^https?:\/\/localhost(:\d+)?$/,
 ];
 

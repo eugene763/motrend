@@ -20,6 +20,69 @@ interface TemplateDoc {
   isActive?: boolean;
   durationSec?: number;
   costCredits?: number;
+  modeDefault?: string;
+  prompt?: string;
+}
+
+const KLING_BASE = "https://api.klingapi.com";
+const POLL_INTERVAL_MS = 15_000;
+const POLL_TIMEOUT_MS = 8 * 60 * 1000; // 8 min
+
+async function runKlingImage2Video(
+  apiKey: string,
+  imageUrl: string,
+  opts: { durationSec: number; mode: string; prompt: string }
+): Promise<{ videoUrl?: string; error?: string }> {
+  const duration = opts.durationSec >= 10 ? 10 : 5;
+  const res = await fetch(`${KLING_BASE}/v1/videos/image2video`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "kling-v2.6-pro",
+      image_url: imageUrl,
+      prompt: opts.prompt,
+      duration,
+      aspect_ratio: "9:16",
+      mode: opts.mode === "professional" ? "professional" : "standard",
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    return { error: `Kling API error ${res.status}: ${text}` };
+  }
+  const data = (await res.json()) as { task_id?: string; code?: number; message?: string };
+  if (data.code && data.code !== 0) {
+    return { error: data.message ?? `Kling error ${data.code}` };
+  }
+  const taskId = data.task_id;
+  if (!taskId) {
+    return { error: "Kling API did not return task_id" };
+  }
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    const statusRes = await fetch(`${KLING_BASE}/v1/videos/${taskId}`, {
+      headers: { "Authorization": `Bearer ${apiKey}` },
+    });
+    if (!statusRes.ok) {
+      return { error: `Kling status check failed: ${statusRes.status}` };
+    }
+    const statusData = (await statusRes.json()) as {
+      data?: { task_status?: string; task_result?: { video_url?: string }; task_status_msg?: string };
+    };
+    const taskStatus = statusData.data?.task_status;
+    if (taskStatus === "succeed") {
+      const videoUrl = statusData.data?.task_result?.video_url;
+      return videoUrl ? { videoUrl } : { error: "No video_url in result" };
+    }
+    if (taskStatus === "failed") {
+      return { error: statusData.data?.task_status_msg ?? "Kling task failed" };
+    }
+  }
+  return { error: "Kling generation timed out" };
 }
 
 const corsAllowedOrigins = [
@@ -135,16 +198,56 @@ export const processJobTrigger001 = onDocumentUpdated(
     if (after.status !== "queued") return;
 
     const ref = afterSnap.ref;
+    const templateId = after.templateId as string | undefined;
+    const inputImageUrl = after.inputImageUrl as string | undefined;
+    if (!templateId || !inputImageUrl) return;
 
     await ref.update({
       status: "processing",
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    await ref.update({
-      status: "failed",
-      errorMessage: "Kling not configured yet (stub).",
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    const apiKey = (await klingAccessKey.value()).trim();
+    if (!apiKey) {
+      await ref.update({
+        status: "failed",
+        errorMessage: "Kling API key not set. Add KLING_ACCESS_KEY in Firebase secrets.",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return;
+    }
+
+    const tplSnap = await db.doc(`templates/${templateId}`).get();
+    const tplData = (tplSnap.data() as TemplateDoc | undefined) ?? {};
+    const durationSec =
+      typeof tplData.durationSec === "number" && tplData.durationSec > 0
+        ? tplData.durationSec
+        : 10;
+    const mode =
+      tplData.modeDefault === "professional" ? "professional" : "standard";
+    const prompt =
+      typeof tplData.prompt === "string" && tplData.prompt
+        ? tplData.prompt
+        : "Person in gentle motion, natural movement.";
+
+    const result = await runKlingImage2Video(apiKey, inputImageUrl, {
+      durationSec,
+      mode,
+      prompt,
     });
+
+    if (result.videoUrl) {
+      await ref.update({
+        status: "done",
+        outputVideoUrl: result.videoUrl,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } else {
+      await ref.update({
+        status: "failed",
+        errorMessage: result.error ?? "Video generation failed.",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
   }
 );

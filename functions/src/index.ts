@@ -1,5 +1,6 @@
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import {
+  onDocumentCreated,
   onDocumentUpdated,
 } from "firebase-functions/v2/firestore";
 import {defineSecret} from "firebase-functions/params";
@@ -22,7 +23,7 @@ interface TemplateDoc {
 }
 
 const corsAllowedOrigins = [
-  /gen-lang-client-0651837818\.(web|firebaseapp)\.com$/,
+  /gen-lang-client-0651837818\.(web\.app|firebaseapp\.com)$/,
   /^https?:\/\/localhost(:\d+)?$/,
 ];
 
@@ -102,6 +103,21 @@ export const createJob = onCall(
 
     return {jobId, uploadPath};
   });
+
+/** 20 кредитов при регистрации (1 кредит = 1 сек генерации). */
+const INITIAL_CREDITS = 20;
+
+export const onUserDocCreated = onDocumentCreated(
+  "users/{userId}",
+  async (event) => {
+    const ref = event.data?.ref;
+    if (!ref) return;
+    await ref.update({
+      creditsBalance: INITIAL_CREDITS,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+);
 
 export const processJobTrigger001 = onDocumentUpdated(
   {

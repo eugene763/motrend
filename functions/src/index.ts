@@ -28,11 +28,21 @@ const KLING_BASE = "https://api.klingapi.com";
 const POLL_INTERVAL_MS = 15_000;
 const POLL_TIMEOUT_MS = 8 * 60 * 1000; // 8 min
 
+/**
+ * Submits image-to-video job to Kling API and polls until done or timeout.
+ * @param {string} apiKey - Kling API key (Bearer).
+ * @param {string} imageUrl - Public URL of the input image.
+ * @param {Object} opts - Duration, mode, and prompt for generation.
+ * @param {number} opts.durationSec - Duration in seconds.
+ * @param {string} opts.mode - "standard" or "professional".
+ * @param {string} opts.prompt - Text prompt for the video.
+ * @return {Promise} Resolves with object containing videoUrl or error.
+ */
 async function runKlingImage2Video(
   apiKey: string,
   imageUrl: string,
-  opts: { durationSec: number; mode: string; prompt: string }
-): Promise<{ videoUrl?: string; error?: string }> {
+  opts: {durationSec: number; mode: string; prompt: string}
+): Promise<{videoUrl?: string; error?: string}> {
   const duration = opts.durationSec >= 10 ? 10 : 5;
   const res = await fetch(`${KLING_BASE}/v1/videos/image2video`, {
     method: "POST",
@@ -51,38 +61,44 @@ async function runKlingImage2Video(
   });
   if (!res.ok) {
     const text = await res.text();
-    return { error: `Kling API error ${res.status}: ${text}` };
+    return {error: `Kling API error ${res.status}: ${text}`};
   }
-  const data = (await res.json()) as { task_id?: string; code?: number; message?: string };
+  type KlingCreate = {task_id?: string; code?: number; message?: string};
+  const data = (await res.json()) as KlingCreate;
   if (data.code && data.code !== 0) {
-    return { error: data.message ?? `Kling error ${data.code}` };
+    return {error: data.message ?? `Kling error ${data.code}`};
   }
   const taskId = data.task_id;
   if (!taskId) {
-    return { error: "Kling API did not return task_id" };
+    return {error: "Kling API did not return task_id"};
   }
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     const statusRes = await fetch(`${KLING_BASE}/v1/videos/${taskId}`, {
-      headers: { "Authorization": `Bearer ${apiKey}` },
+      headers: {"Authorization": `Bearer ${apiKey}`},
     });
     if (!statusRes.ok) {
-      return { error: `Kling status check failed: ${statusRes.status}` };
+      return {error: `Kling status check failed: ${statusRes.status}`};
     }
-    const statusData = (await statusRes.json()) as {
-      data?: { task_status?: string; task_result?: { video_url?: string }; task_status_msg?: string };
+    type KlingStatus = {
+      data?: {
+        task_status?: string;
+        task_result?: {video_url?: string};
+        task_status_msg?: string;
+      };
     };
+    const statusData = (await statusRes.json()) as KlingStatus;
     const taskStatus = statusData.data?.task_status;
     if (taskStatus === "succeed") {
       const videoUrl = statusData.data?.task_result?.video_url;
-      return videoUrl ? { videoUrl } : { error: "No video_url in result" };
+      return videoUrl ? {videoUrl} : {error: "No video_url in result"};
     }
     if (taskStatus === "failed") {
-      return { error: statusData.data?.task_status_msg ?? "Kling task failed" };
+      return {error: statusData.data?.task_status_msg ?? "Kling task failed"};
     }
   }
-  return { error: "Kling generation timed out" };
+  return {error: "Kling generation timed out"};
 }
 
 const corsAllowedOrigins = [
@@ -211,7 +227,8 @@ export const processJobTrigger001 = onDocumentUpdated(
     if (!apiKey) {
       await ref.update({
         status: "failed",
-        errorMessage: "Kling API key not set. Add KLING_ACCESS_KEY in Firebase secrets.",
+        errorMessage:
+          "Kling API key not set. Add KLING_ACCESS_KEY in Firebase secrets.",
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
       return;
@@ -220,15 +237,17 @@ export const processJobTrigger001 = onDocumentUpdated(
     const tplSnap = await db.doc(`templates/${templateId}`).get();
     const tplData = (tplSnap.data() as TemplateDoc | undefined) ?? {};
     const durationSec =
-      typeof tplData.durationSec === "number" && tplData.durationSec > 0
-        ? tplData.durationSec
-        : 10;
+      typeof tplData.durationSec === "number" && tplData.durationSec > 0 ?
+        tplData.durationSec :
+        10;
     const mode =
-      tplData.modeDefault === "professional" ? "professional" : "standard";
+      tplData.modeDefault === "professional" ?
+        "professional" :
+        "standard";
     const prompt =
-      typeof tplData.prompt === "string" && tplData.prompt
-        ? tplData.prompt
-        : "Person in gentle motion, natural movement.";
+      typeof tplData.prompt === "string" && tplData.prompt ?
+        tplData.prompt :
+        "Person in gentle motion, natural movement.";
 
     const result = await runKlingImage2Video(apiKey, inputImageUrl, {
       durationSec,

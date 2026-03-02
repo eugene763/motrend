@@ -25,6 +25,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const fns = getFunctions(app, "us-central1");
 const createJob = httpsCallable(fns, "createJob");
+const refreshJobStatus = httpsCallable(fns, "refreshJobStatus");
 
 // analytics (может не стартовать в некоторых окружениях — это ок)
 let analytics = null;
@@ -282,9 +283,43 @@ function watchLatestJobs(uid) {
     snap.forEach(d => {
       const j = d.data() || {};
       const status = typeof j.status === "string" ? j.status : "";
+      const jobId = d.id;
 
       const row = document.createElement("div");
-      row.textContent = `${d.id.slice(0,6)}… • ${status} • ${j.outputVideoUrl ? "✅" : ""}`;
+      row.className = "jobRow";
+      row.dataset.jobId = jobId;
+
+      const left = document.createElement("span");
+      left.textContent = `${jobId.slice(0, 6)}… • ${status}`;
+      if (j.outputVideoUrl) {
+        const check = document.createElement("span");
+        check.textContent = " ✅";
+        left.appendChild(check);
+      }
+      row.appendChild(left);
+
+      if (status === "processing") {
+        const dots = document.createElement("span");
+        dots.className = "jobSpinner";
+        dots.setAttribute("aria-hidden", "true");
+        row.appendChild(dots);
+        const refreshBtn = document.createElement("button");
+        refreshBtn.type = "button";
+        refreshBtn.className = "btn2 jobRefreshBtn";
+        refreshBtn.textContent = "Refresh status";
+        refreshBtn.onclick = async () => {
+          refreshBtn.disabled = true;
+          try {
+            await refreshJobStatus({ jobId });
+          } catch (e) {
+            console.warn(e);
+          } finally {
+            refreshBtn.disabled = false;
+          }
+        };
+        row.appendChild(refreshBtn);
+      }
+
       jobsEl.appendChild(row);
 
       const outputUrl = safeUrl(j.outputVideoUrl || "");

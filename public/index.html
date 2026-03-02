@@ -73,6 +73,13 @@ a{color:#fff}
 @keyframes spin{to{transform:rotate(360deg)}}
 .templatesLoading{min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--muted);}
 
+/* Job list: row with spinner + refresh */
+.jobRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0;}
+.jobSpinner{display:inline-block;}
+.jobSpinner::before{content:"...";animation:jobDots 1.2s ease-in-out infinite;}
+@keyframes jobDots{0%,100%{opacity:.25}50%{opacity:1}}
+.jobRefreshBtn{font-size:12px;padding:6px 10px;}
+
   </style>
 </head>
 

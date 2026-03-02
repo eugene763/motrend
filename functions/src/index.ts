@@ -3,6 +3,7 @@ import {
   onDocumentCreated,
   onDocumentUpdated,
 } from "firebase-functions/v2/firestore";
+import {onSchedule} from "firebase-functions/v2/scheduler";
 import {defineSecret} from "firebase-functions/params";
 import * as admin from "firebase-admin";
 
@@ -25,32 +26,20 @@ interface TemplateDoc {
 }
 
 const KLING_BASE = "https://api.klingapi.com";
-const POLL_INTERVAL_MS = 15_000;
-const POLL_TIMEOUT_MS = 8 * 60 * 1000; // 8 min
 
-type KlingResult = {
-  videoUrl?: string;
-  error?: string;
-  providerJobId: string;
+type SubmitKlingResult = {
+  providerJobId?: string;
   providerRequestId?: string;
+  error?: string;
 };
 
-/**
- * Submits image-to-video job to Kling API and polls until done or timeout.
- * Calls onQueued with providerJobId and providerRequestId (if present) right after create.
- * @return {Promise} Resolves with videoUrl/error and integration ids.
- */
-async function runKlingImage2Video(
+/** Only submits job to Kling; does not poll. */
+async function submitKlingImage2Video(
   jobId: string,
   apiKey: string,
   imageUrl: string,
-  opts: {
-    durationSec: number;
-    mode: string;
-    prompt: string;
-    onQueued?: (providerJobId: string, providerRequestId?: string) => Promise<void>;
-  }
-): Promise<KlingResult> {
+  opts: {durationSec: number; mode: string; prompt: string}
+): Promise<SubmitKlingResult> {
   const duration = opts.durationSec >= 10 ? 10 : 5;
   const payload = {
     model: "kling-v2.6-pro",
@@ -76,78 +65,64 @@ async function runKlingImage2Video(
     "Kling response status=" + res.status + " body=" + bodyText.slice(0, 500) + " jobId=" + jobId
   );
   if (!res.ok) {
-    return {
-      error: `Kling API error ${res.status}: ${bodyText}`,
-      providerJobId: "",
-      providerRequestId,
-    };
+    return {error: `Kling API error ${res.status}: ${bodyText}`, providerRequestId};
   }
   type KlingCreate = {task_id?: string; code?: number; message?: string};
   const data = JSON.parse(bodyText) as KlingCreate;
   if (data.code && data.code !== 0) {
-    return {
-      error: data.message ?? `Kling error ${data.code}`,
-      providerJobId: "",
-      providerRequestId,
-    };
+    return {error: data.message ?? `Kling error ${data.code}`, providerRequestId};
   }
   const taskId = data.task_id;
   if (!taskId) {
+    return {error: "Kling API did not return task_id", providerRequestId};
+  }
+  return {providerJobId: taskId, providerRequestId};
+}
+
+type PollKlingResult = {
+  status: "succeed" | "failed" | "pending";
+  videoUrl?: string;
+  error?: string;
+};
+
+/** Polls Kling once for task status. */
+async function pollKlingJob(
+  apiKey: string,
+  providerJobId: string,
+  jobId: string
+): Promise<PollKlingResult> {
+  const statusRes = await fetch(`${KLING_BASE}/v1/videos/${providerJobId}`, {
+    headers: {"Authorization": `Bearer ${apiKey}`},
+  });
+  if (!statusRes.ok) {
     return {
-      error: "Kling API did not return task_id",
-      providerJobId: "",
-      providerRequestId,
+      status: "failed",
+      error: `Kling status check failed: ${statusRes.status}`,
     };
   }
-  if (opts.onQueued) {
-    await opts.onQueued(taskId, providerRequestId);
-  }
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-    const statusRes = await fetch(`${KLING_BASE}/v1/videos/${taskId}`, {
-      headers: {"Authorization": `Bearer ${apiKey}`},
-    });
-    if (!statusRes.ok) {
-      return {
-        error: `Kling status check failed: ${statusRes.status}`,
-        providerJobId: taskId,
-        providerRequestId,
-      };
-    }
-    type KlingStatus = {
-      data?: {
-        task_status?: string;
-        task_result?: {video_url?: string};
-        task_status_msg?: string;
-      };
+  type KlingStatus = {
+    data?: {
+      task_status?: string;
+      task_result?: {video_url?: string};
+      task_status_msg?: string;
     };
-    const statusData = (await statusRes.json()) as KlingStatus;
-    const taskStatus = statusData.data?.task_status;
-    console.log("POLL Kling status=" + (taskStatus ?? "unknown") + " jobId=" + jobId);
-    if (taskStatus === "succeed") {
-      const videoUrl = statusData.data?.task_result?.video_url;
-      return videoUrl
-        ? {videoUrl, providerJobId: taskId, providerRequestId}
-        : {
-            error: "No video_url in result",
-            providerJobId: taskId,
-            providerRequestId,
-          };
-    }
-    if (taskStatus === "failed") {
-      return {
-        error: statusData.data?.task_status_msg ?? "Kling task failed",
-        providerJobId: taskId,
-        providerRequestId,
-      };
-    }
-  }
-  return {
-    error: "Kling generation timed out",
-    providerJobId: taskId,
-    providerRequestId,
   };
+  const statusData = (await statusRes.json()) as KlingStatus;
+  const taskStatus = statusData.data?.task_status;
+  console.log("POLL Kling status=" + (taskStatus ?? "unknown") + " jobId=" + jobId);
+  if (taskStatus === "succeed") {
+    const videoUrl = statusData.data?.task_result?.video_url;
+    return videoUrl
+      ? {status: "succeed", videoUrl}
+      : {status: "failed", error: "No video_url in result"};
+  }
+  if (taskStatus === "failed") {
+    return {
+      status: "failed",
+      error: statusData.data?.task_status_msg ?? "Kling task failed",
+    };
+  }
+  return {status: "pending"};
 }
 
 const corsAllowedOrigins = [
@@ -247,11 +222,12 @@ export const onUserDocCreated = onDocumentCreated(
   }
 );
 
+/** Stage 1: on inputImageUrl set — create Kling task, save providerJobId, set status=processing. */
 export const processJobTrigger001 = onDocumentUpdated(
   {
     document: "jobs/{jobId}",
     secrets: [klingAccessKey, klingSecretKey],
-    timeoutSeconds: 540,
+    timeoutSeconds: 60,
   },
   async (event) => {
     const before = event.data?.before.data();
@@ -319,60 +295,42 @@ export const processJobTrigger001 = onDocumentUpdated(
 
       console.log("FETCH template OK jobId=" + jobId);
 
-      const result = await runKlingImage2Video(jobId, apiKey, inputImageUrl, {
+      const result = await submitKlingImage2Video(jobId, apiKey, inputImageUrl, {
         durationSec,
         mode,
         prompt,
-        onQueued: async (providerJobId, providerRequestId) => {
-          const integration: Record<string, unknown> = {
-            provider: "kling",
-            providerJobId,
-            providerStatus: "queued",
-            startedAt,
-          };
-          if (providerRequestId) integration.providerRequestId = providerRequestId;
-          await ref.update({
-            integration,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-        },
       });
 
-      const finishedAt = admin.firestore.FieldValue.serverTimestamp();
-      if (result.videoUrl) {
-        console.log("DONE outputUrl=" + result.videoUrl + " jobId=" + jobId);
-        await ref.update({
-          status: "done",
-          outputVideoUrl: result.videoUrl,
-          "integration.providerStatus": "succeeded",
-          "integration.finishedAt": finishedAt,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      } else {
-        const integrationUpdate = result.providerJobId
-          ? {
-              "integration.providerStatus": "failed",
-              "integration.providerError": result.error ?? "Video generation failed.",
-              "integration.finishedAt": finishedAt,
-            }
-          : {
-              integration: {
-                provider: "kling",
-                providerRequestId: result.providerRequestId ?? null,
-                providerJobId: null,
-                providerStatus: "failed",
-                providerError: result.error ?? "Video generation failed.",
-                startedAt,
-                finishedAt,
-              },
-            };
-        await ref.update({
+      if (result.error) {
+        const integration: Record<string, unknown> = {
+          provider: "kling",
+          providerRequestId: result.providerRequestId ?? null,
+          providerJobId: result.providerJobId ?? null,
+          providerStatus: "failed",
+          providerError: result.error,
+          startedAt,
+          finishedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+        await updateIntegration({
           status: "failed",
-          errorMessage: result.error ?? "Video generation failed.",
-          ...integrationUpdate,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          errorMessage: result.error,
+          integration,
         });
+        return;
       }
+
+      const integration: Record<string, unknown> = {
+        provider: "kling",
+        providerJobId: result.providerJobId,
+        providerStatus: "queued",
+        startedAt,
+      };
+      if (result.providerRequestId) integration.providerRequestId = result.providerRequestId;
+      await ref.update({
+        integration,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      console.log("Kling task created providerJobId=" + result.providerJobId + " jobId=" + jobId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await updateIntegration({
@@ -387,5 +345,118 @@ export const processJobTrigger001 = onDocumentUpdated(
         },
       });
     }
+  }
+);
+
+/** Stage 2: scheduler every 2 min — poll jobs with status=processing, update on done/failed. */
+export const pollKlingScheduled = onSchedule(
+  {
+    schedule: "every 2 minutes",
+    secrets: [klingAccessKey, klingSecretKey],
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const apiKey = (await klingAccessKey.value()).trim();
+    if (!apiKey) return;
+
+    const snap = await db
+      .collection("jobs")
+      .where("status", "==", "processing")
+      .limit(50)
+      .get();
+    if (snap.empty) return;
+
+    for (const d of snap.docs) {
+      const jobId = d.id;
+      const data = d.data();
+      const integration = (data.integration as {providerJobId?: string} | undefined) ?? {};
+      const providerJobId = integration.providerJobId;
+      if (!providerJobId || typeof providerJobId !== "string") continue;
+
+      const pollResult = await pollKlingJob(apiKey, providerJobId, jobId);
+      const ref = d.ref;
+      const finishedAt = admin.firestore.FieldValue.serverTimestamp();
+
+      if (pollResult.status === "succeed" && pollResult.videoUrl) {
+        console.log("DONE outputUrl=" + pollResult.videoUrl + " jobId=" + jobId);
+        await ref.update({
+          status: "done",
+          outputVideoUrl: pollResult.videoUrl,
+          "integration.providerStatus": "succeeded",
+          "integration.finishedAt": finishedAt,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      } else if (pollResult.status === "failed") {
+        await ref.update({
+          status: "failed",
+          errorMessage: pollResult.error ?? "Video generation failed.",
+          "integration.providerStatus": "failed",
+          "integration.providerError": pollResult.error ?? "Video generation failed.",
+          "integration.finishedAt": finishedAt,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    }
+  }
+);
+
+/** Callable: poll Kling once for one job (owner only). */
+export const refreshJobStatus = onCall(
+  {cors: corsAllowedOrigins, secrets: [klingAccessKey, klingSecretKey]},
+  async (req) => {
+    if (!req.auth) throw new HttpsError("unauthenticated", "Sign in first");
+    const jobId = req.data?.jobId;
+    if (!jobId || typeof jobId !== "string") {
+      throw new HttpsError("invalid-argument", "jobId is required");
+    }
+    if (!/^[\w-]+$/.test(jobId)) {
+      throw new HttpsError("invalid-argument", "Invalid jobId");
+    }
+
+    const ref = db.collection("jobs").doc(jobId);
+    const snap = await ref.get();
+    if (!snap.exists) throw new HttpsError("not-found", "Job not found");
+    const data = snap.data() ?? {};
+    if (data.uid !== req.auth.uid) {
+      throw new HttpsError("permission-denied", "Not your job");
+    }
+    if (data.status !== "processing") {
+      return {status: data.status, message: "Job is not processing"};
+    }
+    const integration = (data.integration as {providerJobId?: string} | undefined) ?? {};
+    const providerJobId = integration.providerJobId;
+    if (!providerJobId || typeof providerJobId !== "string") {
+      return {status: "processing", message: "No provider job id yet"};
+    }
+
+    const apiKey = (await klingAccessKey.value()).trim();
+    if (!apiKey) throw new HttpsError("internal", "Kling not configured");
+
+    const pollResult = await pollKlingJob(apiKey, providerJobId, jobId);
+    const finishedAt = admin.firestore.FieldValue.serverTimestamp();
+
+    if (pollResult.status === "succeed" && pollResult.videoUrl) {
+      console.log("DONE outputUrl=" + pollResult.videoUrl + " jobId=" + jobId);
+      await ref.update({
+        status: "done",
+        outputVideoUrl: pollResult.videoUrl,
+        "integration.providerStatus": "succeeded",
+        "integration.finishedAt": finishedAt,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return {status: "done", outputVideoUrl: pollResult.videoUrl};
+    }
+    if (pollResult.status === "failed") {
+      await ref.update({
+        status: "failed",
+        errorMessage: pollResult.error ?? "Video generation failed.",
+        "integration.providerStatus": "failed",
+        "integration.providerError": pollResult.error ?? "Video generation failed.",
+        "integration.finishedAt": finishedAt,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return {status: "failed", error: pollResult.error};
+    }
+    return {status: "processing", message: "Still generating"};
   }
 );

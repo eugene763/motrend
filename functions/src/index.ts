@@ -33,7 +33,13 @@ type SubmitKlingResult = {
   error?: string;
 };
 
-/** Only submits job to Kling; does not poll. */
+/**
+ * Only submits job to Kling; does not poll.
+ * @param {string} jobId - Firestore job id (for logs).
+ * @param {string} apiKey - Kling API key.
+ * @param {string} imageUrl - Public image URL.
+ * @param {Object} opts - Duration, mode, prompt.
+ */
 async function submitKlingImage2Video(
   jobId: string,
   apiKey: string,
@@ -49,7 +55,9 @@ async function submitKlingImage2Video(
     aspect_ratio: "9:16",
     mode: opts.mode === "professional" ? "professional" : "standard",
   };
-  console.log("CALL Kling payload=" + JSON.stringify(payload) + " jobId=" + jobId);
+  console.log(
+    "CALL Kling payload=" + JSON.stringify(payload) + " jobId=" + jobId
+  );
   const res = await fetch(`${KLING_BASE}/v1/videos/image2video`, {
     method: "POST",
     headers: {
@@ -60,21 +68,33 @@ async function submitKlingImage2Video(
   });
   const bodyText = await res.text();
   const providerRequestId =
-    res.headers.get("x-request-id") ?? res.headers.get("request-id") ?? undefined;
+    res.headers.get("x-request-id") ??
+    res.headers.get("request-id") ??
+    undefined;
   console.log(
-    "Kling response status=" + res.status + " body=" + bodyText.slice(0, 500) + " jobId=" + jobId
+    "Kling response status=" + res.status +
+    " body=" + bodyText.slice(0, 500) + " jobId=" + jobId
   );
   if (!res.ok) {
-    return {error: `Kling API error ${res.status}: ${bodyText}`, providerRequestId};
+    return {
+      error: `Kling API error ${res.status}: ${bodyText}`,
+      providerRequestId,
+    };
   }
   type KlingCreate = {task_id?: string; code?: number; message?: string};
   const data = JSON.parse(bodyText) as KlingCreate;
   if (data.code && data.code !== 0) {
-    return {error: data.message ?? `Kling error ${data.code}`, providerRequestId};
+    return {
+      error: data.message ?? `Kling error ${data.code}`,
+      providerRequestId,
+    };
   }
   const taskId = data.task_id;
   if (!taskId) {
-    return {error: "Kling API did not return task_id", providerRequestId};
+    return {
+      error: "Kling API did not return task_id",
+      providerRequestId,
+    };
   }
   return {providerJobId: taskId, providerRequestId};
 }
@@ -85,7 +105,12 @@ type PollKlingResult = {
   error?: string;
 };
 
-/** Polls Kling once for task status. */
+/**
+ * Polls Kling once for task status.
+ * @param {string} apiKey - Kling API key.
+ * @param {string} providerJobId - Kling task_id.
+ * @param {string} jobId - Firestore job id (for logs).
+ */
 async function pollKlingJob(
   apiKey: string,
   providerJobId: string,
@@ -109,12 +134,14 @@ async function pollKlingJob(
   };
   const statusData = (await statusRes.json()) as KlingStatus;
   const taskStatus = statusData.data?.task_status;
-  console.log("POLL Kling status=" + (taskStatus ?? "unknown") + " jobId=" + jobId);
+  console.log(
+    "POLL Kling status=" + (taskStatus ?? "unknown") + " jobId=" + jobId
+  );
   if (taskStatus === "succeed") {
     const videoUrl = statusData.data?.task_result?.video_url;
-    return videoUrl
-      ? {status: "succeed", videoUrl}
-      : {status: "failed", error: "No video_url in result"};
+    return videoUrl ?
+      {status: "succeed", videoUrl} :
+      {status: "failed", error: "No video_url in result"};
   }
   if (taskStatus === "failed") {
     return {
@@ -222,7 +249,7 @@ export const onUserDocCreated = onDocumentCreated(
   }
 );
 
-/** Stage 1: on inputImageUrl set — create Kling task, save providerJobId, set status=processing. */
+/** Stage 1: on inputImageUrl set — create Kling task, set status=processing. */
 export const processJobTrigger001 = onDocumentUpdated(
   {
     document: "jobs/{jobId}",
@@ -246,7 +273,9 @@ export const processJobTrigger001 = onDocumentUpdated(
     const inputImageUrl = after.inputImageUrl as string | undefined;
     if (!templateId || !inputImageUrl) return;
 
-    console.log("START jobId=" + jobId + " template=" + templateId + " uid=" + uid);
+    console.log(
+      "START jobId=" + jobId + " template=" + templateId + " uid=" + uid
+    );
 
     const startedAt = admin.firestore.FieldValue.serverTimestamp();
     await ref.update({
@@ -288,18 +317,18 @@ export const processJobTrigger001 = onDocumentUpdated(
         tplData.modeDefault === "professional" ?
           "professional" :
           "standard";
+      const defaultPrompt = "Person in gentle motion, natural movement.";
       const prompt =
         typeof tplData.prompt === "string" && tplData.prompt ?
           tplData.prompt :
-          "Person in gentle motion, natural movement.";
+          defaultPrompt;
 
       console.log("FETCH template OK jobId=" + jobId);
 
-      const result = await submitKlingImage2Video(jobId, apiKey, inputImageUrl, {
-        durationSec,
-        mode,
-        prompt,
-      });
+      const result = await submitKlingImage2Video(
+        jobId, apiKey, inputImageUrl,
+        {durationSec, mode, prompt}
+      );
 
       if (result.error) {
         const integration: Record<string, unknown> = {
@@ -325,12 +354,17 @@ export const processJobTrigger001 = onDocumentUpdated(
         providerStatus: "queued",
         startedAt,
       };
-      if (result.providerRequestId) integration.providerRequestId = result.providerRequestId;
+      if (result.providerRequestId) {
+        integration.providerRequestId = result.providerRequestId;
+      }
       await ref.update({
         integration,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
-      console.log("Kling task created providerJobId=" + result.providerJobId + " jobId=" + jobId);
+      console.log(
+        "Kling task created providerJobId=" + result.providerJobId +
+        " jobId=" + jobId
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await updateIntegration({
@@ -348,7 +382,7 @@ export const processJobTrigger001 = onDocumentUpdated(
   }
 );
 
-/** Stage 2: scheduler every 2 min — poll jobs with status=processing, update on done/failed. */
+/** Stage 2: scheduler every 2 min — poll processing jobs, update when done. */
 export const pollKlingScheduled = onSchedule(
   {
     schedule: "every 2 minutes",
@@ -369,7 +403,8 @@ export const pollKlingScheduled = onSchedule(
     for (const d of snap.docs) {
       const jobId = d.id;
       const data = d.data();
-      const integration = (data.integration as {providerJobId?: string} | undefined) ?? {};
+      const integration =
+        (data.integration as {providerJobId?: string} | undefined) ?? {};
       const providerJobId = integration.providerJobId;
       if (!providerJobId || typeof providerJobId !== "string") continue;
 
@@ -378,22 +413,25 @@ export const pollKlingScheduled = onSchedule(
       const finishedAt = admin.firestore.FieldValue.serverTimestamp();
 
       if (pollResult.status === "succeed" && pollResult.videoUrl) {
-        console.log("DONE outputUrl=" + pollResult.videoUrl + " jobId=" + jobId);
+        console.log(
+          "DONE outputUrl=" + pollResult.videoUrl + " jobId=" + jobId
+        );
         await ref.update({
-          status: "done",
-          outputVideoUrl: pollResult.videoUrl,
+          "status": "done",
+          "outputVideoUrl": pollResult.videoUrl,
           "integration.providerStatus": "succeeded",
           "integration.finishedAt": finishedAt,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
         });
       } else if (pollResult.status === "failed") {
+        const errMsg = pollResult.error ?? "Video generation failed.";
         await ref.update({
-          status: "failed",
-          errorMessage: pollResult.error ?? "Video generation failed.",
+          "status": "failed",
+          "errorMessage": errMsg,
           "integration.providerStatus": "failed",
-          "integration.providerError": pollResult.error ?? "Video generation failed.",
+          "integration.providerError": errMsg,
           "integration.finishedAt": finishedAt,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
         });
       }
     }
@@ -423,7 +461,8 @@ export const refreshJobStatus = onCall(
     if (data.status !== "processing") {
       return {status: data.status, message: "Job is not processing"};
     }
-    const integration = (data.integration as {providerJobId?: string} | undefined) ?? {};
+    const integration =
+      (data.integration as {providerJobId?: string} | undefined) ?? {};
     const providerJobId = integration.providerJobId;
     if (!providerJobId || typeof providerJobId !== "string") {
       return {status: "processing", message: "No provider job id yet"};
@@ -436,24 +475,27 @@ export const refreshJobStatus = onCall(
     const finishedAt = admin.firestore.FieldValue.serverTimestamp();
 
     if (pollResult.status === "succeed" && pollResult.videoUrl) {
-      console.log("DONE outputUrl=" + pollResult.videoUrl + " jobId=" + jobId);
+      console.log(
+        "DONE outputUrl=" + pollResult.videoUrl + " jobId=" + jobId
+      );
       await ref.update({
-        status: "done",
-        outputVideoUrl: pollResult.videoUrl,
+        "status": "done",
+        "outputVideoUrl": pollResult.videoUrl,
         "integration.providerStatus": "succeeded",
         "integration.finishedAt": finishedAt,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
       });
       return {status: "done", outputVideoUrl: pollResult.videoUrl};
     }
     if (pollResult.status === "failed") {
+      const errMsg = pollResult.error ?? "Video generation failed.";
       await ref.update({
-        status: "failed",
-        errorMessage: pollResult.error ?? "Video generation failed.",
+        "status": "failed",
+        "errorMessage": errMsg,
         "integration.providerStatus": "failed",
-        "integration.providerError": pollResult.error ?? "Video generation failed.",
+        "integration.providerError": errMsg,
         "integration.finishedAt": finishedAt,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
       });
       return {status: "failed", error: pollResult.error};
     }

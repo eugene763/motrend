@@ -283,18 +283,20 @@ function watchLatestJobs(uid) {
       const j = d.data() || {};
       const status = typeof j.status === "string" ? j.status : "";
 
+      const outputUrl = (j.kling && j.kling.outputUrl) ? j.kling.outputUrl : null;
       const row = document.createElement("div");
-      row.textContent = `${d.id.slice(0,6)}… • ${status} • ${j.outputVideoUrl ? "✅" : ""}`;
+      row.textContent = `${d.id.slice(0,6)}… • ${status} • ${outputUrl ? "✅" : ""}`;
       jobsEl.appendChild(row);
 
-      const outputUrl = safeUrl(j.outputVideoUrl || "");
-      if (outputUrl && status === "done") {
+      const safeOutputUrl = safeUrl(outputUrl || "");
+      if (safeOutputUrl && status === "done") {
         $("status").textContent = "Done.";
         $("result").style.display = "block";
-        $("downloadLink").href = outputUrl;
+        $("downloadLink").href = safeOutputUrl;
       }
       if (status === "failed") {
-        $("status").textContent = `Failed: ${j.errorMessage || "try another photo/template"}`;
+        const errMsg = (j.kling && j.kling.error) ? j.kling.error : "try another photo/template";
+        $("status").textContent = `Failed: ${errMsg}`;
       }
     });
   });

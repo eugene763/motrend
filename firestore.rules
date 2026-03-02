@@ -19,12 +19,13 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Задачи: создаёт только Cloud Function (createJob); клиент может обновить только поля после загрузки фото
+    // Задачи: создаёт только Cloud Function (createJob); клиент может писать только URL/пути загрузок и updatedAt
     match /jobs/{jobId} {
       allow read: if request.auth != null && resource.data.uid == request.auth.uid;
       allow create: if false;
       allow update: if request.auth != null && resource.data.uid == request.auth.uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['inputImageUrl', 'inputImagePath', 'updatedAt']);
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['inputImageUrl', 'inputImagePath', 'referenceVideoUrl', 'referenceVideoPath', 'updatedAt']);
       allow delete: if false;
     }
 

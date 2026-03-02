@@ -19,6 +19,34 @@ interface TemplateDoc {
   costCredits?: number;
 }
 
+type JobStatus =
+  | "queued"
+  | "uploading"
+  | "processing"
+  | "done"
+  | "failed";
+
+interface KlingState {
+  taskId?: string;
+  state?: string;
+  progress?: number;
+  outputUrl?: string;
+  error?: string;
+}
+
+interface JobDoc {
+  uid: string;
+  status: JobStatus;
+  inputImagePath?: string;
+  inputImageUrl?: string;
+  referenceVideoPath?: string;
+  referenceVideoUrl?: string;
+  templateId?: string;
+  kling?: KlingState;
+  createdAt: FirebaseFirestore.FieldValue;
+  updatedAt: FirebaseFirestore.FieldValue;
+}
+
 const corsAllowedOrigins = [
   /gen-lang-client-0651837818\.(web|firebaseapp)\.com$/,
   /^https?:\/\/localhost(:\d+)?$/,
@@ -86,15 +114,19 @@ export const createJob = onCall(
       );
 
       const jobRef = db.collection("jobs").doc();
-      tx.set(jobRef, {
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      const uploadPathForJob =
+        `user_uploads/${uid}/${jobRef.id}/photo.jpg`;
+      const initialJob: Partial<JobDoc> = {
         uid,
-        templateId,
         status: "queued",
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      const uploadPathForJob = `user_uploads/${uid}/${jobRef.id}/photo.jpg`;
+        inputImagePath: uploadPathForJob,
+        templateId,
+        kling: {},
+        createdAt: now,
+        updatedAt: now,
+      };
+      tx.set(jobRef, initialJob);
       return {jobId: jobRef.id, uploadPath: uploadPathForJob};
     });
 
@@ -106,7 +138,7 @@ export const processJobTrigger001 = onDocumentUpdated(
   async (event) => {
     const before = event.data?.before.data();
     const afterSnap = event.data?.after;
-    const after = afterSnap?.data();
+    const after = afterSnap?.data() as Partial<JobDoc> | undefined;
     if (!before || !after || !afterSnap) return;
 
     const inputAdded = !before.inputImageUrl && !!after.inputImageUrl;
@@ -114,16 +146,20 @@ export const processJobTrigger001 = onDocumentUpdated(
     if (after.status !== "queued") return;
 
     const ref = afterSnap.ref;
+    const ts = admin.firestore.FieldValue.serverTimestamp();
 
     await ref.update({
-      status: "processing",
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      status: "processing" as JobStatus,
+      kling: {state: "processing"},
+      updatedAt: ts,
     });
 
+    // Stub: real Kling will set done + kling.outputUrl or failed + kling.error
+    const stubError = "Kling not configured yet (stub).";
     await ref.update({
-      status: "failed",
-      errorMessage: "Kling not configured yet (stub).",
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      status: "failed" as JobStatus,
+      kling: {state: "failed", error: stubError},
+      updatedAt: ts,
     });
   }
 );

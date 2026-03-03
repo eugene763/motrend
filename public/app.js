@@ -347,23 +347,32 @@ $("btnGenerate").onclick = async () => {
   $("resultHint").style.display = "none";
 
   try {
+    console.log("STEP 1 createJob start");
     const resp = await createJob({ templateId: selectedTemplate.id });
+    console.log("STEP 1 createJob ok", resp.data);
     const jobId = resp.data.jobId;
     const path = resp.data.uploadPath;
 
     const r = ref(st, path);
+    console.log("STEP 2 uploadBytes start", path);
     await uploadBytes(r, file, { contentType: file.type || "image/jpeg" });
-    const photoUrl = await getDownloadURL(r);
+    console.log("STEP 2 uploadBytes ok");
 
+    console.log("STEP 3 getDownloadURL start");
+    const photoUrl = await getDownloadURL(r);
+    console.log("STEP 3 getDownloadURL ok", photoUrl);
+
+    console.log("STEP 4 updateDoc start");
     await updateDoc(doc(db, "jobs", jobId), {
       inputImageUrl: photoUrl,
       inputImagePath: path,
       updatedAt: serverTimestamp(),
     });
+    console.log("STEP 4 updateDoc ok");
     $("status").textContent = "Queued. Generating…";
   } catch (e) {
-    $("status").textContent = "";
-    showFormError(e?.message || "Something went wrong. Try again.");
+    console.error("GENERATE FAILED", e);
+    throw e;
   } finally {
     btn.disabled = false;
   }

@@ -25,6 +25,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const fns = getFunctions(app, "us-central1");
 const createJob = httpsCallable(fns, "createJob");
+const getDownloadTicket = httpsCallable(fns, "getDownloadTicket");
 
 // analytics (может не стартовать в некоторых окружениях — это ок)
 let analytics = null;
@@ -65,6 +66,33 @@ function clearFormError() {
   el.style.display = "none";
   el.textContent = "";
 }
+
+let currentResultJobId = null;
+let currentResultUrl = "";
+
+function showResult(url, jobId) {
+  currentResultJobId = jobId || null;
+  currentResultUrl = url || "";
+  $("result").style.display = "block";
+
+  const a = $("downloadResult");
+  a.href = "#";
+  a.style.display = "inline-flex";
+
+  const copyBtn = $("copyResultLink");
+  copyBtn.style.display = "inline-flex";
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(currentResultUrl);
+      $("status").textContent = "Link copied ✅";
+    } catch {
+      $("status").textContent = "Failed to copy link";
+    }
+  };
+
+  $("resultHint").style.display = "block";
+}
+
 function openAuth(msg = "") {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "block";
@@ -288,15 +316,15 @@ function watchLatestJobs(uid) {
       row.textContent = `${d.id.slice(0,6)}… • ${status} • ${outputUrl ? "✅" : ""}`;
       jobsEl.appendChild(row);
 
-      const safeOutputUrl = safeUrl(outputUrl || "");
-      if (safeOutputUrl && status === "done") {
-        $("status").textContent = "Done.";
-        $("result").style.display = "block";
-        $("downloadLink").href = safeOutputUrl;
+      if (status === "done" && j.kling?.outputUrl) {
+        const url = safeUrl(j.kling.outputUrl);
+        if (url) {
+          $("status").textContent = "Done ✅";
+          showResult(url, d.id);
+        }
       }
       if (status === "failed") {
-        const errMsg = (j.kling && j.kling.error) ? j.kling.error : "try another photo/template";
-        $("status").textContent = `Failed: ${errMsg}`;
+        $("status").textContent = `Error: ${j.kling?.error || j.errorMessage || "unknown"}`;
       }
     });
   });
@@ -313,7 +341,10 @@ $("btnGenerate").onclick = async () => {
   btn.disabled = true;
   $("status").textContent = "Uploading photo…";
   $("result").style.display = "none";
-  $("downloadLink").href = "#";
+  $("downloadResult").href = "#";
+  $("downloadResult").style.display = "none";
+  $("copyResultLink").style.display = "none";
+  $("resultHint").style.display = "none";
 
   try {
     const resp = await createJob({ templateId: selectedTemplate.id });
@@ -335,6 +366,39 @@ $("btnGenerate").onclick = async () => {
     showFormError(e?.message || "Something went wrong. Try again.");
   } finally {
     btn.disabled = false;
+  }
+};
+
+$("downloadResult").onclick = async (e) => {
+  e.preventDefault();
+  const jobId = currentResultJobId;
+  if (!jobId) return;
+  const btn = $("downloadResult");
+  const origText = btn.textContent;
+  btn.textContent = "…";
+  btn.disabled = true;
+  try {
+    const { data } = await getDownloadTicket({ jobId });
+    if (data?.ticketId) {
+      window.location.href = "/download?ticket=" + encodeURIComponent(data.ticketId);
+      return;
+    }
+  } catch (err) {
+    $("status").textContent = err?.message || "Download failed";
+  } finally {
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
+};
+
+$("copyResultLink").onclick = async () => {
+  if (!currentResultUrl) return;
+  try {
+    await navigator.clipboard.writeText(currentResultUrl);
+    $("copyResultLink").textContent = "Copied!";
+    setTimeout(() => { $("copyResultLink").textContent = "Copy link"; }, 2000);
+  } catch (e) {
+    console.warn("Copy failed", e);
   }
 };
 

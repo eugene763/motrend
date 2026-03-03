@@ -166,9 +166,27 @@ a{color:#fff}
           <div id="status" class="muted"></div>
         </div>
         <div id="formError" class="formError muted" style="display:none" role="alert"></div>
-        <div id="result" style="margin-top:12px;display:none">
-          <a id="downloadLink" class="btn" style="display:inline-block;text-decoration:none" target="_blank">Download video</a>
-        </div>
+        <div id="result" style="display:none; margin-top:12px;">
+  <a id="downloadResult"
+     class="btn"
+     href="#"
+     target="_blank"
+     rel="noopener"
+     style="display:none;">
+     Скачать результат
+  </a>
+
+  <button id="copyResultLink"
+          class="btn"
+          type="button"
+          style="display:none; margin-left:8px;">
+    Copy link
+  </button>
+
+  <div id="resultHint" class="muted" style="margin-top:8px; display:none;">
+    The link to the video is stored for ~30 days.
+  </div>
+</div>
       </div>
 
       <div class="card" id="jobsCard">

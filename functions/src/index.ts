@@ -1,4 +1,4 @@
-import {onCall, HttpsError} from "firebase-functions/v2/https";
+import {onCall, onRequest, HttpsError} from "firebase-functions/v2/https";
 import {
   onDocumentCreated,
   onDocumentUpdated,
@@ -74,6 +74,14 @@ interface JobDoc {
   kling?: KlingState;
   createdAt: FirebaseFirestore.FieldValue;
   updatedAt: FirebaseFirestore.FieldValue;
+}
+
+const TICKET_TTL_MS = 3 * 60 * 1000; // 3 minutes
+
+interface DownloadTicketDoc {
+  jobId: string;
+  uid: string;
+  expiresAt: FirebaseFirestore.Timestamp;
 }
 
 const corsAllowedOrigins = [
@@ -161,6 +169,135 @@ export const createJob = onCall(
 
     return {jobId, uploadPath};
   });
+
+export const getDownloadTicket = onCall(
+  {cors: corsAllowedOrigins},
+  async (req) => {
+    if (!req.auth) {
+      throw new HttpsError("unauthenticated", "Sign in first");
+    }
+    const uid = req.auth.uid;
+    const jobId = req.data?.jobId;
+    if (!jobId || typeof jobId !== "string") {
+      throw new HttpsError("invalid-argument", "jobId is required");
+    }
+    if (!/^[\w-]+$/.test(jobId)) {
+      throw new HttpsError("invalid-argument", "Invalid jobId");
+    }
+
+    const jobSnap = await db.doc(`jobs/${jobId}`).get();
+    const jobData = jobSnap.data() as JobDoc | undefined;
+    if (!jobSnap.exists || !jobData) {
+      throw new HttpsError("not-found", "Job not found");
+    }
+    if (jobData.uid !== uid) {
+      throw new HttpsError("permission-denied", "Not your job");
+    }
+    if (jobData.status !== "done") {
+      throw new HttpsError("failed-precondition", "Job is not done yet");
+    }
+    const outputUrl = jobData.kling?.outputUrl;
+    if (!outputUrl || typeof outputUrl !== "string") {
+      throw new HttpsError("failed-precondition", "No output URL for this job");
+    }
+
+    const expiresAt = admin.firestore.Timestamp.fromMillis(
+      Date.now() + TICKET_TTL_MS
+    );
+    const ticketRef = db.collection("downloadTickets").doc();
+    await ticketRef.set({
+      jobId,
+      uid,
+      expiresAt,
+    } as DownloadTicketDoc);
+
+    return {ticketId: ticketRef.id};
+  }
+);
+
+export const downloadResult = onRequest(
+  {cors: false},
+  async (req, res) => {
+    if (req.method !== "GET") {
+      res.status(405).setHeader("Allow", "GET").end();
+      return;
+    }
+    const ticketId = req.query?.ticket;
+    if (!ticketId || typeof ticketId !== "string") {
+      res.status(400).send("Missing ticket");
+      return;
+    }
+    if (!/^[\w-]+$/.test(ticketId)) {
+      res.status(400).send("Invalid ticket");
+      return;
+    }
+
+    const ticketRef = db.collection("downloadTickets").doc(ticketId);
+    const ticketSnap = await ticketRef.get();
+    const ticketData = ticketSnap.data() as DownloadTicketDoc | undefined;
+    if (!ticketSnap.exists || !ticketData) {
+      res.status(404).send("Ticket not found");
+      return;
+    }
+    const now = admin.firestore.Timestamp.now();
+    if (ticketData.expiresAt.toMillis() < now.toMillis()) {
+      await ticketRef.delete();
+      res.status(410).send("Ticket expired");
+      return;
+    }
+
+    const jobSnap = await db.doc(`jobs/${ticketData.jobId}`).get();
+    const jobData = jobSnap.data() as JobDoc | undefined;
+    if (!jobSnap.exists || !jobData || jobData.uid !== ticketData.uid) {
+      await ticketRef.delete();
+      res.status(404).send("Job not found");
+      return;
+    }
+    const outputUrl = jobData.kling?.outputUrl;
+    if (!outputUrl || typeof outputUrl !== "string") {
+      await ticketRef.delete();
+      res.status(404).send("No output URL");
+      return;
+    }
+
+    await ticketRef.delete();
+
+    try {
+      const klingRes = await fetch(outputUrl, {redirect: "follow"});
+      if (!klingRes.ok) {
+        res.status(502).send("Upstream error");
+        return;
+      }
+      const contentType =
+        klingRes.headers.get("content-type") || "video/mp4";
+      const contentDisposition =
+        klingRes.headers.get("content-disposition") ||
+        "attachment; filename=\"result.mp4\"";
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", contentDisposition);
+
+      const reader = klingRes.body?.getReader();
+      if (!reader) {
+        res.status(502).send("No body");
+        return;
+      }
+      for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        res.write(Buffer.from(value));
+      }
+      res.end();
+    } catch (err: unknown) {
+      logger.error("downloadResult stream failed", {
+        ticketId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      if (!res.headersSent) {
+        res.status(502).send("Download failed");
+      }
+    }
+  }
+);
 
 /** При создании юзера начисляем 20 кредитов (1 кредит = 1 сек генерации). */
 const INITIAL_CREDITS = 20;

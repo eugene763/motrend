@@ -29,5 +29,10 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Билеты скачивания: только Cloud Functions (getDownloadTicket / downloadResult)
+    match /downloadTickets/{ticketId} {
+      allow read, write: if false;
+    }
+
   }
 }

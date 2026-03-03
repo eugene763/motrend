@@ -311,19 +311,16 @@ function watchLatestJobs(uid) {
       const j = d.data() || {};
       const status = typeof j.status === "string" ? j.status : "";
 
-      const outputUrl = (j.kling && j.kling.outputUrl) ? j.kling.outputUrl : null;
+      const outputUrl = j.kling?.outputUrl || null;
       const row = document.createElement("div");
       row.textContent = `${d.id.slice(0,6)}… • ${status} • ${outputUrl ? "✅" : ""}`;
       jobsEl.appendChild(row);
 
-      if (status === "done" && j.kling?.outputUrl) {
-        const url = safeUrl(j.kling.outputUrl);
-        if (url) {
-          $("status").textContent = "Done ✅";
-          showResult(url, d.id);
-        }
+      if (j.status === "done" && outputUrl) {
+        $("status").textContent = "Done ✅";
+        showResult(outputUrl, d.id);
       }
-      if (status === "failed") {
+      if (j.status === "failed") {
         $("status").textContent = `Error: ${j.kling?.error || j.errorMessage || "unknown"}`;
       }
     });

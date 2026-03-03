@@ -126,28 +126,28 @@ function closeAuth() {
   clearAuthError();
 }
 
-function showResultLink(url) {
+function showSuccessPanel(url) {
   const safe = safeUrl(url);
-  const result = $("result");
-  const downloadLink = $("downloadLink");
-  if (!result || !downloadLink) return;
+  const panel = $("jobSuccessPanel");
+  const downloadBtn = $("downloadTrendBtn");
+  if (!panel || !downloadBtn) return;
 
   if (!safe) {
-    result.style.display = "none";
-    downloadLink.href = "#";
+    panel.style.display = "none";
+    downloadBtn.href = "#";
     return;
   }
 
-  downloadLink.href = safe;
-  result.style.display = "block";
+  downloadBtn.href = safe;
+  panel.style.display = "block";
 }
 
-function hideResultLink() {
-  const result = $("result");
-  const downloadLink = $("downloadLink");
-  if (!result || !downloadLink) return;
-  result.style.display = "none";
-  downloadLink.href = "#";
+function hideSuccessPanel() {
+  const panel = $("jobSuccessPanel");
+  const downloadBtn = $("downloadTrendBtn");
+  if (!panel || !downloadBtn) return;
+  panel.style.display = "none";
+  downloadBtn.href = "#";
 }
 
 function safeUrl(value) {
@@ -405,11 +405,11 @@ function updateLatestJobUI(job) {
 
   if (status === "done" && outputUrl) {
     setStatus("Done. Download is ready.");
-    showResultLink(outputUrl);
+    showSuccessPanel(outputUrl);
     return;
   }
 
-  hideResultLink();
+  hideSuccessPanel();
 
   if (status === "queued") {
     setStatus("Queued. Waiting for processing…");
@@ -433,6 +433,7 @@ function watchLatestJobs(uid) {
 
     if (snap.empty) {
       jobsEl.textContent = "No jobs yet.";
+      hideSuccessPanel();
       return;
     }
 
@@ -476,7 +477,7 @@ $("btnGenerate").onclick = async () => {
 
   const btn = $("btnGenerate");
   btn.disabled = true;
-  hideResultLink();
+  hideSuccessPanel();
   setStatus("Creating job…");
 
   try {
@@ -543,7 +544,7 @@ onAuthStateChanged(auth, async (user) => {
     $("btnWallet").style.display = "none";
     $("btnLogout").style.display = "none";
     closeAuth();
-    hideResultLink();
+    hideSuccessPanel();
     setStatus("");
 
     await loadTemplates();

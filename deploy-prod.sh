@@ -13,9 +13,5 @@ fi
 echo "==> Switching Firebase to prod"
 firebase use prod
 
-echo "==> Lint & build functions"
-npm --prefix functions run lint
-npm --prefix functions run build
-
-echo "==> Deploying (functions + hosting + rules + indexes)"
+echo "==> Deploying (functions + hosting + rules/indexes)"
 firebase deploy

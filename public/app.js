@@ -1,16 +1,43 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-import { getAnalytics, logEvent, setUserId, setUserProperties } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import {
-  getAuth, GoogleAuthProvider,
-  signInWithPopup, onAuthStateChanged, signOut,
-  signInWithEmailAndPassword, createUserWithEmailAndPassword
+  getAnalytics,
+  logEvent,
+  setUserId,
+  setUserProperties,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
+import {
+  GoogleAuthProvider,
+  createUserWithEmailAndPassword,
+  getAuth,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import {
-  getFirestore, doc, setDoc, updateDoc, serverTimestamp,
-  collection, query, where, getDocs, orderBy, limit, onSnapshot
+  collection,
+  doc,
+  getDocs,
+  getFirestore,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
-import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
+import {
+  getDownloadURL,
+  getStorage,
+  ref,
+  uploadBytes,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
+import {
+  getFunctions,
+  httpsCallable,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBro7c7o8kiRdAuZZpu73KdKyApX7JuflE",
@@ -19,107 +46,157 @@ const firebaseConfig = {
   storageBucket: "gen-lang-client-0651837818.firebasestorage.app",
   messagingSenderId: "399776789069",
   appId: "1:399776789069:web:1567626bd149e1d5116204",
-  measurementId: "G-KJC19LBS34"
+  measurementId: "G-KJC19LBS34",
 };
 
 const app = initializeApp(firebaseConfig);
-const fns = getFunctions(app, "us-central1");
-const createJob = httpsCallable(fns, "createJob");
-const getDownloadTicket = httpsCallable(fns, "getDownloadTicket");
+const auth = getAuth(app);
+const db = getFirestore(app);
+const storage = getStorage(app);
+const functions = getFunctions(app, "us-central1");
+const createJob = httpsCallable(functions, "createJob");
 
-// analytics (может не стартовать в некоторых окружениях — это ок)
 let analytics = null;
-try { analytics = getAnalytics(app); } catch {}
+try {
+  analytics = getAnalytics(app);
+} catch {
+  analytics = null;
+}
 
 function track(name, params = {}) {
   if (!analytics) return;
-  try { logEvent(analytics, name, params); } catch {}
+  try {
+    logEvent(analytics, name, params);
+  } catch {
+    // no-op
+  }
 }
-
-const auth = getAuth(app);
-const db = getFirestore(app);
-const st = getStorage(app);
 
 const $ = (id) => document.getElementById(id);
 
-function showAuthError(msg) {
+function showAuthError(message) {
   const el = $("authError");
   if (!el) return;
+  el.textContent = message;
   el.style.display = "block";
-  el.textContent = msg;
 }
+
 function clearAuthError() {
   const el = $("authError");
   if (!el) return;
-  el.style.display = "none";
   el.textContent = "";
+  el.style.display = "none";
 }
-function showFormError(msg) {
+
+function showFormError(message) {
   const el = $("formError");
   if (!el) return;
+  el.textContent = message;
   el.style.display = "block";
-  el.textContent = msg;
 }
+
 function clearFormError() {
   const el = $("formError");
   if (!el) return;
-  el.style.display = "none";
   el.textContent = "";
+  el.style.display = "none";
 }
 
-let currentResultJobId = null;
-let currentResultUrl = "";
-
-function showResult(url, jobId) {
-  currentResultJobId = jobId || null;
-  currentResultUrl = url || "";
-  $("result").style.display = "block";
-
-  const a = $("downloadResult");
-  a.href = "#";
-  a.style.display = "inline-flex";
-
-  const copyBtn = $("copyResultLink");
-  copyBtn.style.display = "inline-flex";
-  copyBtn.onclick = async () => {
-    try {
-      await navigator.clipboard.writeText(currentResultUrl);
-      $("status").textContent = "Link copied ✅";
-    } catch {
-      $("status").textContent = "Failed to copy link";
-    }
-  };
-
-  $("resultHint").style.display = "block";
+function setStatus(message) {
+  const el = $("status");
+  if (!el) return;
+  el.textContent = message;
 }
 
-function openAuth(msg = "") {
+function openAuth(message = "") {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "block";
-  if (msg) showAuthError(msg); else clearAuthError();
-  authBox?.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (message) {
+    showAuthError(message);
+  } else {
+    clearAuthError();
+  }
+  authBox?.scrollIntoView({behavior: "smooth", block: "start"});
   $("authEmail")?.focus();
 }
+
 function closeAuth() {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "none";
   clearAuthError();
 }
 
+function showSuccessPanel(url) {
+  const safe = safeUrl(url);
+  const panel = $("jobSuccessPanel");
+  const downloadBtn = $("downloadTrendBtn");
+  if (!panel || !downloadBtn) return;
+
+  if (!safe) {
+    panel.style.display = "none";
+    downloadBtn.href = "#";
+    return;
+  }
+
+  downloadBtn.href = safe;
+  panel.style.display = "block";
+}
+
+function hideSuccessPanel() {
+  const panel = $("jobSuccessPanel");
+  const downloadBtn = $("downloadTrendBtn");
+  if (!panel || !downloadBtn) return;
+  panel.style.display = "none";
+  downloadBtn.href = "#";
+}
+
+function safeUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  try {
+    const url = new URL(trimmed, window.location.origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return "";
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function callableErrorMessage(error) {
+  const code = typeof error?.code === "string" ? error.code : "";
+  const message = typeof error?.message === "string" ? error.message : "";
+
+  if (code.includes("resource-exhausted")) {
+    return "Not enough credits for this generation.";
+  }
+  if (code.includes("unauthenticated")) {
+    return "Please sign in first.";
+  }
+  if (code.includes("failed-precondition")) {
+    return "Template is unavailable. Pick another one.";
+  }
+  return message || "Something went wrong. Try again.";
+}
+
 let currentUser = null;
 let selectedTemplate = null;
 let unsubscribeUserDoc = null;
-let unsubscribeLatestJobs = null;
+let unsubscribeJobs = null;
 
 $("btnEmailSignIn").onclick = async () => {
   clearAuthError();
   const email = $("authEmail").value.trim();
   const pass = $("authPass").value;
+
   try {
-    track("login_click", { method: "email" });
+    track("login_click", {method: "email"});
     await signInWithEmailAndPassword(auth, email, pass);
-  } catch (e) {
-    showAuthError(e?.message || "Sign-in failed");
+  } catch (error) {
+    showAuthError(callableErrorMessage(error));
   }
 };
 
@@ -127,36 +204,38 @@ $("btnEmailSignUp").onclick = async () => {
   clearAuthError();
   const email = $("authEmail").value.trim();
   const pass = $("authPass").value;
+
   try {
-    track("signup_click", { method: "email" });
+    track("signup_click", {method: "email"});
     await createUserWithEmailAndPassword(auth, email, pass);
-  } catch (e) {
-    showAuthError(e?.message || "Sign-up failed");
+  } catch (error) {
+    showAuthError(callableErrorMessage(error));
   }
 };
 
 $("btnLogin").onclick = async () => {
   clearAuthError();
   try {
-    track("login_click", { method: "google" });
+    track("login_click", {method: "google"});
     const provider = new GoogleAuthProvider();
     await signInWithPopup(auth, provider);
-  } catch (e) {
-    showAuthError(e?.message || "Google sign-in failed");
+  } catch (error) {
+    showAuthError(callableErrorMessage(error));
   }
 };
 
-$("btnLogout").onclick = () => signOut(auth);
+$("btnLogout").onclick = async () => {
+  await signOut(auth);
+};
 
 $("btnSaveProfile").onclick = async () => {
-  const u = currentUser;
-  if (!u) return;
-  await setDoc(doc(db, "users", u.uid), {
-    email: u.email,
-    language: $("inpLang").value,
+  if (!currentUser) return;
+  await setDoc(doc(db, "users", currentUser.uid), {
+    email: currentUser.email,
     country: $("inpCountry").value,
+    language: $("inpLang").value,
     updatedAt: serverTimestamp(),
-  }, { merge: true });
+  }, {merge: true});
 };
 
 $("btnWallet").onclick = () => {
@@ -164,54 +243,43 @@ $("btnWallet").onclick = () => {
 };
 
 function stopAllTemplateVideos(exceptEl = null) {
-  document.querySelectorAll(".tplVideo").forEach(v => {
-    if (v === exceptEl) return;
-    try { v.pause(); v.currentTime = 0; v.muted = true; } catch {}
+  document.querySelectorAll(".tplVideo").forEach((video) => {
+    if (video === exceptEl) return;
+    try {
+      video.pause();
+      video.currentTime = 0;
+      video.muted = true;
+    } catch {
+      // no-op
+    }
   });
 }
 
-function escapeHtml(s) {
-  const el = document.createElement("span");
-  el.textContent = s;
-  return el.innerHTML;
-}
-function safeUrl(u) {
-  if (typeof u !== "string") return "";
-  const trimmed = u.trim();
-  if (!trimmed) return "";
-  try {
-    const url = new URL(trimmed, window.location.origin);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
-    return url.toString();
-  } catch {
-    return "";
-  }
-}
-function renderTemplateCard(t) {
-  const div = document.createElement("div");
-  div.className = "card tplCard";
-  div.style.margin = "0";
+function renderTemplateCard(template) {
+  const card = document.createElement("div");
+  card.className = "card tplCard";
+  card.style.margin = "0";
 
-  const thumbUrl = safeUrl(t.preview?.thumbnailUrl || "");
-  const videoUrl = safeUrl(t.preview?.previewVideoUrl || "");
-  const mode = t.modeDefault || "std";
-  const titleText = t.title || "Template";
+  const thumbUrl = safeUrl(template.preview?.thumbnailUrl || "");
+  const videoUrl = safeUrl(template.preview?.previewVideoUrl || "");
+  const mode = template.modeDefault || "std";
+  const titleText = template.title || "Template";
 
   const media = document.createElement("div");
   media.className = "tplMedia";
 
-  let vid = null;
+  let videoEl = null;
   if (videoUrl) {
-    vid = document.createElement("video");
-    vid.className = "tplVideo";
-    vid.playsInline = true;
-    vid.muted = true;
-    vid.loop = true;
-    vid.autoplay = true;
-    vid.preload = "metadata";
-    vid.src = videoUrl;
-    if (thumbUrl) vid.poster = thumbUrl;
-    media.appendChild(vid);
+    videoEl = document.createElement("video");
+    videoEl.className = "tplVideo";
+    videoEl.src = videoUrl;
+    if (thumbUrl) videoEl.poster = thumbUrl;
+    videoEl.playsInline = true;
+    videoEl.muted = true;
+    videoEl.loop = true;
+    videoEl.autoplay = true;
+    videoEl.preload = "metadata";
+    media.appendChild(videoEl);
   } else if (thumbUrl) {
     const img = document.createElement("img");
     img.src = thumbUrl;
@@ -219,14 +287,14 @@ function renderTemplateCard(t) {
     media.appendChild(img);
   }
 
-  const titleEl = document.createElement("div");
-  titleEl.style.fontWeight = "700";
-  titleEl.style.marginTop = "8px";
-  titleEl.textContent = titleText;
+  const title = document.createElement("div");
+  title.style.fontWeight = "700";
+  title.style.marginTop = "8px";
+  title.textContent = titleText;
 
   const meta = document.createElement("div");
   meta.className = "muted";
-  meta.textContent = `${t.durationSec ?? "—"}s • ${mode}`;
+  meta.textContent = `${template.durationSec ?? "—"}s • ${mode}`;
 
   const useBtn = document.createElement("button");
   useBtn.className = "btn tplUse";
@@ -234,35 +302,56 @@ function renderTemplateCard(t) {
   useBtn.style.width = "100%";
   useBtn.textContent = "Use";
 
-  div.appendChild(media);
-  div.appendChild(titleEl);
-  div.appendChild(meta);
-  div.appendChild(useBtn);
+  card.appendChild(media);
+  card.appendChild(title);
+  card.appendChild(meta);
+  card.appendChild(useBtn);
 
-  if (vid) setTimeout(() => { vid.play().catch(() => {}); }, 50);
+  if (videoEl) {
+    setTimeout(() => {
+      videoEl.play().catch(() => {});
+    }, 50);
+  }
 
   media.onclick = async () => {
-    document.querySelectorAll(".tplCard").forEach(c => c.classList.remove("isHot"));
-    div.classList.add("isHot");
-    if (!vid) return;
-    stopAllTemplateVideos(vid);
-    try { vid.muted = false; vid.volume = 1; await vid.play(); } catch {}
+    document.querySelectorAll(".tplCard").forEach((el) => {
+      el.classList.remove("isHot");
+    });
+    card.classList.add("isHot");
+
+    if (!videoEl) return;
+    stopAllTemplateVideos(videoEl);
+
+    try {
+      videoEl.muted = false;
+      videoEl.volume = 1;
+      await videoEl.play();
+    } catch {
+      // no-op
+    }
   };
 
   useBtn.onclick = () => {
-    selectedTemplate = t;
-    $("selTemplate").value = `${t.title} (${t.durationSec}s ${mode})`;
-    document.querySelectorAll(".tplCard").forEach(c => c.classList.remove("isSelected"));
-    div.classList.add("isSelected");
-    track("template_selected", { templateId: t.id, title: t.title || "" });
+    selectedTemplate = template;
+    $("selTemplate").value = `${template.title} (${template.durationSec}s ${mode})`;
+    document.querySelectorAll(".tplCard").forEach((el) => {
+      el.classList.remove("isSelected");
+    });
+    card.classList.add("isSelected");
+    track("template_selected", {
+      templateId: template.id,
+      title: template.title || "",
+    });
   };
 
-  return div;
+  return card;
 }
 
 async function loadTemplates() {
   const container = $("templates");
-  container.innerHTML = '<div class="templatesLoading"><span class="spinner"></span> Loading templates…</div>';
+  container.innerHTML =
+    '<div class="templatesLoading"><span class="spinner"></span>Loading templates…</div>';
+
   try {
     const qy = query(
       collection(db, "templates"),
@@ -270,15 +359,23 @@ async function loadTemplates() {
       orderBy("order", "asc"),
       limit(30)
     );
+
     const snap = await getDocs(qy);
     container.innerHTML = "";
-    snap.forEach(d => {
-      const t = { id: d.id, ...d.data() };
-      container.appendChild(renderTemplateCard(t));
+
+    if (snap.empty) {
+      container.innerHTML = "<div class=\"templatesLoading muted\">No templates available.</div>";
+      return;
+    }
+
+    snap.forEach((docSnap) => {
+      const template = {id: docSnap.id, ...docSnap.data()};
+      container.appendChild(renderTemplateCard(template));
     });
-  } catch (e) {
-    container.innerHTML = '<div class="templatesLoading muted">Failed to load templates. Try again later.</div>';
-    console.warn(e);
+  } catch (error) {
+    container.innerHTML =
+      '<div class="templatesLoading muted">Failed to load templates.</div>';
+    console.warn(error);
   }
 }
 
@@ -288,9 +385,39 @@ function watchUserDoc(uid) {
     $("credits").textContent = data.creditsBalance ?? 0;
     $("country").textContent = data.country ?? "—";
     $("lang").textContent = data.language ?? "—";
-    const needs = !data.country || !data.language;
-    $("onboarding").style.display = needs ? "block" : "none";
+    const needsOnboarding = !data.country || !data.language;
+    $("onboarding").style.display = needsOnboarding ? "block" : "none";
   });
+}
+
+function statusLabel(status) {
+  if (status === "queued") return "queued";
+  if (status === "processing") return "processing";
+  if (status === "done") return "done";
+  if (status === "failed") return "failed";
+  return "pending";
+}
+
+function updateLatestJobUI(job) {
+  const status = job?.status || "";
+  const outputUrl = safeUrl(job?.kling?.outputUrl || "");
+  const error = job?.kling?.error || "";
+
+  if (status === "done" && outputUrl) {
+    setStatus("Done. Download is ready.");
+    showSuccessPanel(outputUrl);
+    return;
+  }
+
+  hideSuccessPanel();
+
+  if (status === "queued") {
+    setStatus("Queued. Waiting for processing…");
+  } else if (status === "processing") {
+    setStatus("Processing…");
+  } else if (status === "failed") {
+    setStatus(`Failed: ${error || "try another photo/template"}`);
+  }
 }
 
 function watchLatestJobs(uid) {
@@ -300,140 +427,114 @@ function watchLatestJobs(uid) {
     orderBy("createdAt", "desc"),
     limit(5)
   );
+
   return onSnapshot(qy, (snap) => {
+    const jobsEl = $("jobs");
+
     if (snap.empty) {
-      $("jobs").textContent = "No jobs yet.";
+      jobsEl.textContent = "No jobs yet.";
+      hideSuccessPanel();
       return;
     }
-    const jobsEl = $("jobs");
+
     jobsEl.innerHTML = "";
-    snap.forEach(d => {
-      const j = d.data() || {};
-      const status = typeof j.status === "string" ? j.status : "";
 
-      const outputUrl = j.kling?.outputUrl || null;
+    let firstJob = null;
+    snap.forEach((docSnap) => {
+      const job = docSnap.data() || {};
+      if (!firstJob) firstJob = job;
+
       const row = document.createElement("div");
-      row.textContent = `${d.id.slice(0,6)}… • ${status} • ${outputUrl ? "✅" : ""}`;
+      const outputUrl = safeUrl(job?.kling?.outputUrl || "");
+      row.textContent = `${docSnap.id.slice(0, 6)}… • ${statusLabel(job.status)} ${outputUrl ? "• ✅" : ""}`;
       jobsEl.appendChild(row);
-
-      if (j.status === "done" && outputUrl) {
-        $("status").textContent = "Done ✅";
-        showResult(outputUrl, d.id);
-      }
-      if (j.status === "failed") {
-        $("status").textContent = `Error: ${j.kling?.error || j.errorMessage || "unknown"}`;
-      }
     });
+
+    if (firstJob) {
+      updateLatestJobUI(firstJob);
+    }
   });
 }
 
 $("btnGenerate").onclick = async () => {
   clearFormError();
-  if (!currentUser) { openAuth("Sign in to upload a photo and generate."); return; }
-  if (!selectedTemplate) { showFormError("Pick a template first."); return; }
+
+  if (!currentUser) {
+    openAuth("Sign in to upload a photo and generate.");
+    return;
+  }
+
+  if (!selectedTemplate) {
+    showFormError("Pick a template first.");
+    return;
+  }
+
   const file = $("filePhoto").files?.[0];
-  if (!file) { showFormError("Upload a photo."); return; }
+  if (!file) {
+    showFormError("Upload a photo.");
+    return;
+  }
 
   const btn = $("btnGenerate");
   btn.disabled = true;
-  $("status").textContent = "Uploading photo…";
-  $("result").style.display = "none";
-  $("downloadResult").href = "#";
-  $("downloadResult").style.display = "none";
-  $("copyResultLink").style.display = "none";
-  $("resultHint").style.display = "none";
+  hideSuccessPanel();
+  setStatus("Creating job…");
 
   try {
-    console.log("STEP 1 createJob start");
-    const resp = await createJob({ templateId: selectedTemplate.id });
-    console.log("STEP 1 createJob ok", resp.data);
-    const jobId = resp.data.jobId;
-    const path = resp.data.uploadPath;
+    const response = await createJob({templateId: selectedTemplate.id});
+    const jobId = response.data?.jobId;
+    const uploadPath = response.data?.uploadPath;
 
-    const r = ref(st, path);
-    console.log("STEP 2 uploadBytes start", path);
-    await uploadBytes(r, file, { contentType: file.type || "image/jpeg" });
-    console.log("STEP 2 uploadBytes ok");
+    if (!jobId || !uploadPath) {
+      throw new Error("createJob returned empty payload");
+    }
 
-    console.log("STEP 3 getDownloadURL start");
-    const photoUrl = await getDownloadURL(r);
-    console.log("STEP 3 getDownloadURL ok", photoUrl);
+    setStatus("Uploading photo…");
+    const photoRef = ref(storage, uploadPath);
+    await uploadBytes(photoRef, file, {
+      contentType: file.type || "image/jpeg",
+    });
 
-    console.log("STEP 4 updateDoc start");
+    const inputImageUrl = await getDownloadURL(photoRef);
+
     await updateDoc(doc(db, "jobs", jobId), {
-      inputImageUrl: photoUrl,
-      inputImagePath: path,
+      inputImageUrl,
+      inputImagePath: uploadPath,
       updatedAt: serverTimestamp(),
     });
-    console.log("STEP 4 updateDoc ok");
-    $("status").textContent = "Queued. Generating…";
-  } catch (e) {
-    console.error("GENERATE FAILED", e);
-    throw e;
+
+    setStatus("Queued. Generating…");
+  } catch (error) {
+    setStatus("");
+    showFormError(callableErrorMessage(error));
   } finally {
     btn.disabled = false;
   }
 };
 
-$("downloadResult").onclick = async (e) => {
-  e.preventDefault();
-  const jobId = currentResultJobId;
-  if (!jobId) return;
-  const btn = $("downloadResult");
-  const origText = btn.textContent;
-  btn.textContent = "…";
-  btn.disabled = true;
-  try {
-    const { data } = await getDownloadTicket({ jobId });
-    if (data?.ticketId) {
-      window.location.href = "/download?ticket=" + encodeURIComponent(data.ticketId);
-      return;
-    }
-  } catch (err) {
-    $("status").textContent = err?.message || "Download failed";
-  } finally {
-    btn.textContent = origText;
-    btn.disabled = false;
-  }
-};
-
-$("copyResultLink").onclick = async () => {
-  if (!currentResultUrl) return;
-  try {
-    await navigator.clipboard.writeText(currentResultUrl);
-    $("copyResultLink").textContent = "Copied!";
-    setTimeout(() => { $("copyResultLink").textContent = "Copy link"; }, 2000);
-  } catch (e) {
-    console.warn("Copy failed", e);
-  }
-};
-
-// Require auth before interacting with file upload
 const fileInput = $("filePhoto");
 if (fileInput) {
-  fileInput.addEventListener("click", (e) => {
-    if (!currentUser) {
-      e.preventDefault();
-      openAuth("Sign in to upload a photo.");
-    }
+  fileInput.addEventListener("click", (event) => {
+    if (currentUser) return;
+    event.preventDefault();
+    openAuth("Sign in to upload a photo.");
   });
 }
 
-onAuthStateChanged(auth, async (u) => {
+onAuthStateChanged(auth, async (user) => {
   if (typeof unsubscribeUserDoc === "function") {
     unsubscribeUserDoc();
     unsubscribeUserDoc = null;
   }
-  if (typeof unsubscribeLatestJobs === "function") {
-    unsubscribeLatestJobs();
-    unsubscribeLatestJobs = null;
+  if (typeof unsubscribeJobs === "function") {
+    unsubscribeJobs();
+    unsubscribeJobs = null;
   }
 
-  currentUser = u;
-
+  currentUser = user;
   $("app").style.display = "block";
 
-  if (!u) {
+  if (!user) {
     $("userLine").textContent = "Guest";
     $("credits").textContent = "0";
     $("country").textContent = "—";
@@ -443,7 +544,10 @@ onAuthStateChanged(auth, async (u) => {
     $("btnWallet").style.display = "none";
     $("btnLogout").style.display = "none";
     closeAuth();
-    try { await loadTemplates(); } catch (e) { console.warn(e); }
+    hideSuccessPanel();
+    setStatus("");
+
+    await loadTemplates();
     $("jobs").textContent = "Sign in to see your jobs.";
     return;
   }
@@ -453,21 +557,23 @@ onAuthStateChanged(auth, async (u) => {
   $("jobsCard").style.display = "block";
   $("btnWallet").style.display = "inline-block";
   $("btnLogout").style.display = "inline-block";
-  $("userLine").textContent = u.email || "Signed in";
+  $("userLine").textContent = user.email || "Signed in";
 
   if (analytics) {
-    try { setUserId(analytics, u.uid); } catch {}
-    try { setUserProperties(analytics, { user_email: u.email || "" }); } catch {}
+    try {
+      setUserId(analytics, user.uid);
+      setUserProperties(analytics, {user_email: user.email || ""});
+    } catch {
+      // no-op
+    }
   }
 
-  await setDoc(doc(db, "users", u.uid), {
-    email: u.email,
-    createdAt: serverTimestamp(),
+  await setDoc(doc(db, "users", user.uid), {
+    email: user.email,
     updatedAt: serverTimestamp(),
-    creditsBalance: 0
-  }, { merge: true });
+  }, {merge: true});
 
-  try { await loadTemplates(); } catch (e) { console.warn(e); }
-  unsubscribeUserDoc = watchUserDoc(u.uid);
-  unsubscribeLatestJobs = watchLatestJobs(u.uid);
+  await loadTemplates();
+  unsubscribeUserDoc = watchUserDoc(user.uid);
+  unsubscribeJobs = watchLatestJobs(user.uid);
 });

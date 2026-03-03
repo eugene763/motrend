@@ -1,10 +1,2 @@
 node_modules/
 *.local
-
-# cursor local (ignore everything except rules)
-.cursor/*
-!.cursor/
-!.cursor/rules.md
-
-# functions build output
-functions/lib/

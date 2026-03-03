@@ -55,13 +55,9 @@ yarn-error.log*
 # build outputs
 save.sh
 release-prod.sh
-backups/
 
 # cursor local
-.cursor/*
-!.cursor/
-!.cursor/rules.md
+.cursor/
 
-
-# functions build
+# build outputs
 functions/lib/

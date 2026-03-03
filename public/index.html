@@ -67,6 +67,12 @@ a{color:#fff}
   .templatesGrid{grid-template-columns:repeat(2,minmax(0,1fr));} /* темплейты 2 в ряд */
 }
 
+.formError{margin-top:8px;color:#f87171;}
+.btn:disabled{opacity:.6;cursor:not-allowed;}
+.spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px;}
+@keyframes spin{to{transform:rotate(360deg)}}
+.templatesLoading{min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--muted);}
+
   </style>
 </head>
 
@@ -93,7 +99,6 @@ a{color:#fff}
     <button id="btnEmailSignIn" class="btn">Sign in</button>
     <button id="btnEmailSignUp" class="btn2">Create account</button>
 
-    <!-- Google оставляем, но будем скрывать в in-app браузерах -->
     <button id="btnLogin" class="btn2" style="margin-left:auto">Continue with Google</button>
   </div>
 
@@ -121,7 +126,7 @@ a{color:#fff}
             <div class="muted">Country</div>
             <select id="inpCountry">
                 <option value="US">United States</option>
-                <option value="IN">India</option>             
+                <option value="IN">India</option>
                 <option value="OTHER">Other</option>
             </select>
           </div>
@@ -160,6 +165,7 @@ a{color:#fff}
           <button id="btnGenerate" class="btn">Generate</button>
           <div id="status" class="muted"></div>
         </div>
+        <div id="formError" class="formError muted" style="display:none" role="alert"></div>
         <div id="result" style="margin-top:12px;display:none">
           <a id="downloadLink" class="btn" style="display:inline-block;text-decoration:none" target="_blank">Download video</a>
         </div>

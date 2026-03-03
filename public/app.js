@@ -1,16 +1,43 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-import { getAnalytics, logEvent, setUserId, setUserProperties } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import {
-  getAuth, GoogleAuthProvider,
-  signInWithPopup, onAuthStateChanged, signOut,
-  signInWithEmailAndPassword, createUserWithEmailAndPassword
+  getAnalytics,
+  logEvent,
+  setUserId,
+  setUserProperties,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
+import {
+  GoogleAuthProvider,
+  createUserWithEmailAndPassword,
+  getAuth,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import {
-  getFirestore, doc, setDoc, updateDoc, serverTimestamp,
-  collection, query, where, getDocs, orderBy, limit, onSnapshot
+  collection,
+  doc,
+  getDocs,
+  getFirestore,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
-import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
+import {
+  getDownloadURL,
+  getStorage,
+  ref,
+  uploadBytes,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
+import {
+  getFunctions,
+  httpsCallable,
+} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBro7c7o8kiRdAuZZpu73KdKyApX7JuflE",
@@ -19,65 +46,157 @@ const firebaseConfig = {
   storageBucket: "gen-lang-client-0651837818.firebasestorage.app",
   messagingSenderId: "399776789069",
   appId: "1:399776789069:web:1567626bd149e1d5116204",
-  measurementId: "G-KJC19LBS34"
+  measurementId: "G-KJC19LBS34",
 };
 
 const app = initializeApp(firebaseConfig);
-const fns = getFunctions(app, "us-central1");
-const createJob = httpsCallable(fns, "createJob");
+const auth = getAuth(app);
+const db = getFirestore(app);
+const storage = getStorage(app);
+const functions = getFunctions(app, "us-central1");
+const createJob = httpsCallable(functions, "createJob");
 
-// analytics (может не стартовать в некоторых окружениях — это ок)
 let analytics = null;
-try { analytics = getAnalytics(app); } catch {}
+try {
+  analytics = getAnalytics(app);
+} catch {
+  analytics = null;
+}
 
 function track(name, params = {}) {
   if (!analytics) return;
-  try { logEvent(analytics, name, params); } catch {}
+  try {
+    logEvent(analytics, name, params);
+  } catch {
+    // no-op
+  }
 }
-
-const auth = getAuth(app);
-const db = getFirestore(app);
-const st = getStorage(app);
 
 const $ = (id) => document.getElementById(id);
 
-function showAuthError(msg) {
+function showAuthError(message) {
   const el = $("authError");
   if (!el) return;
+  el.textContent = message;
   el.style.display = "block";
-  el.textContent = msg;
 }
+
 function clearAuthError() {
   const el = $("authError");
   if (!el) return;
-  el.style.display = "none";
   el.textContent = "";
+  el.style.display = "none";
 }
-function openAuth(msg = "") {
+
+function showFormError(message) {
+  const el = $("formError");
+  if (!el) return;
+  el.textContent = message;
+  el.style.display = "block";
+}
+
+function clearFormError() {
+  const el = $("formError");
+  if (!el) return;
+  el.textContent = "";
+  el.style.display = "none";
+}
+
+function setStatus(message) {
+  const el = $("status");
+  if (!el) return;
+  el.textContent = message;
+}
+
+function openAuth(message = "") {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "block";
-  if (msg) showAuthError(msg); else clearAuthError();
-  authBox?.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (message) {
+    showAuthError(message);
+  } else {
+    clearAuthError();
+  }
+  authBox?.scrollIntoView({behavior: "smooth", block: "start"});
   $("authEmail")?.focus();
 }
+
 function closeAuth() {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "none";
   clearAuthError();
 }
 
+function showResultLink(url) {
+  const safe = safeUrl(url);
+  const result = $("result");
+  const downloadLink = $("downloadLink");
+  if (!result || !downloadLink) return;
+
+  if (!safe) {
+    result.style.display = "none";
+    downloadLink.href = "#";
+    return;
+  }
+
+  downloadLink.href = safe;
+  result.style.display = "block";
+}
+
+function hideResultLink() {
+  const result = $("result");
+  const downloadLink = $("downloadLink");
+  if (!result || !downloadLink) return;
+  result.style.display = "none";
+  downloadLink.href = "#";
+}
+
+function safeUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  try {
+    const url = new URL(trimmed, window.location.origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return "";
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function callableErrorMessage(error) {
+  const code = typeof error?.code === "string" ? error.code : "";
+  const message = typeof error?.message === "string" ? error.message : "";
+
+  if (code.includes("resource-exhausted")) {
+    return "Not enough credits for this generation.";
+  }
+  if (code.includes("unauthenticated")) {
+    return "Please sign in first.";
+  }
+  if (code.includes("failed-precondition")) {
+    return "Template is unavailable. Pick another one.";
+  }
+  return message || "Something went wrong. Try again.";
+}
+
 let currentUser = null;
 let selectedTemplate = null;
+let unsubscribeUserDoc = null;
+let unsubscribeJobs = null;
 
 $("btnEmailSignIn").onclick = async () => {
   clearAuthError();
   const email = $("authEmail").value.trim();
   const pass = $("authPass").value;
+
   try {
-    track("login_click", { method: "email" });
+    track("login_click", {method: "email"});
     await signInWithEmailAndPassword(auth, email, pass);
-  } catch (e) {
-    showAuthError(e?.message || "Sign-in failed");
+  } catch (error) {
+    showAuthError(callableErrorMessage(error));
   }
 };
 
@@ -85,36 +204,38 @@ $("btnEmailSignUp").onclick = async () => {
   clearAuthError();
   const email = $("authEmail").value.trim();
   const pass = $("authPass").value;
+
   try {
-    track("signup_click", { method: "email" });
+    track("signup_click", {method: "email"});
     await createUserWithEmailAndPassword(auth, email, pass);
-  } catch (e) {
-    showAuthError(e?.message || "Sign-up failed");
+  } catch (error) {
+    showAuthError(callableErrorMessage(error));
   }
 };
 
 $("btnLogin").onclick = async () => {
   clearAuthError();
   try {
-    track("login_click", { method: "google" });
+    track("login_click", {method: "google"});
     const provider = new GoogleAuthProvider();
     await signInWithPopup(auth, provider);
-  } catch (e) {
-    showAuthError(e?.message || "Google sign-in failed");
+  } catch (error) {
+    showAuthError(callableErrorMessage(error));
   }
 };
 
-$("btnLogout").onclick = () => signOut(auth);
+$("btnLogout").onclick = async () => {
+  await signOut(auth);
+};
 
 $("btnSaveProfile").onclick = async () => {
-  const u = currentUser;
-  if (!u) return;
-  await setDoc(doc(db, "users", u.uid), {
-    email: u.email,
-    language: $("inpLang").value,
+  if (!currentUser) return;
+  await setDoc(doc(db, "users", currentUser.uid), {
+    email: currentUser.email,
     country: $("inpCountry").value,
+    language: $("inpLang").value,
     updatedAt: serverTimestamp(),
-  }, { merge: true });
+  }, {merge: true});
 };
 
 $("btnWallet").onclick = () => {
@@ -122,71 +243,140 @@ $("btnWallet").onclick = () => {
 };
 
 function stopAllTemplateVideos(exceptEl = null) {
-  document.querySelectorAll(".tplVideo").forEach(v => {
-    if (v === exceptEl) return;
-    try { v.pause(); v.currentTime = 0; v.muted = true; } catch {}
+  document.querySelectorAll(".tplVideo").forEach((video) => {
+    if (video === exceptEl) return;
+    try {
+      video.pause();
+      video.currentTime = 0;
+      video.muted = true;
+    } catch {
+      // no-op
+    }
   });
 }
 
-function renderTemplateCard(t) {
-  const div = document.createElement("div");
-  div.className = "card tplCard";
-  div.style.margin = "0";
+function renderTemplateCard(template) {
+  const card = document.createElement("div");
+  card.className = "card tplCard";
+  card.style.margin = "0";
 
-  const thumbUrl = t.preview?.thumbnailUrl || "";
-  const videoUrl = t.preview?.previewVideoUrl || "";
-  const mode = t.modeDefault || "std";
+  const thumbUrl = safeUrl(template.preview?.thumbnailUrl || "");
+  const videoUrl = safeUrl(template.preview?.previewVideoUrl || "");
+  const mode = template.modeDefault || "std";
+  const titleText = template.title || "Template";
 
-  div.innerHTML = `
-    <div class="tplMedia">
-      ${videoUrl
-        ? `<video class="tplVideo" src="${videoUrl}" poster="${thumbUrl}" playsinline muted loop autoplay preload="metadata"></video>`
-        : `<img src="${thumbUrl}" alt="">`
-      }
-    </div>
-    <div style="font-weight:700;margin-top:8px">${t.title || "Template"}</div>
-    <div class="muted">${t.durationSec || "—"}s • ${mode}</div>
-    <button class="btn tplUse" style="margin-top:10px;width:100%">Use</button>
-  `;
+  const media = document.createElement("div");
+  media.className = "tplMedia";
 
-  const media = div.querySelector(".tplMedia");
-  const vid = div.querySelector(".tplVideo");
-  const useBtn = div.querySelector(".tplUse");
+  let videoEl = null;
+  if (videoUrl) {
+    videoEl = document.createElement("video");
+    videoEl.className = "tplVideo";
+    videoEl.src = videoUrl;
+    if (thumbUrl) videoEl.poster = thumbUrl;
+    videoEl.playsInline = true;
+    videoEl.muted = true;
+    videoEl.loop = true;
+    videoEl.autoplay = true;
+    videoEl.preload = "metadata";
+    media.appendChild(videoEl);
+  } else if (thumbUrl) {
+    const img = document.createElement("img");
+    img.src = thumbUrl;
+    img.alt = "";
+    media.appendChild(img);
+  }
 
-  if (vid) setTimeout(() => { vid.play().catch(() => {}); }, 50);
+  const title = document.createElement("div");
+  title.style.fontWeight = "700";
+  title.style.marginTop = "8px";
+  title.textContent = titleText;
+
+  const meta = document.createElement("div");
+  meta.className = "muted";
+  meta.textContent = `${template.durationSec ?? "—"}s • ${mode}`;
+
+  const useBtn = document.createElement("button");
+  useBtn.className = "btn tplUse";
+  useBtn.style.marginTop = "10px";
+  useBtn.style.width = "100%";
+  useBtn.textContent = "Use";
+
+  card.appendChild(media);
+  card.appendChild(title);
+  card.appendChild(meta);
+  card.appendChild(useBtn);
+
+  if (videoEl) {
+    setTimeout(() => {
+      videoEl.play().catch(() => {});
+    }, 50);
+  }
 
   media.onclick = async () => {
-    document.querySelectorAll(".tplCard").forEach(c => c.classList.remove("isHot"));
-    div.classList.add("isHot");
-    if (!vid) return;
-    stopAllTemplateVideos(vid);
-    try { vid.muted = false; vid.volume = 1; await vid.play(); } catch {}
+    document.querySelectorAll(".tplCard").forEach((el) => {
+      el.classList.remove("isHot");
+    });
+    card.classList.add("isHot");
+
+    if (!videoEl) return;
+    stopAllTemplateVideos(videoEl);
+
+    try {
+      videoEl.muted = false;
+      videoEl.volume = 1;
+      await videoEl.play();
+    } catch {
+      // no-op
+    }
   };
 
   useBtn.onclick = () => {
-    selectedTemplate = t;
-    $("selTemplate").value = `${t.title} (${t.durationSec}s ${mode})`;
-    document.querySelectorAll(".tplCard").forEach(c => c.classList.remove("isSelected"));
-    div.classList.add("isSelected");
-    track("template_selected", { templateId: t.id, title: t.title || "" });
+    selectedTemplate = template;
+    $("selTemplate").value = `${template.title} (${template.durationSec}s ${mode})`;
+    document.querySelectorAll(".tplCard").forEach((el) => {
+      el.classList.remove("isSelected");
+    });
+    card.classList.add("isSelected");
+    track("template_selected", {
+      templateId: template.id,
+      title: template.title || "",
+    });
   };
 
-  return div;
+  return card;
 }
 
 async function loadTemplates() {
-  const qy = query(
-    collection(db, "templates"),
-    where("isActive", "==", true),
-    orderBy("order", "asc"),
-    limit(30)
-  );
-  const snap = await getDocs(qy);
-  $("templates").innerHTML = "";
-  snap.forEach(d => {
-    const t = { id: d.id, ...d.data() };
-    $("templates").appendChild(renderTemplateCard(t));
-  });
+  const container = $("templates");
+  container.innerHTML =
+    '<div class="templatesLoading"><span class="spinner"></span>Loading templates…</div>';
+
+  try {
+    const qy = query(
+      collection(db, "templates"),
+      where("isActive", "==", true),
+      orderBy("order", "asc"),
+      limit(30)
+    );
+
+    const snap = await getDocs(qy);
+    container.innerHTML = "";
+
+    if (snap.empty) {
+      container.innerHTML = "<div class=\"templatesLoading muted\">No templates available.</div>";
+      return;
+    }
+
+    snap.forEach((docSnap) => {
+      const template = {id: docSnap.id, ...docSnap.data()};
+      container.appendChild(renderTemplateCard(template));
+    });
+  } catch (error) {
+    container.innerHTML =
+      '<div class="templatesLoading muted">Failed to load templates.</div>';
+    console.warn(error);
+  }
 }
 
 function watchUserDoc(uid) {
@@ -195,9 +385,39 @@ function watchUserDoc(uid) {
     $("credits").textContent = data.creditsBalance ?? 0;
     $("country").textContent = data.country ?? "—";
     $("lang").textContent = data.language ?? "—";
-    const needs = !data.country || !data.language;
-    $("onboarding").style.display = needs ? "block" : "none";
+    const needsOnboarding = !data.country || !data.language;
+    $("onboarding").style.display = needsOnboarding ? "block" : "none";
   });
+}
+
+function statusLabel(status) {
+  if (status === "queued") return "queued";
+  if (status === "processing") return "processing";
+  if (status === "done") return "done";
+  if (status === "failed") return "failed";
+  return "pending";
+}
+
+function updateLatestJobUI(job) {
+  const status = job?.status || "";
+  const outputUrl = safeUrl(job?.kling?.outputUrl || "");
+  const error = job?.kling?.error || "";
+
+  if (status === "done" && outputUrl) {
+    setStatus("Done. Download is ready.");
+    showResultLink(outputUrl);
+    return;
+  }
+
+  hideResultLink();
+
+  if (status === "queued") {
+    setStatus("Queued. Waiting for processing…");
+  } else if (status === "processing") {
+    setStatus("Processing…");
+  } else if (status === "failed") {
+    setStatus(`Failed: ${error || "try another photo/template"}`);
+  }
 }
 
 function watchLatestJobs(uid) {
@@ -207,64 +427,113 @@ function watchLatestJobs(uid) {
     orderBy("createdAt", "desc"),
     limit(5)
   );
+
   return onSnapshot(qy, (snap) => {
+    const jobsEl = $("jobs");
+
     if (snap.empty) {
-      $("jobs").textContent = "No jobs yet.";
+      jobsEl.textContent = "No jobs yet.";
       return;
     }
-    const rows = [];
-    snap.forEach(d => {
-      const j = d.data();
-      rows.push(`${d.id.slice(0,6)}… • ${j.status} • ${j.outputVideoUrl ? "✅" : ""}`);
-      if (j.outputVideoUrl && j.status === "done") {
-        $("status").textContent = "Done.";
-        $("result").style.display = "block";
-        $("downloadLink").href = j.outputVideoUrl;
-      }
-      if (j.status === "failed") {
-        $("status").textContent = `Failed: ${j.errorMessage || "try another photo/template"}`;
-      }
+
+    jobsEl.innerHTML = "";
+
+    let firstJob = null;
+    snap.forEach((docSnap) => {
+      const job = docSnap.data() || {};
+      if (!firstJob) firstJob = job;
+
+      const row = document.createElement("div");
+      const outputUrl = safeUrl(job?.kling?.outputUrl || "");
+      row.textContent = `${docSnap.id.slice(0, 6)}… • ${statusLabel(job.status)} ${outputUrl ? "• ✅" : ""}`;
+      jobsEl.appendChild(row);
     });
-    $("jobs").innerHTML = rows.map(r => `<div>${r}</div>`).join("");
+
+    if (firstJob) {
+      updateLatestJobUI(firstJob);
+    }
   });
 }
 
 $("btnGenerate").onclick = async () => {
-  if (!currentUser) { openAuth("Sign in to upload a photo and generate."); return; }
-  if (!selectedTemplate) return alert("Pick a template first.");
+  clearFormError();
+
+  if (!currentUser) {
+    openAuth("Sign in to upload a photo and generate.");
+    return;
+  }
+
+  if (!selectedTemplate) {
+    showFormError("Pick a template first.");
+    return;
+  }
+
   const file = $("filePhoto").files?.[0];
-  if (!file) return alert("Upload a photo.");
+  if (!file) {
+    showFormError("Upload a photo.");
+    return;
+  }
 
-  $("status").textContent = "Uploading photo…";
-  $("result").style.display = "none";
-  $("downloadLink").href = "#";
+  const btn = $("btnGenerate");
+  btn.disabled = true;
+  hideResultLink();
+  setStatus("Creating job…");
 
-  // 1) create job on server
-  const resp = await createJob({ templateId: selectedTemplate.id });
-  const jobId = resp.data.jobId;
-  const path = resp.data.uploadPath;
+  try {
+    const response = await createJob({templateId: selectedTemplate.id});
+    const jobId = response.data?.jobId;
+    const uploadPath = response.data?.uploadPath;
 
-  // 2) upload photo
-  const r = ref(st, path);
-  await uploadBytes(r, file, { contentType: file.type || "image/jpeg" });
-  const photoUrl = await getDownloadURL(r);
+    if (!jobId || !uploadPath) {
+      throw new Error("createJob returned empty payload");
+    }
 
-  // 3) write input to job doc (триггер увидит inputImageUrl)
-  await updateDoc(doc(db, "jobs", jobId), {
-    inputImageUrl: photoUrl,
-    inputImagePath: path,
-    updatedAt: serverTimestamp(),
-  });
+    setStatus("Uploading photo…");
+    const photoRef = ref(storage, uploadPath);
+    await uploadBytes(photoRef, file, {
+      contentType: file.type || "image/jpeg",
+    });
 
-  $("status").textContent = "Queued. Generating…";
+    const inputImageUrl = await getDownloadURL(photoRef);
+
+    await updateDoc(doc(db, "jobs", jobId), {
+      inputImageUrl,
+      inputImagePath: uploadPath,
+      updatedAt: serverTimestamp(),
+    });
+
+    setStatus("Queued. Generating…");
+  } catch (error) {
+    setStatus("");
+    showFormError(callableErrorMessage(error));
+  } finally {
+    btn.disabled = false;
+  }
 };
 
-onAuthStateChanged(auth, async (u) => {
-  currentUser = u;
+const fileInput = $("filePhoto");
+if (fileInput) {
+  fileInput.addEventListener("click", (event) => {
+    if (currentUser) return;
+    event.preventDefault();
+    openAuth("Sign in to upload a photo.");
+  });
+}
 
+onAuthStateChanged(auth, async (user) => {
+  if (typeof unsubscribeUserDoc === "function") {
+    unsubscribeUserDoc();
+    unsubscribeUserDoc = null;
+  }
+  if (typeof unsubscribeJobs === "function") {
+    unsubscribeJobs();
+    unsubscribeJobs = null;
+  }
+
+  currentUser = user;
   $("app").style.display = "block";
 
-  if (!u) {
+  if (!user) {
     $("userLine").textContent = "Guest";
     $("credits").textContent = "0";
     $("country").textContent = "—";
@@ -274,7 +543,10 @@ onAuthStateChanged(auth, async (u) => {
     $("btnWallet").style.display = "none";
     $("btnLogout").style.display = "none";
     closeAuth();
-    try { await loadTemplates(); } catch (e) { console.warn(e); }
+    hideResultLink();
+    setStatus("");
+
+    await loadTemplates();
     $("jobs").textContent = "Sign in to see your jobs.";
     return;
   }
@@ -284,21 +556,23 @@ onAuthStateChanged(auth, async (u) => {
   $("jobsCard").style.display = "block";
   $("btnWallet").style.display = "inline-block";
   $("btnLogout").style.display = "inline-block";
-  $("userLine").textContent = u.email || "Signed in";
+  $("userLine").textContent = user.email || "Signed in";
 
   if (analytics) {
-    try { setUserId(analytics, u.uid); } catch {}
-    try { setUserProperties(analytics, { user_email: u.email || "" }); } catch {}
+    try {
+      setUserId(analytics, user.uid);
+      setUserProperties(analytics, {user_email: user.email || ""});
+    } catch {
+      // no-op
+    }
   }
 
-  await setDoc(doc(db, "users", u.uid), {
-    email: u.email,
-    createdAt: serverTimestamp(),
+  await setDoc(doc(db, "users", user.uid), {
+    email: user.email,
     updatedAt: serverTimestamp(),
-    creditsBalance: 0
-  }, { merge: true });
+  }, {merge: true});
 
-  try { await loadTemplates(); } catch (e) { console.warn(e); }
-  watchUserDoc(u.uid);
-  watchLatestJobs(u.uid);
+  await loadTemplates();
+  unsubscribeUserDoc = watchUserDoc(user.uid);
+  unsubscribeJobs = watchLatestJobs(user.uid);
 });

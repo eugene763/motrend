@@ -376,7 +376,8 @@ export const pollKlingScheduled = onSchedule(
         const taskStatus = json?.data?.task_status ?? "";
         const taskStatusMsg =
           (json?.data?.task_status_msg as string | undefined) ?? bodyText;
-        const videos = json?.data?.videos as Array<{url?: string; watermark_url?: string}> | undefined;
+        type VideoItem = {url?: string; watermark_url?: string};
+        const videos = json?.data?.videos as VideoItem[] | undefined;
 
         if (taskStatus === "succeed") {
           const firstVideo = videos?.[0];
@@ -410,5 +411,89 @@ export const pollKlingScheduled = onSchedule(
     }
 
     logger.info("POLL", {checked, updated});
+  }
+);
+
+const INPUT_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+type StorageBucket = ReturnType<ReturnType<typeof admin.storage>["bucket"]>;
+
+/**
+ * Deletes a file from the default Storage bucket. Ignores "not found" errors.
+ * @param {StorageBucket} bucket - Default Storage bucket.
+ * @param {string} path - Object path in the bucket.
+ */
+async function deleteStorageFileIfExists(
+  bucket: StorageBucket,
+  path: string
+): Promise<void> {
+  try {
+    await bucket.file(path).delete();
+  } catch (err: unknown) {
+    const code = (err as {code?: number}).code;
+    const message = (err as {message?: string}).message ?? "";
+    if (code === 404 || /not found|object-not-found/i.test(message)) {
+      return;
+    }
+    throw err;
+  }
+}
+
+export const cleanupInputsHourly = onSchedule(
+  {
+    schedule: "every 60 minutes",
+    region: "us-central1",
+    timeoutSeconds: 300,
+    memory: "256MiB",
+  },
+  async () => {
+    const bucket = admin.storage().bucket();
+    const cutoff = admin.firestore.Timestamp.fromMillis(
+      Date.now() - INPUT_TTL_MS
+    );
+
+    const snap = await db
+      .collection("jobs")
+      .where("createdAt", "<", cutoff)
+      .get();
+
+    let jobsUpdated = 0;
+    const batch = db.batch();
+
+    for (const doc of snap.docs) {
+      const data = doc.data() as Partial<JobDoc>;
+      const updates: Partial<JobDoc> = {};
+      let didDelete = false;
+
+      if (data.inputImagePath) {
+        await deleteStorageFileIfExists(bucket, data.inputImagePath);
+        didDelete = true;
+        updates.inputImagePath = undefined;
+        updates.inputImageUrl = undefined;
+      }
+      if (data.referenceVideoPath) {
+        await deleteStorageFileIfExists(bucket, data.referenceVideoPath);
+        didDelete = true;
+        updates.referenceVideoPath = undefined;
+        updates.referenceVideoUrl = undefined;
+      }
+
+      if (didDelete) {
+        jobsUpdated++;
+        batch.update(doc.ref, {
+          ...updates,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    }
+
+    if (jobsUpdated > 0) {
+      await batch.commit();
+    }
+
+    logger.info("cleanupInputsHourly", {
+      jobsScanned: snap.size,
+      jobsUpdated,
+    });
   }
 );

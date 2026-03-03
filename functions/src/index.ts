@@ -1,38 +1,38 @@
-/* eslint-disable require-jsdoc */
-import {defineSecret} from "firebase-functions/params";
+import {onCall, onRequest, HttpsError} from "firebase-functions/v2/https";
 import {
   onDocumentCreated,
   onDocumentUpdated,
 } from "firebase-functions/v2/firestore";
-import {onCall, HttpsError} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
+import {defineSecret} from "firebase-functions/params";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
 import jwt from "jsonwebtoken";
 
-admin.initializeApp();
-const db = admin.firestore();
-
 const klingAccessKey = defineSecret("KLING_ACCESS_KEY");
 const klingSecretKey = defineSecret("KLING_SECRET_KEY");
 
-const INITIAL_CREDITS = 20;
-const INPUT_TTL_MS = 6 * 60 * 60 * 1000;
-const POLL_BATCH_LIMIT = 25;
-const KLING_TIMEOUT_MS = 20_000;
-const KLING_BASE_URL =
-  process.env.KLING_BASE_URL || "https://api-singapore.klingai.com";
+admin.initializeApp();
+const db = admin.firestore();
 
-const corsAllowedOrigins = [
-  /^https:\/\/gen-lang-client-0651837818\.(web\.app|firebaseapp\.com)$/,
-  /^https?:\/\/localhost(:\d+)?$/,
-];
+const KLING_BASE_URL = "https://api-singapore.klingai.com";
 
-type JobStatus =
-  | "queued"
-  | "processing"
-  | "done"
-  | "failed";
+/**
+ * Builds a JWT for Kling API auth (HS256, 30 min expiry).
+ * @param {string} accessKey - Kling access key (iss).
+ * @param {string} secretKey - Kling secret for signing.
+ * @return {string} Signed JWT.
+ */
+function makeKlingJwt(accessKey: string, secretKey: string) {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: accessKey,
+    iat: now - 5,
+    nbf: now - 5,
+    exp: now + 30 * 60, // 30 минут
+  };
+  return jwt.sign(payload, secretKey, {algorithm: "HS256"});
+}
 
 interface UserDoc {
   creditsBalance?: number;
@@ -42,296 +42,97 @@ interface TemplateDoc {
   isActive?: boolean;
   durationSec?: number;
   costCredits?: number;
-  referenceVideoUrl?: string;
   kling?: {
     referenceVideoUrl?: string;
   };
 }
 
+type JobStatus =
+  | "queued"
+  | "uploading"
+  | "processing"
+  | "done"
+  | "failed";
+
 interface KlingState {
   taskId?: string;
-  requestId?: string;
   state?: string;
+  progress?: number;
   outputUrl?: string;
   watermarkUrl?: string;
   error?: string;
 }
 
 interface JobDoc {
-  uid?: string;
-  templateId?: string;
-  status?: JobStatus;
+  uid: string;
+  status: JobStatus;
   inputImagePath?: string;
   inputImageUrl?: string;
+  referenceVideoPath?: string;
+  referenceVideoUrl?: string;
+  templateId?: string;
   kling?: KlingState;
+  createdAt: FirebaseFirestore.FieldValue;
+  updatedAt: FirebaseFirestore.FieldValue;
 }
 
-interface KlingSubmitInput {
+const TICKET_TTL_MS = 3 * 60 * 1000; // 3 minutes
+
+interface DownloadTicketDoc {
   jobId: string;
-  inputImageUrl: string;
-  referenceVideoUrl: string;
+  uid: string;
+  expiresAt: FirebaseFirestore.Timestamp;
 }
 
-interface KlingPollResult {
-  state: "succeed" | "failed" | "pending";
-  outputUrl?: string;
-  watermarkUrl?: string;
-  error?: string;
-  requestId?: string;
-}
-
-interface KlingCreateResponse {
-  code?: number;
-  message?: string;
-  request_id?: string;
-  data?: {
-    task_id?: string;
-  };
-}
-
-interface KlingStatusResponse {
-  code?: number;
-  message?: string;
-  request_id?: string;
-  data?: {
-    task_status?: string;
-    task_status_msg?: string;
-    task_result?: {
-      videos?: Array<{
-        url?: string;
-        watermark_url?: string;
-      }>;
-    };
-  };
-}
-
-function pickString(...values: unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value === "string") {
-      const normalized = value.trim();
-      if (normalized) return normalized;
-    }
-  }
-  return null;
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof HttpsError) return error.message;
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  return "Unknown error";
-}
-
-function trailingSlashless(url: string): string {
-  return url.replace(/\/+$/, "");
-}
-
-function makeKlingJwt(accessKey: string, secretKey: string): string {
-  const now = Math.floor(Date.now() / 1000);
-  return jwt.sign({
-    iss: accessKey,
-    iat: now - 5,
-    nbf: now - 5,
-    exp: now + 30 * 60,
-  }, secretKey, {algorithm: "HS256"});
-}
-
-function parseTimeMs(value: unknown): number | null {
-  if (typeof value !== "string") return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
-}
-
-async function submitKlingTask(
-  input: KlingSubmitInput
-): Promise<{taskId: string; requestId?: string}> {
-  const accessKey = klingAccessKey.value();
-  const secretKey = klingSecretKey.value();
-  if (!accessKey || !secretKey) {
-    throw new Error("Kling secrets are missing");
-  }
-
-  const token = makeKlingJwt(accessKey, secretKey);
-  const endpointUrl =
-    `${trailingSlashless(KLING_BASE_URL)}/v1/videos/motion-control`;
-  const payload = {
-    video_url: input.referenceVideoUrl,
-    image_url: input.inputImageUrl,
-    mode: "std",
-    keep_original_sound: "yes",
-    character_orientation: "video",
-    external_task_id: input.jobId,
-  };
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, KLING_TIMEOUT_MS);
-
-  try {
-    const response = await fetch(endpointUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${token}`,
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-
-    const bodyText = await response.text();
-    let json: KlingCreateResponse = {};
-    if (bodyText) {
-      try {
-        json = JSON.parse(bodyText) as KlingCreateResponse;
-      } catch {
-        json = {};
-      }
-    }
-
-    const requestId = pickString(
-      response.headers.get("x-request-id"),
-      response.headers.get("request-id"),
-      json.request_id
-    ) || undefined;
-
-    if (!response.ok) {
-      throw new Error(`Kling ${response.status}: ${bodyText}`);
-    }
-    if (json.code && json.code !== 0) {
-      throw new Error(`Kling ${json.code}: ${bodyText}`);
-    }
-
-    const taskId = pickString(json.data?.task_id);
-    if (!taskId) {
-      throw new Error(`No task_id in response: ${bodyText}`);
-    }
-
-    return {taskId, requestId};
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function pollKlingTask(taskId: string): Promise<KlingPollResult> {
-  const accessKey = klingAccessKey.value();
-  const secretKey = klingSecretKey.value();
-  if (!accessKey || !secretKey) {
-    throw new Error("Kling secrets are missing");
-  }
-
-  const token = makeKlingJwt(accessKey, secretKey);
-  const endpointUrl =
-    `${trailingSlashless(KLING_BASE_URL)}/v1/videos/motion-control/` +
-    `${encodeURIComponent(taskId)}`;
-  const response = await fetch(endpointUrl, {
-    method: "GET",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-    },
-  });
-  const bodyText = await response.text();
-
-  let json: KlingStatusResponse = {};
-  if (bodyText) {
-    try {
-      json = JSON.parse(bodyText) as KlingStatusResponse;
-    } catch {
-      json = {};
-    }
-  }
-
-  const requestId = pickString(
-    response.headers.get("x-request-id"),
-    response.headers.get("request-id"),
-    json.request_id
-  ) || undefined;
-
-  if (!response.ok) {
-    return {
-      state: "failed",
-      error: `Kling status ${response.status}: ${bodyText}`,
-      requestId,
-    };
-  }
-
-  const taskStatus = pickString(json.data?.task_status)?.toLowerCase() || "";
-  if (taskStatus === "succeed") {
-    const video = json.data?.task_result?.videos?.[0];
-    const outputUrl = pickString(video?.url);
-    if (!outputUrl) {
-      return {
-        state: "failed",
-        error: "Kling task succeeded without output url",
-        requestId,
-      };
-    }
-    return {
-      state: "succeed",
-      outputUrl,
-      watermarkUrl: pickString(video?.watermark_url) || undefined,
-      requestId,
-    };
-  }
-
-  if (taskStatus === "failed") {
-    return {
-      state: "failed",
-      error: pickString(json.data?.task_status_msg, json.message) ||
-        "Kling task failed",
-      requestId,
-    };
-  }
-
-  return {
-    state: "pending",
-    requestId,
-    error: undefined,
-    outputUrl: undefined,
-    watermarkUrl: undefined,
-  };
-}
+const corsAllowedOrigins = [
+  /gen-lang-client-0651837818\.(web\.app|firebaseapp\.com)$/,
+  /^https?:\/\/localhost(:\d+)?$/,
+];
 
 export const createJob = onCall(
-  {cors: corsAllowedOrigins},
+  {cors: corsAllowedOrigins, secrets: [klingAccessKey, klingSecretKey]},
   async (req) => {
     if (!req.auth) {
       throw new HttpsError("unauthenticated", "Sign in first");
     }
 
     const uid = req.auth.uid;
+
     const templateId = req.data?.templateId;
     if (!templateId || typeof templateId !== "string") {
       throw new HttpsError("invalid-argument", "templateId is required");
     }
+    // Firestore doc ID: letters, digits, underscore, hyphen only
     if (!/^[\w-]+$/.test(templateId)) {
       throw new HttpsError("invalid-argument", "Invalid templateId");
     }
 
-    const templateSnap = await db.doc(`templates/${templateId}`).get();
-    const template = (templateSnap.data() as TemplateDoc | undefined) || {};
-    if (!templateSnap.exists || template.isActive !== true) {
+    const tplSnap = await db.doc(`templates/${templateId}`).get();
+    const tplData = (tplSnap.data() as TemplateDoc | undefined) ?? {};
+    if (!tplSnap.exists || tplData.isActive !== true) {
       throw new HttpsError("failed-precondition", "Template is not active");
     }
 
-    const durationSec = (
-      typeof template.durationSec === "number" && template.durationSec > 0
-    ) ? template.durationSec : 10;
-    const costCredits = (
-      typeof template.costCredits === "number" && template.costCredits > 0
-    ) ? Math.floor(template.costCredits) : Math.max(1, Math.ceil(durationSec));
+    const hasDuration = typeof tplData.durationSec === "number" &&
+      tplData.durationSec > 0;
+    const durationSec: number =
+      hasDuration ? tplData.durationSec as number : 10;
 
-    const result = await db.runTransaction(async (tx) => {
+    const hasCostOverride = typeof tplData.costCredits === "number" &&
+      tplData.costCredits > 0;
+    const costCredits = hasCostOverride ?
+      Math.floor(tplData.costCredits as number) :
+      Math.max(1, Math.ceil(durationSec));
+
+    const {jobId, uploadPath} = await db.runTransaction(async (tx) => {
       const userRef = db.collection("users").doc(uid);
       const userSnap = await tx.get(userRef);
-      const userData = (userSnap.data() as UserDoc | undefined) || {};
-      const hasCreditsBalance = (
-        typeof userData.creditsBalance === "number" &&
-        Number.isFinite(userData.creditsBalance)
-      );
-      const currentCredits = hasCreditsBalance ?
-        userData.creditsBalance as number :
-        INITIAL_CREDITS;
+      const userData = (userSnap.data() as UserDoc | undefined) ?? {};
+      const rawCredits = userData.creditsBalance;
+      const currentCredits =
+        typeof rawCredits === "number" && Number.isFinite(rawCredits) ?
+          rawCredits :
+          0;
 
       if (currentCredits < costCredits) {
         throw new HttpsError(
@@ -340,217 +141,497 @@ export const createJob = onCall(
         );
       }
 
-      tx.set(userRef, {
-        creditsBalance: currentCredits - costCredits,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, {merge: true});
+      tx.set(
+        userRef,
+        {
+          creditsBalance: currentCredits - costCredits,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        {merge: true}
+      );
 
       const jobRef = db.collection("jobs").doc();
-      const uploadPath = `user_uploads/${uid}/${jobRef.id}/photo.jpg`;
-
-      tx.set(jobRef, {
+      const now = admin.firestore.FieldValue.serverTimestamp();
+      const uploadPathForJob =
+        `user_uploads/${uid}/${jobRef.id}/photo.jpg`;
+      const initialJob: Partial<JobDoc> = {
         uid,
+        status: "queued",
+        inputImagePath: uploadPathForJob,
         templateId,
-        status: "queued" as JobStatus,
-        inputImagePath: uploadPath,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      return {jobId: jobRef.id, uploadPath};
+        kling: {},
+        createdAt: now,
+        updatedAt: now,
+      };
+      tx.set(jobRef, initialJob);
+      return {jobId: jobRef.id, uploadPath: uploadPathForJob};
     });
 
-    return result;
+    return {jobId, uploadPath};
+  });
+
+export const getDownloadTicket = onCall(
+  {cors: corsAllowedOrigins},
+  async (req) => {
+    if (!req.auth) {
+      throw new HttpsError("unauthenticated", "Sign in first");
+    }
+    const uid = req.auth.uid;
+    const jobId = req.data?.jobId;
+    if (!jobId || typeof jobId !== "string") {
+      throw new HttpsError("invalid-argument", "jobId is required");
+    }
+    if (!/^[\w-]+$/.test(jobId)) {
+      throw new HttpsError("invalid-argument", "Invalid jobId");
+    }
+
+    const jobSnap = await db.doc(`jobs/${jobId}`).get();
+    const jobData = jobSnap.data() as JobDoc | undefined;
+    if (!jobSnap.exists || !jobData) {
+      throw new HttpsError("not-found", "Job not found");
+    }
+    if (jobData.uid !== uid) {
+      throw new HttpsError("permission-denied", "Not your job");
+    }
+    if (jobData.status !== "done") {
+      throw new HttpsError("failed-precondition", "Job is not done yet");
+    }
+    const outputUrl = jobData.kling?.outputUrl;
+    if (!outputUrl || typeof outputUrl !== "string") {
+      throw new HttpsError("failed-precondition", "No output URL for this job");
+    }
+
+    const expiresAt = admin.firestore.Timestamp.fromMillis(
+      Date.now() + TICKET_TTL_MS
+    );
+    const ticketRef = db.collection("downloadTickets").doc();
+    await ticketRef.set({
+      jobId,
+      uid,
+      expiresAt,
+    } as DownloadTicketDoc);
+
+    return {ticketId: ticketRef.id};
   }
 );
 
-export const onUserDocCreated = onDocumentCreated(
-  "users/{uid}",
-  async (event) => {
-    const userRef = event.data?.ref;
-    if (!userRef) return;
+export const downloadResult = onRequest(
+  {cors: false},
+  async (req, res) => {
+    if (req.method !== "GET") {
+      res.status(405).setHeader("Allow", "GET").end();
+      return;
+    }
+    const ticketId = req.query?.ticket;
+    if (!ticketId || typeof ticketId !== "string") {
+      res.status(400).send("Missing ticket");
+      return;
+    }
+    if (!/^[\w-]+$/.test(ticketId)) {
+      res.status(400).send("Invalid ticket");
+      return;
+    }
 
-    await userRef.set({
+    const ticketRef = db.collection("downloadTickets").doc(ticketId);
+    const ticketSnap = await ticketRef.get();
+    const ticketData = ticketSnap.data() as DownloadTicketDoc | undefined;
+    if (!ticketSnap.exists || !ticketData) {
+      res.status(404).send("Ticket not found");
+      return;
+    }
+    const now = admin.firestore.Timestamp.now();
+    if (ticketData.expiresAt.toMillis() < now.toMillis()) {
+      await ticketRef.delete();
+      res.status(410).send("Ticket expired");
+      return;
+    }
+
+    const jobSnap = await db.doc(`jobs/${ticketData.jobId}`).get();
+    const jobData = jobSnap.data() as JobDoc | undefined;
+    if (!jobSnap.exists || !jobData || jobData.uid !== ticketData.uid) {
+      await ticketRef.delete();
+      res.status(404).send("Job not found");
+      return;
+    }
+    const outputUrl = jobData.kling?.outputUrl;
+    if (!outputUrl || typeof outputUrl !== "string") {
+      await ticketRef.delete();
+      res.status(404).send("No output URL");
+      return;
+    }
+
+    await ticketRef.delete();
+
+    try {
+      const klingRes = await fetch(outputUrl, {redirect: "follow"});
+      if (!klingRes.ok) {
+        res.status(502).send("Upstream error");
+        return;
+      }
+      const contentType =
+        klingRes.headers.get("content-type") || "video/mp4";
+      const contentDisposition =
+        klingRes.headers.get("content-disposition") ||
+        "attachment; filename=\"result.mp4\"";
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Disposition", contentDisposition);
+
+      const reader = klingRes.body?.getReader();
+      if (!reader) {
+        res.status(502).send("No body");
+        return;
+      }
+      for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        res.write(Buffer.from(value));
+      }
+      res.end();
+    } catch (err: unknown) {
+      logger.error("downloadResult stream failed", {
+        ticketId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      if (!res.headersSent) {
+        res.status(502).send("Download failed");
+      }
+    }
+  }
+);
+
+/** При создании юзера начисляем 20 кредитов (1 кредит = 1 сек генерации). */
+const INITIAL_CREDITS = 20;
+
+export const onUserDocCreated = onDocumentCreated(
+  "users/{userId}",
+  async (event) => {
+    const ref = event.data?.ref;
+    if (!ref) return;
+    await ref.update({
       creditsBalance: INITIAL_CREDITS,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, {merge: true});
+    });
   }
 );
 
 export const processJobTrigger001 = onDocumentUpdated(
-  {document: "jobs/{jobId}", secrets: [klingAccessKey, klingSecretKey]},
+  {
+    document: "jobs/{jobId}",
+    secrets: [klingAccessKey, klingSecretKey],
+  },
   async (event) => {
-    const before = (event.data?.before.data() as JobDoc | undefined) || {};
+    const before = event.data?.before.data();
     const afterSnap = event.data?.after;
-    const after = (afterSnap?.data() as JobDoc | undefined) || {};
-    if (!afterSnap?.exists) return;
+    const after = afterSnap?.data() as Partial<JobDoc> | undefined;
+    if (!before || !after || !afterSnap) return;
 
     const inputAdded = !before.inputImageUrl && !!after.inputImageUrl;
-    if (!inputAdded || after.status !== "queued") return;
+    if (!inputAdded) return;
+    if (after.status !== "queued") return;
 
-    const jobRef = afterSnap.ref;
-    const lockedJob = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(jobRef);
-      const current = (snap.data() as JobDoc | undefined) || {};
-      if (current.status !== "queued" || !current.inputImageUrl) return null;
-      if (pickString(current.kling?.taskId)) return null;
+    const ref = afterSnap.ref;
+    const ts = admin.firestore.FieldValue.serverTimestamp();
 
-      tx.update(jobRef, {
-        "status": "processing" as JobStatus,
-        "kling.state": "submitting",
-        "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      return {
-        templateId: current.templateId || "",
-        inputImageUrl: current.inputImageUrl,
-      };
+    await ref.update({
+      status: "processing" as JobStatus,
+      kling: {state: "processing"},
+      updatedAt: ts,
     });
 
-    if (!lockedJob || !lockedJob.templateId || !lockedJob.inputImageUrl) {
+    const templateId = after.templateId;
+    if (!templateId) {
+      await ref.update({
+        status: "failed" as JobStatus,
+        kling: {state: "failed", error: "Missing templateId"},
+        updatedAt: ts,
+      });
       return;
     }
 
-    try {
-      const templateSnap = await db.doc(
-        `templates/${lockedJob.templateId}`
-      ).get();
-      const template = (templateSnap.data() as TemplateDoc | undefined) || {};
-      const referenceVideoUrl = pickString(
-        template.referenceVideoUrl,
-        template.kling?.referenceVideoUrl
-      );
-      if (!referenceVideoUrl) {
-        throw new Error("Template has no referenceVideoUrl");
-      }
+    const tplSnap = await db.doc(`templates/${templateId}`).get();
+    const tplData = (tplSnap.data() as TemplateDoc | undefined) ?? {};
+    const referenceVideoUrl = tplData.kling?.referenceVideoUrl;
 
-      const submit = await submitKlingTask({
-        jobId: afterSnap.id,
-        inputImageUrl: lockedJob.inputImageUrl,
-        referenceVideoUrl,
+    if (!referenceVideoUrl) {
+      await ref.update({
+        status: "failed" as JobStatus,
+        kling: {state: "failed", error: "Template has no referenceVideoUrl"},
+        updatedAt: ts,
       });
-
-      const updates: Record<string, unknown> = {
-        "status": "processing" as JobStatus,
-        "kling.taskId": submit.taskId,
-        "kling.state": "processing",
-        "kling.error": admin.firestore.FieldValue.delete(),
-        "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
-      };
-      if (submit.requestId) {
-        updates["kling.requestId"] = submit.requestId;
-      }
-      await jobRef.update({
-        ...updates,
-      });
-    } catch (error) {
-      const msg = errorMessage(error);
-      logger.error("Kling submit failed", {
-        jobId: afterSnap.id,
-        message: msg,
-      });
-
-      await jobRef.update({
-        "status": "failed" as JobStatus,
-        "kling.state": "failed",
-        "kling.error": msg,
-        "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
-      });
+      return;
     }
+
+    const imageUrl = after.inputImageUrl ?? "";
+    if (!imageUrl) {
+      await ref.update({
+        status: "failed" as JobStatus,
+        kling: {state: "failed", error: "Missing inputImageUrl"},
+        updatedAt: ts,
+      });
+      return;
+    }
+    const accessKey = klingAccessKey.value();
+    const secretKey = klingSecretKey.value();
+
+    if (!accessKey || !secretKey) {
+      await ref.update({
+        status: "failed" as JobStatus,
+        kling: {state: "failed", error: "Missing Kling secrets"},
+        updatedAt: ts,
+      });
+      return;
+    }
+
+    const token = makeKlingJwt(accessKey, secretKey);
+
+    const endpointUrl = `${KLING_BASE_URL}/v1/videos/motion-control`;
+
+    const payload = {
+      video_url: referenceVideoUrl,
+      image_url: imageUrl,
+      mode: "std",
+      keep_original_sound: "yes",
+      character_orientation: "video",
+      external_task_id: afterSnap.id,
+    };
+
+    logger.info("Kling endpointUrl", {endpointUrl, jobId: afterSnap.id});
+    logger.info("CALL Kling motion-control", {jobId: afterSnap.id});
+
+    let res;
+    try {
+      res = await fetch(endpointUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch (e: unknown) {
+      logger.error("Kling fetch failed", {jobId: afterSnap.id, err: String(e)});
+      await ref.update({
+        status: "failed" as JobStatus,
+        kling: {state: "failed", error: `fetch failed: ${String(e)}`},
+        updatedAt: ts,
+      });
+      return;
+    }
+
+    const bodyText = await res.text();
+    logger.info("Kling response", {
+      jobId: afterSnap.id,
+      status: res.status,
+      body: bodyText.slice(0, 500),
+    });
+
+    if (!res.ok) {
+      await ref.update({
+        status: "failed" as JobStatus,
+        kling: {state: "failed", error: `Kling ${res.status}: ${bodyText}`},
+        updatedAt: ts,
+      });
+      return;
+    }
+
+    const json = JSON.parse(bodyText);
+    const taskId = json?.data?.task_id;
+
+    if (!taskId) {
+      await ref.update({
+        status: "failed" as JobStatus,
+        kling: {state: "failed", error: `No task_id in response: ${bodyText}`},
+        updatedAt: ts,
+      });
+      return;
+    }
+
+    await ref.update({
+      kling: {state: "submitted", taskId},
+      updatedAt: ts,
+    });
   }
 );
+
+const POLL_BATCH_SIZE = 15;
 
 export const pollKlingScheduled = onSchedule(
-  {schedule: "every 2 minutes", secrets: [klingAccessKey, klingSecretKey]},
+  {
+    schedule: "every 2 minutes",
+    region: "us-central1",
+    secrets: [klingAccessKey, klingSecretKey],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
   async () => {
-    const jobsSnap = await db.collection("jobs")
+    const accessKey = klingAccessKey.value();
+    const secretKey = klingSecretKey.value();
+    if (!accessKey || !secretKey) {
+      logger.error("POLL_ERROR", {err: "Missing Kling secrets"});
+      return;
+    }
+    const token = makeKlingJwt(accessKey, secretKey);
+    const ts = admin.firestore.FieldValue.serverTimestamp();
+
+    const snap = await db
+      .collection("jobs")
       .where("status", "==", "processing")
-      .limit(POLL_BATCH_LIMIT)
+      .limit(POLL_BATCH_SIZE)
       .get();
 
-    if (jobsSnap.empty) return;
+    let updated = 0;
+    const checked = snap.size;
 
-    for (const jobDoc of jobsSnap.docs) {
-      const job = (jobDoc.data() as JobDoc | undefined) || {};
-      const taskId = pickString(job.kling?.taskId);
-      if (!taskId) continue;
+    for (const doc of snap.docs) {
+      const jobId = doc.id;
+      const data = doc.data() as Partial<JobDoc>;
+      const kling = data.kling ?? {};
+      const taskId = kling.taskId;
+
+      if (!taskId) {
+        await doc.ref.update({
+          status: "failed" as JobStatus,
+          kling: {...kling, state: "failed", error: "Missing kling.taskId"},
+          updatedAt: ts,
+        });
+        updated++;
+        continue;
+      }
 
       try {
-        const result = await pollKlingTask(taskId);
-        const updates: Record<string, unknown> = {
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        };
-        if (result.requestId) {
-          updates["kling.requestId"] = result.requestId;
-        }
-
-        if (result.state === "succeed") {
-          if (result.outputUrl) {
-            updates["status"] = "done";
-            updates["kling.state"] = "succeed";
-            updates["kling.outputUrl"] = result.outputUrl;
-            updates["kling.error"] = admin.firestore.FieldValue.delete();
-            if (result.watermarkUrl) {
-              updates["kling.watermarkUrl"] = result.watermarkUrl;
-            }
-          } else {
-            updates["status"] = "failed";
-            updates["kling.state"] = "failed";
-            updates["kling.error"] =
-              "Kling task finished without output url.";
+        const res = await fetch(
+          `${KLING_BASE_URL}/v1/videos/motion-control/${taskId}`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
           }
-        } else if (result.state === "failed") {
-          updates["status"] = "failed";
-          updates["kling.state"] = "failed";
-          updates["kling.error"] = (
-            result.error || "Kling task failed."
-          );
-        } else {
-          updates["kling.state"] = "processing";
+        );
+        const bodyText = await res.text();
+        const json = res.ok ? JSON.parse(bodyText) : null;
+        const taskStatus = json?.data?.task_status ?? "";
+        const taskStatusMsg =
+          (json?.data?.task_status_msg as string | undefined) ?? bodyText;
+        if (taskStatus === "succeed") {
+          const video = json?.data?.task_result?.videos?.[0];
+          const updateKling: Record<string, unknown> = {
+            ...kling,
+            state: "succeed",
+            taskId,
+            outputUrl: video?.url,
+          };
+          if (video?.watermark_url) {
+            updateKling.watermarkUrl = video.watermark_url;
+          }
+          await doc.ref.update({
+            status: "done" as JobStatus,
+            kling: updateKling,
+            updatedAt: ts,
+          });
+          updated++;
+        } else if (taskStatus === "failed") {
+          await doc.ref.update({
+            status: "failed" as JobStatus,
+            kling: {...kling, state: "failed", error: taskStatusMsg},
+            updatedAt: ts,
+          });
+          updated++;
         }
-
-        await jobDoc.ref.update(updates);
-      } catch (error) {
-        logger.error("Kling poll failed", {
-          jobId: jobDoc.id,
-          message: errorMessage(error),
+        // processing / submitted: optional — only refresh updatedAt if desired
+      } catch (err: unknown) {
+        logger.error("POLL_ERROR", {
+          jobId,
+          taskId,
+          err: err instanceof Error ? err.message : String(err),
         });
       }
     }
+
+    logger.info("POLL", {checked, updated});
   }
 );
 
+const INPUT_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+type StorageBucket = ReturnType<ReturnType<typeof admin.storage>["bucket"]>;
+
+/**
+ * Deletes a file from the default Storage bucket. Ignores "not found" errors.
+ * @param {StorageBucket} bucket - Default Storage bucket.
+ * @param {string} path - Object path in the bucket.
+ */
+async function deleteStorageFileIfExists(
+  bucket: StorageBucket,
+  path: string
+): Promise<void> {
+  try {
+    await bucket.file(path).delete();
+  } catch (err: unknown) {
+    const code = (err as {code?: number}).code;
+    const message = (err as {message?: string}).message ?? "";
+    if (code === 404 || /not found|object-not-found/i.test(message)) {
+      return;
+    }
+    throw err;
+  }
+}
+
 export const cleanupInputsHourly = onSchedule(
-  {schedule: "every 60 minutes"},
+  {
+    schedule: "every 60 minutes",
+    region: "us-central1",
+    timeoutSeconds: 300,
+    memory: "256MiB",
+  },
   async () => {
-    const cutoffMs = Date.now() - INPUT_TTL_MS;
     const bucket = admin.storage().bucket();
+    const cutoff = admin.firestore.Timestamp.fromMillis(
+      Date.now() - INPUT_TTL_MS
+    );
 
-    const [files] = await bucket.getFiles({prefix: "user_uploads/"});
-    let deletedCount = 0;
+    const snap = await db
+      .collection("jobs")
+      .where("createdAt", "<", cutoff)
+      .get();
 
-    for (const file of files) {
-      let createdAtMs = parseTimeMs(file.metadata?.timeCreated);
-      if (createdAtMs === null) {
-        const [metadata] = await file.getMetadata();
-        createdAtMs = parseTimeMs(metadata?.timeCreated);
+    let jobsUpdated = 0;
+    const batch = db.batch();
+
+    for (const doc of snap.docs) {
+      const data = doc.data() as Partial<JobDoc>;
+      const updates: Partial<JobDoc> = {};
+      let didDelete = false;
+
+      if (data.inputImagePath) {
+        await deleteStorageFileIfExists(bucket, data.inputImagePath);
+        didDelete = true;
+        updates.inputImagePath = undefined;
+        updates.inputImageUrl = undefined;
       }
-      if (createdAtMs === null || createdAtMs > cutoffMs) continue;
+      if (data.referenceVideoPath) {
+        await deleteStorageFileIfExists(bucket, data.referenceVideoPath);
+        didDelete = true;
+        updates.referenceVideoPath = undefined;
+        updates.referenceVideoUrl = undefined;
+      }
 
-      try {
-        await file.delete({ignoreNotFound: true});
-        deletedCount += 1;
-      } catch (error) {
-        logger.warn("Failed to delete old upload", {
-          file: file.name,
-          message: errorMessage(error),
+      if (didDelete) {
+        jobsUpdated++;
+        batch.update(doc.ref, {
+          ...updates,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
       }
     }
 
-    logger.info("cleanupInputsHourly finished", {
-      scanned: files.length,
-      deleted: deletedCount,
+    if (jobsUpdated > 0) {
+      await batch.commit();
+    }
+
+    logger.info("cleanupInputsHourly", {
+      jobsScanned: snap.size,
+      jobsUpdated,
     });
   }
 );

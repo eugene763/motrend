@@ -3,6 +3,7 @@ import {
   onDocumentCreated,
   onDocumentUpdated,
 } from "firebase-functions/v2/firestore";
+import {onSchedule} from "firebase-functions/v2/scheduler";
 import {defineSecret} from "firebase-functions/params";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
@@ -58,6 +59,7 @@ interface KlingState {
   state?: string;
   progress?: number;
   outputUrl?: string;
+  watermarkUrl?: string;
   error?: string;
 }
 
@@ -311,5 +313,102 @@ export const processJobTrigger001 = onDocumentUpdated(
       kling: {state: "submitted", taskId},
       updatedAt: ts,
     });
+  }
+);
+
+const POLL_BATCH_SIZE = 15;
+
+export const pollKlingScheduled = onSchedule(
+  {
+    schedule: "every 2 minutes",
+    region: "us-central1",
+    secrets: [klingAccessKey, klingSecretKey],
+    timeoutSeconds: 120,
+    memory: "256MiB",
+  },
+  async () => {
+    const accessKey = klingAccessKey.value();
+    const secretKey = klingSecretKey.value();
+    if (!accessKey || !secretKey) {
+      logger.error("POLL_ERROR", {err: "Missing Kling secrets"});
+      return;
+    }
+    const token = makeKlingJwt(accessKey, secretKey);
+    const ts = admin.firestore.FieldValue.serverTimestamp();
+
+    const snap = await db
+      .collection("jobs")
+      .where("status", "==", "processing")
+      .limit(POLL_BATCH_SIZE)
+      .get();
+
+    let updated = 0;
+    const checked = snap.size;
+
+    for (const doc of snap.docs) {
+      const jobId = doc.id;
+      const data = doc.data() as Partial<JobDoc>;
+      const kling = data.kling ?? {};
+      const taskId = kling.taskId;
+
+      if (!taskId) {
+        await doc.ref.update({
+          status: "failed" as JobStatus,
+          kling: {...kling, state: "failed", error: "Missing kling.taskId"},
+          updatedAt: ts,
+        });
+        updated++;
+        continue;
+      }
+
+      try {
+        const res = await fetch(
+          `${KLING_BASE_URL}/v1/videos/motion-control/${taskId}`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
+        const bodyText = await res.text();
+        const json = res.ok ? JSON.parse(bodyText) : null;
+        const taskStatus = json?.data?.task_status ?? "";
+        const taskStatusMsg =
+          (json?.data?.task_status_msg as string | undefined) ?? bodyText;
+        const videos = json?.data?.videos as Array<{url?: string; watermark_url?: string}> | undefined;
+
+        if (taskStatus === "succeed") {
+          const firstVideo = videos?.[0];
+          await doc.ref.update({
+            status: "done" as JobStatus,
+            kling: {
+              ...kling,
+              state: "succeed",
+              outputUrl: firstVideo?.url ?? "",
+              watermarkUrl: firstVideo?.watermark_url,
+            },
+            updatedAt: ts,
+          });
+          updated++;
+        } else if (taskStatus === "failed") {
+          await doc.ref.update({
+            status: "failed" as JobStatus,
+            kling: {...kling, state: "failed", error: taskStatusMsg},
+            updatedAt: ts,
+          });
+          updated++;
+        }
+        // processing / submitted: optional — only refresh updatedAt if desired
+      } catch (err: unknown) {
+        logger.error("POLL_ERROR", {
+          jobId,
+          taskId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    logger.info("POLL", {checked, updated});
   }
 );

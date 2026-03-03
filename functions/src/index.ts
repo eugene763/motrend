@@ -44,7 +44,7 @@ interface TemplateDoc {
   kling?: { referenceVideoUrl?: string };
 }
 
-const KLING_BASE = "https://api.klingapi.com";
+const KLING_BASE_URL = "https://api-singapore.klingai.com";
 
 type SubmitKlingResult = {
   providerJobId?: string;
@@ -78,7 +78,7 @@ async function submitKlingImage2Video(
   console.log(
     "CALL Kling payload=" + JSON.stringify(payload) + " jobId=" + jobId
   );
-  const endpointUrl = `${KLING_BASE}/v1/videos/image2video`;
+  const endpointUrl = `${KLING_BASE_URL}/v1/videos/image2video`;
   console.log("Kling endpointUrl=" + endpointUrl + " jobId=" + jobId);
   let res: Response;
   try {
@@ -160,7 +160,7 @@ async function submitKlingMotionControl(
   console.log(
     "CALL Kling motion-control payload=" + JSON.stringify(payload) + " jobId=" + jobId
   );
-  const endpointUrl = `${KLING_BASE}/v1/videos/motion-control`;
+  const endpointUrl = `${KLING_BASE_URL}/v1/videos/motion-control`;
   console.log("Kling endpointUrl=" + endpointUrl + " jobId=" + jobId);
   let res: Response;
   try {
@@ -235,8 +235,8 @@ async function pollKlingJob(
   providerType?: "image2video" | "motion-control"
 ): Promise<PollKlingResult> {
   const endpointUrl = providerType === "motion-control"
-    ? `${KLING_BASE}/v1/videos/motion-control/${providerJobId}`
-    : `${KLING_BASE}/v1/videos/${providerJobId}`;
+    ? `${KLING_BASE_URL}/v1/videos/motion-control/${providerJobId}`
+    : `${KLING_BASE_URL}/v1/videos/${providerJobId}`;
   console.log("Kling poll endpointUrl=" + endpointUrl + " jobId=" + jobId);
   let statusRes: Response;
   try {

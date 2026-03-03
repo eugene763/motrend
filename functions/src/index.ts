@@ -513,19 +513,20 @@ export const pollKlingScheduled = onSchedule(
         const taskStatus = json?.data?.task_status ?? "";
         const taskStatusMsg =
           (json?.data?.task_status_msg as string | undefined) ?? bodyText;
-        type VideoItem = {url?: string; watermark_url?: string};
-        const videos = json?.data?.videos as VideoItem[] | undefined;
-
         if (taskStatus === "succeed") {
-          const firstVideo = videos?.[0];
+          const video = json?.data?.task_result?.videos?.[0];
+          const updateKling: Record<string, unknown> = {
+            ...kling,
+            state: "succeed",
+            taskId,
+            outputUrl: video?.url,
+          };
+          if (video?.watermark_url) {
+            updateKling.watermarkUrl = video.watermark_url;
+          }
           await doc.ref.update({
             status: "done" as JobStatus,
-            kling: {
-              ...kling,
-              state: "succeed",
-              outputUrl: firstVideo?.url ?? "",
-              watermarkUrl: firstVideo?.watermark_url,
-            },
+            kling: updateKling,
             updatedAt: ts,
           });
           updated++;

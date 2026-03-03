@@ -8,6 +8,7 @@ import {onCall, HttpsError} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
+import jwt from "jsonwebtoken";
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -20,11 +21,7 @@ const INPUT_TTL_MS = 6 * 60 * 60 * 1000;
 const POLL_BATCH_LIMIT = 25;
 const KLING_TIMEOUT_MS = 20_000;
 const KLING_BASE_URL =
-  process.env.KLING_BASE_URL || "https://api.klingai.com";
-const KLING_CREATE_PATH =
-  process.env.KLING_CREATE_PATH || "/v1/videos/motion-control";
-const KLING_STATUS_PATH =
-  process.env.KLING_STATUS_PATH || "/v1/videos/motion-control";
+  process.env.KLING_BASE_URL || "https://api-singapore.klingai.com";
 
 const corsAllowedOrigins = [
   /^https:\/\/gen-lang-client-0651837818\.(web\.app|firebaseapp\.com)$/,
@@ -46,10 +43,14 @@ interface TemplateDoc {
   durationSec?: number;
   costCredits?: number;
   referenceVideoUrl?: string;
+  kling?: {
+    referenceVideoUrl?: string;
+  };
 }
 
 interface KlingState {
   taskId?: string;
+  requestId?: string;
   state?: string;
   outputUrl?: string;
   watermarkUrl?: string;
@@ -66,24 +67,42 @@ interface JobDoc {
 }
 
 interface KlingSubmitInput {
-  templateId: string;
+  jobId: string;
   inputImageUrl: string;
-  referenceVideoUrl?: string;
+  referenceVideoUrl: string;
 }
 
 interface KlingPollResult {
-  state: string;
-  outputUrl: string | null;
-  watermarkUrl: string | null;
-  error: string | null;
-  progress: number | null;
+  state: "succeed" | "failed" | "pending";
+  outputUrl?: string;
+  watermarkUrl?: string;
+  error?: string;
+  requestId?: string;
 }
 
-function asObject(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
+interface KlingCreateResponse {
+  code?: number;
+  message?: string;
+  request_id?: string;
+  data?: {
+    task_id?: string;
+  };
+}
+
+interface KlingStatusResponse {
+  code?: number;
+  message?: string;
+  request_id?: string;
+  data?: {
+    task_status?: string;
+    task_status_msg?: string;
+    task_result?: {
+      videos?: Array<{
+        url?: string;
+        watermark_url?: string;
+      }>;
+    };
+  };
 }
 
 function pickString(...values: unknown[]): string | null {
@@ -91,17 +110,6 @@ function pickString(...values: unknown[]): string | null {
     if (typeof value === "string") {
       const normalized = value.trim();
       if (normalized) return normalized;
-    }
-  }
-  return null;
-}
-
-function pickNumber(...values: unknown[]): number | null {
-  for (const value of values) {
-    if (typeof value === "number" && Number.isFinite(value)) return value;
-    if (typeof value === "string") {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed)) return parsed;
     }
   }
   return null;
@@ -118,85 +126,14 @@ function trailingSlashless(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
-function isSuccessState(state: string): boolean {
-  return new Set(["succeed", "succeeded", "done", "success", "completed"])
-    .has(state);
-}
-
-function isFailedState(state: string): boolean {
-  return new Set(["failed", "fail", "error", "canceled", "cancelled"])
-    .has(state);
-}
-
-function extractTaskId(payload: unknown): string | null {
-  const root = asObject(payload);
-  if (!root) return null;
-  const data = asObject(root["data"]);
-
-  return pickString(
-    root["task_id"],
-    root["taskId"],
-    root["id"],
-    data?.["task_id"],
-    data?.["taskId"],
-    data?.["id"]
-  );
-}
-
-function firstUrlFromArray(value: unknown): string | null {
-  if (!Array.isArray(value) || value.length === 0) return null;
-  const first = asObject(value[0]);
-  if (!first) return null;
-  return pickString(first["url"], first["output_url"], first["outputUrl"]);
-}
-
-function extractKlingStatus(payload: unknown): KlingPollResult {
-  const root = asObject(payload) || {};
-  const data = asObject(root["data"]) || {};
-  const output = asObject(data["output"]) || asObject(root["output"]) || {};
-
-  const stateRaw = pickString(
-    data["state"],
-    data["status"],
-    data["task_status"],
-    root["state"],
-    root["status"]
-  );
-  const state = (stateRaw || "processing").toLowerCase();
-
-  const outputUrl = pickString(
-    output["url"],
-    output["output_url"],
-    output["outputUrl"],
-    data["output_url"],
-    data["outputUrl"],
-    root["output_url"],
-    root["outputUrl"],
-    firstUrlFromArray(data["outputs"]),
-    firstUrlFromArray(root["outputs"])
-  );
-
-  const watermarkUrl = pickString(
-    output["watermark_url"],
-    output["watermarkUrl"],
-    data["watermark_url"],
-    data["watermarkUrl"],
-    root["watermark_url"],
-    root["watermarkUrl"]
-  );
-
-  const error = pickString(
-    data["error"],
-    data["error_message"],
-    data["errorMessage"],
-    root["error"],
-    root["error_message"],
-    root["errorMessage"]
-  );
-
-  const progress = pickNumber(data["progress"], root["progress"]);
-
-  return {state, outputUrl, watermarkUrl, error, progress};
+function makeKlingJwt(accessKey: string, secretKey: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  return jwt.sign({
+    iss: accessKey,
+    iat: now - 5,
+    nbf: now - 5,
+    exp: now + 30 * 60,
+  }, secretKey, {algorithm: "HS256"});
 }
 
 function parseTimeMs(value: unknown): number | null {
@@ -205,91 +142,75 @@ function parseTimeMs(value: unknown): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-async function klingRequest(
-  method: "GET" | "POST",
-  path: string,
-  accessKey: string,
-  secretKey: string,
-  body?: Record<string, unknown>
-): Promise<unknown> {
-  const url = `${trailingSlashless(KLING_BASE_URL)}${path}`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, KLING_TIMEOUT_MS);
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "X-Access-Key": accessKey,
-    "X-Secret-Key": secretKey,
-    // Some Kling gateways accept Bearer token in this format.
-    "Authorization": `Bearer ${accessKey}:${secretKey}`,
-  };
-
-  try {
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-
-    const text = await response.text();
-    let payload: unknown = {};
-    if (text) {
-      try {
-        payload = JSON.parse(text);
-      } catch {
-        payload = {message: text};
-      }
-    }
-
-    if (!response.ok) {
-      const payloadObject = asObject(payload) || {};
-      const message = pickString(
-        payloadObject["message"],
-        payloadObject["error"],
-        payloadObject["error_message"],
-        text
-      ) || "Kling request failed";
-      throw new Error(`Kling ${response.status}: ${message}`);
-    }
-
-    return payload;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 async function submitKlingTask(
   input: KlingSubmitInput
-): Promise<{taskId: string}> {
+): Promise<{taskId: string; requestId?: string}> {
   const accessKey = klingAccessKey.value();
   const secretKey = klingSecretKey.value();
   if (!accessKey || !secretKey) {
     throw new Error("Kling secrets are missing");
   }
 
-  const payload: Record<string, unknown> = {
-    template_id: input.templateId,
-    input_image_url: input.inputImageUrl,
+  const token = makeKlingJwt(accessKey, secretKey);
+  const endpointUrl =
+    `${trailingSlashless(KLING_BASE_URL)}/v1/videos/motion-control`;
+  const payload = {
+    video_url: input.referenceVideoUrl,
+    image_url: input.inputImageUrl,
+    mode: "std",
+    keep_original_sound: "yes",
+    character_orientation: "video",
+    external_task_id: input.jobId,
   };
-  if (input.referenceVideoUrl) {
-    payload["reference_video_url"] = input.referenceVideoUrl;
-  }
 
-  const response = await klingRequest(
-    "POST",
-    KLING_CREATE_PATH,
-    accessKey,
-    secretKey,
-    payload
-  );
-  const taskId = extractTaskId(response);
-  if (!taskId) {
-    throw new Error("Kling create response does not contain task id");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, KLING_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(endpointUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    const bodyText = await response.text();
+    let json: KlingCreateResponse = {};
+    if (bodyText) {
+      try {
+        json = JSON.parse(bodyText) as KlingCreateResponse;
+      } catch {
+        json = {};
+      }
+    }
+
+    const requestId = pickString(
+      response.headers.get("x-request-id"),
+      response.headers.get("request-id"),
+      json.request_id
+    ) || undefined;
+
+    if (!response.ok) {
+      throw new Error(`Kling ${response.status}: ${bodyText}`);
+    }
+    if (json.code && json.code !== 0) {
+      throw new Error(`Kling ${json.code}: ${bodyText}`);
+    }
+
+    const taskId = pickString(json.data?.task_id);
+    if (!taskId) {
+      throw new Error(`No task_id in response: ${bodyText}`);
+    }
+
+    return {taskId, requestId};
+  } finally {
+    clearTimeout(timeout);
   }
-  return {taskId};
 }
 
 async function pollKlingTask(taskId: string): Promise<KlingPollResult> {
@@ -299,13 +220,76 @@ async function pollKlingTask(taskId: string): Promise<KlingPollResult> {
     throw new Error("Kling secrets are missing");
   }
 
-  const response = await klingRequest(
-    "GET",
-    `${KLING_STATUS_PATH}/${encodeURIComponent(taskId)}`,
-    accessKey,
-    secretKey
-  );
-  return extractKlingStatus(response);
+  const token = makeKlingJwt(accessKey, secretKey);
+  const endpointUrl =
+    `${trailingSlashless(KLING_BASE_URL)}/v1/videos/motion-control/` +
+    `${encodeURIComponent(taskId)}`;
+  const response = await fetch(endpointUrl, {
+    method: "GET",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+    },
+  });
+  const bodyText = await response.text();
+
+  let json: KlingStatusResponse = {};
+  if (bodyText) {
+    try {
+      json = JSON.parse(bodyText) as KlingStatusResponse;
+    } catch {
+      json = {};
+    }
+  }
+
+  const requestId = pickString(
+    response.headers.get("x-request-id"),
+    response.headers.get("request-id"),
+    json.request_id
+  ) || undefined;
+
+  if (!response.ok) {
+    return {
+      state: "failed",
+      error: `Kling status ${response.status}: ${bodyText}`,
+      requestId,
+    };
+  }
+
+  const taskStatus = pickString(json.data?.task_status)?.toLowerCase() || "";
+  if (taskStatus === "succeed") {
+    const video = json.data?.task_result?.videos?.[0];
+    const outputUrl = pickString(video?.url);
+    if (!outputUrl) {
+      return {
+        state: "failed",
+        error: "Kling task succeeded without output url",
+        requestId,
+      };
+    }
+    return {
+      state: "succeed",
+      outputUrl,
+      watermarkUrl: pickString(video?.watermark_url) || undefined,
+      requestId,
+    };
+  }
+
+  if (taskStatus === "failed") {
+    return {
+      state: "failed",
+      error: pickString(json.data?.task_status_msg, json.message) ||
+        "Kling task failed",
+      requestId,
+    };
+  }
+
+  return {
+    state: "pending",
+    requestId,
+    error: undefined,
+    outputUrl: undefined,
+    watermarkUrl: undefined,
+  };
 }
 
 export const createJob = onCall(
@@ -432,19 +416,32 @@ export const processJobTrigger001 = onDocumentUpdated(
         `templates/${lockedJob.templateId}`
       ).get();
       const template = (templateSnap.data() as TemplateDoc | undefined) || {};
+      const referenceVideoUrl = pickString(
+        template.referenceVideoUrl,
+        template.kling?.referenceVideoUrl
+      );
+      if (!referenceVideoUrl) {
+        throw new Error("Template has no referenceVideoUrl");
+      }
 
       const submit = await submitKlingTask({
-        templateId: lockedJob.templateId,
+        jobId: afterSnap.id,
         inputImageUrl: lockedJob.inputImageUrl,
-        referenceVideoUrl: template.referenceVideoUrl,
+        referenceVideoUrl,
       });
 
-      await jobRef.update({
+      const updates: Record<string, unknown> = {
         "status": "processing" as JobStatus,
         "kling.taskId": submit.taskId,
         "kling.state": "processing",
         "kling.error": admin.firestore.FieldValue.delete(),
         "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (submit.requestId) {
+        updates["kling.requestId"] = submit.requestId;
+      }
+      await jobRef.update({
+        ...updates,
       });
     } catch (error) {
       const msg = errorMessage(error);
@@ -483,8 +480,11 @@ export const pollKlingScheduled = onSchedule(
         const updates: Record<string, unknown> = {
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
+        if (result.requestId) {
+          updates["kling.requestId"] = result.requestId;
+        }
 
-        if (isSuccessState(result.state)) {
+        if (result.state === "succeed") {
           if (result.outputUrl) {
             updates["status"] = "done";
             updates["kling.state"] = "succeed";
@@ -499,17 +499,14 @@ export const pollKlingScheduled = onSchedule(
             updates["kling.error"] =
               "Kling task finished without output url.";
           }
-        } else if (isFailedState(result.state)) {
+        } else if (result.state === "failed") {
           updates["status"] = "failed";
           updates["kling.state"] = "failed";
           updates["kling.error"] = (
             result.error || "Kling task failed."
           );
         } else {
-          updates["kling.state"] = result.state || "processing";
-          if (result.progress !== null) {
-            updates["kling.progress"] = result.progress;
-          }
+          updates["kling.state"] = "processing";
         }
 
         await jobDoc.ref.update(updates);

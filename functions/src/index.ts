@@ -541,9 +541,11 @@ async function prepareOwnedJobDownload(params: {
   uid: string;
   jobId: string;
 }): Promise<{
-  downloadUrl: string;
-  expiresAtMs: number;
-  cached: boolean;
+  downloadUrl?: string;
+  expiresAtMs?: number;
+  cached?: boolean;
+  pending?: boolean;
+  retryAfterMs?: number;
 }> {
   const {uid, jobId} = params;
   const jobRef = db.collection("jobs").doc(jobId);
@@ -574,14 +576,6 @@ async function prepareOwnedJobDownload(params: {
     }
 
     const nowMs = Date.now();
-    const lockUntilMs = timestampMs(job.download?.lockUntil);
-    if (lockUntilMs !== null && lockUntilMs > nowMs) {
-      throw new HttpsError(
-        "resource-exhausted",
-        "Download is being prepared. Please wait a few seconds."
-      );
-    }
-
     const storagePath = pickString(job.download?.storagePath) ||
       defaultDownloadPath(uid, jobId);
     const fileName = pickString(job.download?.fileName) ||
@@ -603,6 +597,14 @@ async function prepareOwnedJobDownload(params: {
       };
     }
 
+    const lockUntilMs = timestampMs(job.download?.lockUntil);
+    if (lockUntilMs !== null && lockUntilMs > nowMs) {
+      return {
+        mode: "pending" as const,
+        retryAfterMs: Math.max(1_000, lockUntilMs - nowMs),
+      };
+    }
+
     tx.update(jobRef, {
       "download.lockUntil": admin.firestore.Timestamp.fromMillis(
         nowMs + DOWNLOAD_LOCK_MS
@@ -618,6 +620,13 @@ async function prepareOwnedJobDownload(params: {
       fileName,
     };
   });
+
+  if (decision.mode === "pending") {
+    return {
+      pending: true,
+      retryAfterMs: decision.retryAfterMs,
+    };
+  }
 
   if (decision.mode === "cached") {
     const signedUrl = await getSignedDownloadUrl({

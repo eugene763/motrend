@@ -162,6 +162,7 @@ function showSuccessPanel(jobId) {
     preparedDownloadJobId === activeDoneJobId ? preparedDownloadUrl : ""
   );
   if (safePreparedUrl) {
+    prepareBtn.style.display = "none";
     downloadBtn.href = safePreparedUrl;
     openExternalBtn.href = safePreparedUrl;
     downloadBtn.style.display = "inline-block";
@@ -169,6 +170,7 @@ function showSuccessPanel(jobId) {
     copyDownloadBtn.style.display = "inline-block";
     fallbackHint.style.display = "block";
   } else {
+    prepareBtn.style.display = "inline-block";
     downloadBtn.href = "#";
     openExternalBtn.href = "#";
     downloadBtn.style.display = "none";
@@ -205,6 +207,7 @@ function hideSuccessPanel() {
 
   prepareBtn.disabled = false;
   prepareBtn.textContent = "Prepare download";
+  prepareBtn.style.display = "inline-block";
   panel.style.display = "none";
   downloadBtn.href = "#";
   downloadBtn.style.display = "none";
@@ -259,11 +262,41 @@ let activeDoneJobId = "";
 let preparedDownloadJobId = "";
 let preparedDownloadUrl = "";
 let isPreparingDownload = false;
+const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function triggerDownload(url) {
   const safe = safeUrl(url);
   if (!safe) return;
   window.open(safe, "_blank", "noopener,noreferrer");
+}
+
+async function prepareDownloadLink(jobId) {
+  for (let attempt = 0; attempt < PREPARE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
+    const response = await createJob({prepareDownloadJobId: jobId});
+    const payload = response?.data || {};
+    const downloadUrl = safeUrl(
+      typeof payload.downloadUrl === "string" ? payload.downloadUrl : ""
+    );
+    if (downloadUrl) {
+      return downloadUrl;
+    }
+
+    const isPending = payload?.pending === true;
+    if (!isPending) {
+      break;
+    }
+
+    const retryAfterMs = (
+      typeof payload.retryAfterMs === "number" && payload.retryAfterMs > 0
+    ) ? Math.min(payload.retryAfterMs, 10_000) : 2_000;
+    await sleep(retryAfterMs);
+  }
+
+  throw new Error("Download is still preparing. Please tap again.");
 }
 
 const prepareDownloadBtn = $("prepareDownloadBtn");
@@ -276,14 +309,7 @@ if (prepareDownloadBtn) {
     showSuccessPanel(activeDoneJobId);
 
     try {
-      const response = await createJob({prepareDownloadJobId: activeDoneJobId});
-      const payload = response?.data || {};
-      const downloadUrl = safeUrl(
-        typeof payload.downloadUrl === "string" ? payload.downloadUrl : ""
-      );
-      if (!downloadUrl) {
-        throw new Error("prepareDownload returned empty downloadUrl");
-      }
+      const downloadUrl = await prepareDownloadLink(activeDoneJobId);
 
       preparedDownloadJobId = activeDoneJobId;
       preparedDownloadUrl = downloadUrl;

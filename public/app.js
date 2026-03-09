@@ -44,9 +44,14 @@ import {
   httpsCallable,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 
+const runtimeHost = window.location.hostname;
+const runtimeAuthDomain = runtimeHost === "trend.moads.agency"
+  ? "trend.moads.agency"
+  : "gen-lang-client-0651837818.firebaseapp.com";
+
 const firebaseConfig = {
   apiKey: "AIzaSyBro7c7o8kiRdAuZZpu73KdKyApX7JuflE",
-  authDomain: "gen-lang-client-0651837818.firebaseapp.com",
+  authDomain: runtimeAuthDomain,
   projectId: "gen-lang-client-0651837818",
   storageBucket: "gen-lang-client-0651837818.firebasestorage.app",
   messagingSenderId: "399776789069",

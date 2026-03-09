@@ -400,8 +400,27 @@ $("btnForgotPassword").onclick = async () => {
   try {
     track("password_reset_requested", {method: "email"});
     await sendPasswordResetEmail(auth, email);
-  } catch {
-    // Keep response generic to avoid account enumeration.
+  } catch (error) {
+    const code = typeof error?.code === "string" ? error.code : "";
+    console.warn("Password reset request failed", error);
+
+    if (code.includes("auth/invalid-email")) {
+      showAuthError("Enter a valid email.");
+      return;
+    }
+    if (code.includes("auth/too-many-requests")) {
+      showAuthError("Too many attempts. Try again in a few minutes.");
+      return;
+    }
+    if (code.includes("auth/network-request-failed")) {
+      showAuthError("Network error. Check connection and try again.");
+      return;
+    }
+    if (code.includes("auth/operation-not-allowed")) {
+      showAuthError("Password reset is not enabled in Firebase Auth.");
+      return;
+    }
+    // Keep response generic for account-related outcomes.
   }
 
   showAuthError(

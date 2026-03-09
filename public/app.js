@@ -455,7 +455,7 @@ function renderJobsList() {
 
     if (canRefreshJob(job)) {
       const refreshBtn = document.createElement("button");
-      refreshBtn.className = "btn2";
+      refreshBtn.className = "btnRefresh";
       refreshBtn.style.padding = "6px 10px";
 
       const isRefreshing = refreshingJobIds.has(item.id);

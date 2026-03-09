@@ -84,6 +84,11 @@ function shouldUseRedirectLogin() {
   return /Telegram|Instagram|FBAN|FBAV|FB_IAB|Line\/|WebView|; wv\)|\bwv\b/i.test(ua);
 }
 
+function isTelegramInAppBrowser() {
+  const ua = navigator.userAgent || "";
+  return /Telegram/i.test(ua);
+}
+
 function showAuthError(message) {
   const el = $("authError");
   if (!el) return;
@@ -386,6 +391,12 @@ $("btnLogin").onclick = async () => {
   clearAuthError();
   const provider = new GoogleAuthProvider();
   const forceRedirect = shouldUseRedirectLogin();
+  if (isTelegramInAppBrowser()) {
+    showAuthError(
+      "Google sign-in is blocked inside Telegram. Open this page in Chrome/Safari, or use email sign-in."
+    );
+    return;
+  }
 
   try {
     track("login_click", {method: "google"});
@@ -833,7 +844,14 @@ if (fileInput) {
 try {
   await getRedirectResult(auth);
 } catch (error) {
-  openAuth(callableErrorMessage(error));
+  const code = typeof error?.code === "string" ? error.code : "";
+  if (isTelegramInAppBrowser() && code.includes("invalid-action-code")) {
+    openAuth(
+      "Google sign-in is blocked inside Telegram. Open this page in Chrome/Safari, or use email sign-in."
+    );
+  } else {
+    openAuth(callableErrorMessage(error));
+  }
 }
 
 onAuthStateChanged(auth, async (user) => {

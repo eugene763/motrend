@@ -8,10 +8,12 @@ import {
 import {
   GoogleAuthProvider,
   createUserWithEmailAndPassword,
+  getRedirectResult,
   getAuth,
   onAuthStateChanged,
   sendPasswordResetEmail,
   signInWithEmailAndPassword,
+  signInWithRedirect,
   signInWithPopup,
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
@@ -74,6 +76,11 @@ function track(name, params = {}) {
 }
 
 const $ = (id) => document.getElementById(id);
+
+function shouldUseRedirectLogin() {
+  const ua = navigator.userAgent || "";
+  return /Telegram|Instagram|FBAN|FBAV|FB_IAB|Line\/|WebView|; wv\)|\bwv\b/i.test(ua);
+}
 
 function showAuthError(message) {
   const el = $("authError");
@@ -375,11 +382,36 @@ $("btnEmailSignUp").onclick = async () => {
 
 $("btnLogin").onclick = async () => {
   clearAuthError();
+  const provider = new GoogleAuthProvider();
+  const forceRedirect = shouldUseRedirectLogin();
+
   try {
     track("login_click", {method: "google"});
-    const provider = new GoogleAuthProvider();
+    if (forceRedirect) {
+      setStatus("Redirecting to Google sign-in…");
+      await signInWithRedirect(auth, provider);
+      return;
+    }
     await signInWithPopup(auth, provider);
   } catch (error) {
+    const code = typeof error?.code === "string" ? error.code : "";
+    const popupFailed = [
+      "auth/popup-blocked",
+      "auth/popup-closed-by-user",
+      "auth/cancelled-popup-request",
+      "auth/operation-not-supported-in-this-environment",
+    ].includes(code);
+
+    if (!forceRedirect && popupFailed) {
+      try {
+        setStatus("Popup blocked. Redirecting to Google sign-in…");
+        await signInWithRedirect(auth, provider);
+        return;
+      } catch (redirectError) {
+        showAuthError(callableErrorMessage(redirectError));
+        return;
+      }
+    }
     showAuthError(callableErrorMessage(error));
   }
 };
@@ -792,6 +824,12 @@ if (fileInput) {
     event.preventDefault();
     openAuth("Sign in to upload a photo.");
   });
+}
+
+try {
+  await getRedirectResult(auth);
+} catch (error) {
+  openAuth(callableErrorMessage(error));
 }
 
 onAuthStateChanged(auth, async (user) => {

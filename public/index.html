@@ -39,6 +39,16 @@ button{border:0;border-radius:12px;padding:12px 14px;font-weight:600;cursor:poin
   font-weight:700;
 }
 .btnRefresh:disabled{opacity:.75;}
+.btnDownloadPrimary{
+  background:var(--accent);
+  color:#0b0b0b;
+  border:1px solid #6edc97;
+  font-weight:700;
+  text-align:center;
+}
+.jobActions{display:flex;flex-direction:column;gap:8px;max-width:320px}
+.jobActions a,.jobActions button{text-align:center}
+.jobOr{display:none;text-align:center;font-size:14px;color:var(--muted);}
 
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .grid>*{min-width:0;}
@@ -216,13 +226,14 @@ a{color:#fff}
   <div style="font-weight:700;margin-bottom:8px">Your trends</div>
   <div id="jobs" class="muted">No trends yet.</div>
   <div id="jobSuccessPanel" style="margin-top:12px;display:none">
-    <div class="row">
+    <div class="jobActions">
       <button id="prepareDownloadBtn" class="btn">Prepare download</button>
-      <a id="downloadTrendBtn" class="btn" style="display:none;text-decoration:none" target="_blank" rel="noopener noreferrer" download>Download</a>
-      <a id="openExternalBtn" class="btn2" style="display:none;text-decoration:none" target="_blank" rel="noopener noreferrer">Open in Safari/Chrome</a>
+      <a id="downloadTrendBtn" class="btnDownloadPrimary" style="display:none;text-decoration:none" target="_blank" rel="noopener noreferrer" download>Download</a>
+      <div id="downloadOr" class="jobOr">or</div>
+      <a id="openExternalBtn" class="btn" style="display:none;text-decoration:none" target="_blank" rel="noopener noreferrer">Open in browser</a>
       <button id="copyDownloadBtn" class="btn2" style="display:none">Copy link</button>
     </div>
-    <div id="downloadFallbackHint" class="muted" style="margin-top:10px;display:none">If download does not start, tap “Open in Safari/Chrome”.</div>
+    <div id="downloadFallbackHint" class="muted" style="margin-top:10px;display:none">If download does not start, tap “Open in browser”.</div>
     <div class="muted" style="margin-top:10px">The link to the video is stored for ~30 days.</div>
   </div>
 </div>

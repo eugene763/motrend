@@ -130,6 +130,7 @@ function showSuccessPanel(jobId) {
   const panel = $("jobSuccessPanel");
   const prepareBtn = $("prepareDownloadBtn");
   const downloadBtn = $("downloadTrendBtn");
+  const downloadOr = $("downloadOr");
   const openExternalBtn = $("openExternalBtn");
   const copyDownloadBtn = $("copyDownloadBtn");
   const fallbackHint = $("downloadFallbackHint");
@@ -137,6 +138,7 @@ function showSuccessPanel(jobId) {
     !panel ||
     !prepareBtn ||
     !downloadBtn ||
+    !downloadOr ||
     !openExternalBtn ||
     !copyDownloadBtn ||
     !fallbackHint
@@ -166,6 +168,7 @@ function showSuccessPanel(jobId) {
     downloadBtn.href = safePreparedUrl;
     openExternalBtn.href = safePreparedUrl;
     downloadBtn.style.display = "inline-block";
+    downloadOr.style.display = "block";
     openExternalBtn.style.display = "inline-block";
     copyDownloadBtn.style.display = "inline-block";
     fallbackHint.style.display = "block";
@@ -174,6 +177,7 @@ function showSuccessPanel(jobId) {
     downloadBtn.href = "#";
     openExternalBtn.href = "#";
     downloadBtn.style.display = "none";
+    downloadOr.style.display = "none";
     openExternalBtn.style.display = "none";
     copyDownloadBtn.style.display = "none";
     fallbackHint.style.display = "none";
@@ -186,6 +190,7 @@ function hideSuccessPanel() {
   const panel = $("jobSuccessPanel");
   const prepareBtn = $("prepareDownloadBtn");
   const downloadBtn = $("downloadTrendBtn");
+  const downloadOr = $("downloadOr");
   const openExternalBtn = $("openExternalBtn");
   const copyDownloadBtn = $("copyDownloadBtn");
   const fallbackHint = $("downloadFallbackHint");
@@ -193,6 +198,7 @@ function hideSuccessPanel() {
     !panel ||
     !prepareBtn ||
     !downloadBtn ||
+    !downloadOr ||
     !openExternalBtn ||
     !copyDownloadBtn ||
     !fallbackHint
@@ -211,6 +217,7 @@ function hideSuccessPanel() {
   panel.style.display = "none";
   downloadBtn.href = "#";
   downloadBtn.style.display = "none";
+  downloadOr.style.display = "none";
   openExternalBtn.href = "#";
   openExternalBtn.style.display = "none";
   copyDownloadBtn.style.display = "none";

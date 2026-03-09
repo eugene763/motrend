@@ -18,8 +18,13 @@ const klingSecretKey = defineSecret("KLING_SECRET_KEY");
 
 const INITIAL_CREDITS = 20;
 const INPUT_TTL_MS = 6 * 60 * 60 * 1000;
+const OUTPUT_TTL_MS = 60 * 60 * 1000;
 const KLING_HTTP_TIMEOUT_MS = 20_000;
+const DOWNLOAD_FETCH_TIMEOUT_MS = 60_000;
 const REFRESH_COOLDOWN_MS = 7_000;
+const DOWNLOAD_LOCK_MS = 2 * 60 * 1000;
+const DOWNLOAD_SIGNED_URL_TTL_MS = 15 * 60 * 1000;
+const MAX_DOWNLOAD_BYTES = 120 * 1024 * 1024;
 const KLING_BASE_URL =
   process.env.KLING_BASE_URL || "https://api-singapore.klingai.com";
 
@@ -59,6 +64,16 @@ interface KlingState {
   lastStatusCheckAt?: admin.firestore.Timestamp;
 }
 
+interface DownloadState {
+  storagePath?: string;
+  fileName?: string;
+  contentType?: string;
+  sizeBytes?: number;
+  expiresAt?: admin.firestore.Timestamp;
+  lockUntil?: admin.firestore.Timestamp;
+  lastError?: string;
+}
+
 interface JobDoc {
   uid?: string;
   templateId?: string;
@@ -66,6 +81,7 @@ interface JobDoc {
   inputImagePath?: string;
   inputImageUrl?: string;
   kling?: KlingState;
+  download?: DownloadState;
 }
 
 interface KlingSubmitInput {
@@ -426,6 +442,240 @@ function buildKlingPollUpdates(
   return updates;
 }
 
+function sanitizeFileName(value: string): string {
+  return value.replace(/[^\w.-]/g, "_");
+}
+
+function defaultDownloadPath(uid: string, jobId: string): string {
+  return `outputs/${uid}/${jobId}/result.mp4`;
+}
+
+function defaultDownloadFileName(jobId: string): string {
+  return sanitizeFileName(`motrend-${jobId}.mp4`);
+}
+
+async function getSignedDownloadUrl(params: {
+  storagePath: string;
+  fileName: string;
+  contentType: string;
+}): Promise<string> {
+  const file = admin.storage().bucket().file(params.storagePath);
+  const [signedUrl] = await file.getSignedUrl({
+    version: "v4",
+    action: "read",
+    expires: Date.now() + DOWNLOAD_SIGNED_URL_TTL_MS,
+    responseDisposition: `attachment; filename="${params.fileName}"`,
+    responseType: params.contentType,
+  });
+  return signedUrl;
+}
+
+async function fetchVideoToStorage(params: {
+  sourceUrl: string;
+  storagePath: string;
+  fileName: string;
+}): Promise<{contentType: string; sizeBytes: number}> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, DOWNLOAD_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(params.sourceUrl, {
+      method: "GET",
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      if (response.status === 404 || response.status === 410) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Source video is no longer available on Kling."
+        );
+      }
+      throw new Error(`Source download failed: ${response.status}`);
+    }
+
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (
+      Number.isFinite(contentLength) &&
+      contentLength > MAX_DOWNLOAD_BYTES
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Video file is too large to prepare for download."
+      );
+    }
+
+    const bodyBytes = Buffer.from(await response.arrayBuffer());
+    if (bodyBytes.length > MAX_DOWNLOAD_BYTES) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Video file is too large to prepare for download."
+      );
+    }
+
+    const contentType = pickString(
+      response.headers.get("content-type")
+    ) || "video/mp4";
+
+    const file = admin.storage().bucket().file(params.storagePath);
+    await file.save(bodyBytes, {
+      resumable: false,
+      metadata: {
+        contentType,
+        contentDisposition: `attachment; filename="${params.fileName}"`,
+      },
+    });
+
+    return {
+      contentType,
+      sizeBytes: bodyBytes.length,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function prepareOwnedJobDownload(params: {
+  uid: string;
+  jobId: string;
+}): Promise<{
+  downloadUrl: string;
+  expiresAtMs: number;
+  cached: boolean;
+}> {
+  const {uid, jobId} = params;
+  const jobRef = db.collection("jobs").doc(jobId);
+
+  const decision = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(jobRef);
+    if (!snap.exists) {
+      throw new HttpsError("not-found", "Trend not found.");
+    }
+    const job = (snap.data() as JobDoc | undefined) || {};
+    if (job.uid !== uid) {
+      throw new HttpsError("permission-denied", "No access to this trend.");
+    }
+
+    if (job.status !== "done") {
+      throw new HttpsError(
+        "failed-precondition",
+        "Trend is not ready yet."
+      );
+    }
+
+    const outputUrl = pickString(job.kling?.outputUrl);
+    if (!outputUrl) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Download source is unavailable."
+      );
+    }
+
+    const nowMs = Date.now();
+    const lockUntilMs = timestampMs(job.download?.lockUntil);
+    if (lockUntilMs !== null && lockUntilMs > nowMs) {
+      throw new HttpsError(
+        "resource-exhausted",
+        "Download is being prepared. Please wait a few seconds."
+      );
+    }
+
+    const storagePath = pickString(job.download?.storagePath) ||
+      defaultDownloadPath(uid, jobId);
+    const fileName = pickString(job.download?.fileName) ||
+      defaultDownloadFileName(jobId);
+    const contentType = pickString(job.download?.contentType) || "video/mp4";
+    const expiresAtMs = timestampMs(job.download?.expiresAt);
+
+    if (
+      expiresAtMs !== null &&
+      expiresAtMs > nowMs &&
+      job.download?.storagePath
+    ) {
+      return {
+        mode: "cached" as const,
+        storagePath,
+        fileName,
+        contentType,
+        expiresAtMs,
+      };
+    }
+
+    tx.update(jobRef, {
+      "download.lockUntil": admin.firestore.Timestamp.fromMillis(
+        nowMs + DOWNLOAD_LOCK_MS
+      ),
+      "download.lastError": admin.firestore.FieldValue.delete(),
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return {
+      mode: "fetch" as const,
+      outputUrl,
+      storagePath,
+      fileName,
+    };
+  });
+
+  if (decision.mode === "cached") {
+    const signedUrl = await getSignedDownloadUrl({
+      storagePath: decision.storagePath,
+      fileName: decision.fileName,
+      contentType: decision.contentType,
+    });
+    return {
+      downloadUrl: signedUrl,
+      expiresAtMs: decision.expiresAtMs,
+      cached: true,
+    };
+  }
+
+  try {
+    const downloaded = await fetchVideoToStorage({
+      sourceUrl: decision.outputUrl,
+      storagePath: decision.storagePath,
+      fileName: decision.fileName,
+    });
+
+    const expiresAtMs = Date.now() + OUTPUT_TTL_MS;
+    await jobRef.update({
+      "download.storagePath": decision.storagePath,
+      "download.fileName": decision.fileName,
+      "download.contentType": downloaded.contentType,
+      "download.sizeBytes": downloaded.sizeBytes,
+      "download.expiresAt": admin.firestore.Timestamp.fromMillis(expiresAtMs),
+      "download.lockUntil": admin.firestore.FieldValue.delete(),
+      "download.lastError": admin.firestore.FieldValue.delete(),
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const signedUrl = await getSignedDownloadUrl({
+      storagePath: decision.storagePath,
+      fileName: decision.fileName,
+      contentType: downloaded.contentType,
+    });
+
+    return {
+      downloadUrl: signedUrl,
+      expiresAtMs,
+      cached: false,
+    };
+  } catch (error) {
+    const msg = errorMessage(error);
+    await jobRef.update({
+      "download.lockUntil": admin.firestore.FieldValue.delete(),
+      "download.lastError": msg,
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    });
+    if (error instanceof HttpsError) {
+      throw error;
+    }
+    throw new HttpsError("internal", "Failed to prepare download.");
+  }
+}
+
 async function refreshOwnedJobStatus(
   uid: string,
   jobId: string
@@ -495,6 +745,18 @@ export const createJob = onCall(
     }
 
     const uid = req.auth.uid;
+    const prepareDownloadJobIdRaw = req.data?.prepareDownloadJobId;
+    if (typeof prepareDownloadJobIdRaw === "string") {
+      const prepareDownloadJobId = prepareDownloadJobIdRaw.trim();
+      if (!prepareDownloadJobId || !/^[\w-]+$/.test(prepareDownloadJobId)) {
+        throw new HttpsError("invalid-argument", "Invalid jobId");
+      }
+      return await prepareOwnedJobDownload({
+        uid,
+        jobId: prepareDownloadJobId,
+      });
+    }
+
     const refreshJobIdRaw = req.data?.refreshJobId;
     if (typeof refreshJobIdRaw === "string") {
       const refreshJobId = refreshJobIdRaw.trim();
@@ -695,6 +957,60 @@ export const cleanupInputsHourly = onSchedule(
     logger.info("cleanupInputsHourly finished", {
       scanned: files.length,
       deleted: deletedCount,
+    });
+  }
+);
+
+export const cleanupDownloadsQuarterHourly = onSchedule(
+  {schedule: "every 15 minutes"},
+  async () => {
+    const nowTs = admin.firestore.Timestamp.now();
+    const jobsSnap = await db.collection("jobs")
+      .where("download.expiresAt", "<=", nowTs)
+      .limit(200)
+      .get();
+
+    if (jobsSnap.empty) {
+      return;
+    }
+
+    let deletedFiles = 0;
+    let cleanedDocs = 0;
+
+    for (const jobDoc of jobsSnap.docs) {
+      const job = (jobDoc.data() as JobDoc | undefined) || {};
+      const storagePath = pickString(job.download?.storagePath);
+
+      if (storagePath) {
+        try {
+          await admin.storage().bucket().file(storagePath)
+            .delete({ignoreNotFound: true});
+          deletedFiles += 1;
+        } catch (error) {
+          logger.warn("Failed to delete cached download", {
+            file: storagePath,
+            message: errorMessage(error),
+          });
+        }
+      }
+
+      await jobDoc.ref.update({
+        "download.storagePath": admin.firestore.FieldValue.delete(),
+        "download.fileName": admin.firestore.FieldValue.delete(),
+        "download.contentType": admin.firestore.FieldValue.delete(),
+        "download.sizeBytes": admin.firestore.FieldValue.delete(),
+        "download.expiresAt": admin.firestore.FieldValue.delete(),
+        "download.lockUntil": admin.firestore.FieldValue.delete(),
+        "download.lastError": admin.firestore.FieldValue.delete(),
+        "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+      });
+      cleanedDocs += 1;
+    }
+
+    logger.info("cleanupDownloadsQuarterHourly finished", {
+      scanned: jobsSnap.size,
+      cleanedDocs,
+      deletedFiles,
     });
   }
 );

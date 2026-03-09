@@ -126,28 +126,92 @@ function closeAuth() {
   clearAuthError();
 }
 
-function showSuccessPanel(url) {
-  const safe = safeUrl(url);
+function showSuccessPanel(jobId) {
   const panel = $("jobSuccessPanel");
+  const prepareBtn = $("prepareDownloadBtn");
   const downloadBtn = $("downloadTrendBtn");
-  if (!panel || !downloadBtn) return;
-
-  if (!safe) {
-    panel.style.display = "none";
-    downloadBtn.href = "#";
+  const openExternalBtn = $("openExternalBtn");
+  const copyDownloadBtn = $("copyDownloadBtn");
+  const fallbackHint = $("downloadFallbackHint");
+  if (
+    !panel ||
+    !prepareBtn ||
+    !downloadBtn ||
+    !openExternalBtn ||
+    !copyDownloadBtn ||
+    !fallbackHint
+  ) {
     return;
   }
 
-  downloadBtn.href = safe;
+  if (activeDoneJobId !== jobId) {
+    preparedDownloadJobId = "";
+    preparedDownloadUrl = "";
+  }
+  activeDoneJobId = jobId || "";
+
+  prepareBtn.disabled = isPreparingDownload || !activeDoneJobId;
+  if (isPreparingDownload) {
+    prepareBtn.innerHTML =
+      '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Preparing...';
+  } else {
+    prepareBtn.textContent = "Prepare download";
+  }
+
+  const safePreparedUrl = safeUrl(
+    preparedDownloadJobId === activeDoneJobId ? preparedDownloadUrl : ""
+  );
+  if (safePreparedUrl) {
+    downloadBtn.href = safePreparedUrl;
+    openExternalBtn.href = safePreparedUrl;
+    downloadBtn.style.display = "inline-block";
+    openExternalBtn.style.display = "inline-block";
+    copyDownloadBtn.style.display = "inline-block";
+    fallbackHint.style.display = "block";
+  } else {
+    downloadBtn.href = "#";
+    openExternalBtn.href = "#";
+    downloadBtn.style.display = "none";
+    openExternalBtn.style.display = "none";
+    copyDownloadBtn.style.display = "none";
+    fallbackHint.style.display = "none";
+  }
+
   panel.style.display = "block";
 }
 
 function hideSuccessPanel() {
   const panel = $("jobSuccessPanel");
+  const prepareBtn = $("prepareDownloadBtn");
   const downloadBtn = $("downloadTrendBtn");
-  if (!panel || !downloadBtn) return;
+  const openExternalBtn = $("openExternalBtn");
+  const copyDownloadBtn = $("copyDownloadBtn");
+  const fallbackHint = $("downloadFallbackHint");
+  if (
+    !panel ||
+    !prepareBtn ||
+    !downloadBtn ||
+    !openExternalBtn ||
+    !copyDownloadBtn ||
+    !fallbackHint
+  ) {
+    return;
+  }
+
+  activeDoneJobId = "";
+  preparedDownloadJobId = "";
+  preparedDownloadUrl = "";
+  isPreparingDownload = false;
+
+  prepareBtn.disabled = false;
+  prepareBtn.textContent = "Prepare download";
   panel.style.display = "none";
   downloadBtn.href = "#";
+  downloadBtn.style.display = "none";
+  openExternalBtn.href = "#";
+  openExternalBtn.style.display = "none";
+  copyDownloadBtn.style.display = "none";
+  fallbackHint.style.display = "none";
 }
 
 function safeUrl(value) {
@@ -191,6 +255,64 @@ let unsubscribeUserDoc = null;
 let unsubscribeJobs = null;
 let latestJobs = [];
 const refreshingJobIds = new Set();
+let activeDoneJobId = "";
+let preparedDownloadJobId = "";
+let preparedDownloadUrl = "";
+let isPreparingDownload = false;
+
+function triggerDownload(url) {
+  const safe = safeUrl(url);
+  if (!safe) return;
+  window.open(safe, "_blank", "noopener,noreferrer");
+}
+
+const prepareDownloadBtn = $("prepareDownloadBtn");
+if (prepareDownloadBtn) {
+  prepareDownloadBtn.onclick = async () => {
+    if (!currentUser || !activeDoneJobId || isPreparingDownload) return;
+
+    clearFormError();
+    isPreparingDownload = true;
+    showSuccessPanel(activeDoneJobId);
+
+    try {
+      const response = await createJob({prepareDownloadJobId: activeDoneJobId});
+      const payload = response?.data || {};
+      const downloadUrl = safeUrl(
+        typeof payload.downloadUrl === "string" ? payload.downloadUrl : ""
+      );
+      if (!downloadUrl) {
+        throw new Error("prepareDownload returned empty downloadUrl");
+      }
+
+      preparedDownloadJobId = activeDoneJobId;
+      preparedDownloadUrl = downloadUrl;
+      showSuccessPanel(activeDoneJobId);
+      triggerDownload(downloadUrl);
+    } catch (error) {
+      showFormError(callableErrorMessage(error));
+    } finally {
+      isPreparingDownload = false;
+      if (activeDoneJobId) {
+        showSuccessPanel(activeDoneJobId);
+      }
+    }
+  };
+}
+
+const copyDownloadBtn = $("copyDownloadBtn");
+if (copyDownloadBtn) {
+  copyDownloadBtn.onclick = async () => {
+    const safe = safeUrl(preparedDownloadUrl);
+    if (!safe) return;
+    try {
+      await navigator.clipboard.writeText(safe);
+      setStatus("Download link copied.");
+    } catch {
+      showFormError("Unable to copy link. Please copy it manually.");
+    }
+  };
+}
 
 $("btnEmailSignIn").onclick = async () => {
   clearAuthError();
@@ -403,14 +525,14 @@ function statusLabel(status) {
   return "pending";
 }
 
-function updateLatestJobUI(job) {
+function updateLatestJobUI(jobId, job) {
   const status = job?.status || "";
   const outputUrl = safeUrl(job?.kling?.outputUrl || "");
   const error = job?.kling?.error || "";
 
-  if (status === "done" && outputUrl) {
+  if (status === "done" && outputUrl && jobId) {
     setStatus("Done. Download is ready.");
-    showSuccessPanel(outputUrl);
+    showSuccessPanel(jobId);
     return;
   }
 
@@ -508,7 +630,7 @@ function renderJobsList() {
     jobsEl.appendChild(row);
   });
 
-  updateLatestJobUI(latestJobs[0].data);
+  updateLatestJobUI(latestJobs[0].id, latestJobs[0].data);
 }
 
 function watchLatestJobs(uid) {

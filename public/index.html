@@ -216,7 +216,13 @@ a{color:#fff}
   <div style="font-weight:700;margin-bottom:8px">Your trends</div>
   <div id="jobs" class="muted">No trends yet.</div>
   <div id="jobSuccessPanel" style="margin-top:12px;display:none">
-    <a id="downloadTrendBtn" class="btn" style="display:inline-block;text-decoration:none" target="_blank" rel="noopener noreferrer">Download your trend</a>
+    <div class="row">
+      <button id="prepareDownloadBtn" class="btn">Prepare download</button>
+      <a id="downloadTrendBtn" class="btn" style="display:none;text-decoration:none" target="_blank" rel="noopener noreferrer" download>Download</a>
+      <a id="openExternalBtn" class="btn2" style="display:none;text-decoration:none" target="_blank" rel="noopener noreferrer">Open in Safari/Chrome</a>
+      <button id="copyDownloadBtn" class="btn2" style="display:none">Copy link</button>
+    </div>
+    <div id="downloadFallbackHint" class="muted" style="margin-top:10px;display:none">If download does not start, tap “Open in Safari/Chrome”.</div>
     <div class="muted" style="margin-top:10px">The link to the video is stored for ~30 days.</div>
   </div>
 </div>

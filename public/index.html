@@ -107,6 +107,7 @@ a{color:#fff}
 .templatesLoading{min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--muted);}
 .btnGoogle{display:inline-flex;align-items:center;gap:8px;}
 .btnGoogle svg{width:14px;height:14px;display:block;flex:0 0 auto;}
+.btnExternalAuth{display:none;text-decoration:none;}
 .brandFooter{margin:16px 0 6px;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--muted);font-size:16px}
 .brandFooter a{display:inline-flex;align-items:center;text-decoration:none}
 .brandFooter img{height:20px;width:auto;display:block;opacity:.95;border-radius:0}
@@ -174,6 +175,14 @@ a{color:#fff}
 
   <div class="row" style="margin-top:10px">
     <button id="btnForgotPassword" class="btn2">Forgot password?</button>
+    <a
+      id="btnOpenExternalAuth"
+      class="btn btnExternalAuth"
+      href="#"
+      target="_blank"
+      rel="noopener noreferrer"
+      style="margin-left:auto"
+    >Open in browser for Google sign-in</a>
   </div>
 
   <div id="authError" class="muted" style="margin-top:10px;display:none"></div>

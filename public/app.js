@@ -94,6 +94,36 @@ function isTelegramInAppBrowser() {
   return /Telegram/i.test(ua);
 }
 
+function isAndroid() {
+  const ua = navigator.userAgent || "";
+  return /Android/i.test(ua);
+}
+
+function buildExternalBrowserUrl() {
+  const currentUrl = window.location.href;
+  if (!isAndroid()) return currentUrl;
+
+  const host = window.location.host;
+  const pathAndQuery = `${window.location.pathname}${window.location.search}`;
+  const fallback = encodeURIComponent(currentUrl);
+  return `intent://${host}${pathAndQuery}#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=${fallback};end`;
+}
+
+function updateAuthInAppActions() {
+  const openBtn = $("btnOpenExternalAuth");
+  if (!openBtn) return;
+
+  const inApp = shouldUseRedirectLogin();
+  if (!inApp) {
+    openBtn.style.display = "none";
+    openBtn.href = "#";
+    return;
+  }
+
+  openBtn.href = buildExternalBrowserUrl();
+  openBtn.style.display = "inline-flex";
+}
+
 function showAuthError(message) {
   const el = $("authError");
   if (!el) return;
@@ -131,6 +161,7 @@ function setStatus(message) {
 function openAuth(message = "") {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "block";
+  updateAuthInAppActions();
   if (message) {
     showAuthError(message);
   } else {
@@ -349,6 +380,13 @@ if (prepareDownloadBtn) {
         showSuccessPanel(activeDoneJobId);
       }
     }
+  };
+}
+
+const openExternalAuthBtn = $("btnOpenExternalAuth");
+if (openExternalAuthBtn) {
+  openExternalAuthBtn.onclick = () => {
+    updateAuthInAppActions();
   };
 }
 
@@ -883,6 +921,7 @@ onAuthStateChanged(auth, async (user) => {
     $("btnLogout").style.display = "none";
     $("supportBtn").style.display = "none";
     closeAuth();
+    updateAuthInAppActions();
     hideSuccessPanel();
     setStatus("");
     latestJobs = [];

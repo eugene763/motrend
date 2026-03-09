@@ -72,6 +72,8 @@ a{color:#fff}
 .spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px;}
 @keyframes spin{to{transform:rotate(360deg)}}
 .templatesLoading{min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--muted);}
+.btnGoogle{display:inline-flex;align-items:center;gap:8px;}
+.btnGoogle svg{width:14px;height:14px;display:block;flex:0 0 auto;}
 
   </style>
 </head>
@@ -99,7 +101,15 @@ a{color:#fff}
     <button id="btnEmailSignIn" class="btn">Sign in</button>
     <button id="btnEmailSignUp" class="btn2">Create account</button>
 
-    <button id="btnLogin" class="btn2" style="margin-left:auto">Continue with Google</button>
+    <button id="btnLogin" class="btn2 btnGoogle" style="margin-left:auto">
+      <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+        <path fill="#4285F4" d="M17.64 9.205c0-.639-.057-1.253-.164-1.841H9v3.482h4.844a4.14 4.14 0 0 1-1.796 2.719v2.258h2.908c1.702-1.567 2.684-3.878 2.684-6.618z"/>
+        <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.177l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.345 0-4.33-1.583-5.038-3.71H.957v2.332A8.996 8.996 0 0 0 9 18z"/>
+        <path fill="#FBBC05" d="M3.962 10.715a5.41 5.41 0 0 1 0-3.43V4.953H.957a8.997 8.997 0 0 0 0 8.094l3.005-2.332z"/>
+        <path fill="#EA4335" d="M9 3.58c1.322 0 2.507.454 3.44 1.345l2.58-2.58C13.463.891 11.426 0 9 0A8.996 8.996 0 0 0 .957 4.953l3.005 2.332C4.67 5.158 6.655 3.58 9 3.58z"/>
+      </svg>
+      <span>Continue with Google</span>
+    </button>
   </div>
 
   <div id="authError" class="muted" style="margin-top:10px;display:none"></div>
@@ -144,9 +154,8 @@ a{color:#fff}
       </div>
 
       <div class="card">
-        <div style="font-weight:700;margin-bottom:8px">Templates</div>
+        <div style="font-weight:700;margin-bottom:8px">Choose your trend</div>
         <div id="templates" class="grid templatesGrid"></div>
-        <div class="muted" style="margin-top:8px">Tip: full-body photo works best.</div>
       </div>
 
       <div class="card">
@@ -169,7 +178,7 @@ a{color:#fff}
       </div>
 
       <div class="card" id="jobsCard">
-  <div style="font-weight:700;margin-bottom:8px">Jobs</div>
+  <div style="font-weight:700;margin-bottom:8px">Your trends</div>
   <div id="jobs" class="muted">No jobs yet.</div>
   <div id="jobSuccessPanel" style="margin-top:12px;display:none">
     <a id="downloadTrendBtn" class="btn" style="display:inline-block;text-decoration:none" target="_blank" rel="noopener noreferrer">Download your trend</a>

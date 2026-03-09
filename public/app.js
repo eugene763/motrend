@@ -7,11 +7,13 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
 import {
   GoogleAuthProvider,
+  browserSessionPersistence,
   createUserWithEmailAndPassword,
   getRedirectResult,
   getAuth,
   onAuthStateChanged,
   sendPasswordResetEmail,
+  setPersistence,
   signInWithEmailAndPassword,
   signInWithRedirect,
   signInWithPopup,
@@ -42,9 +44,14 @@ import {
   httpsCallable,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 
+const runtimeHost = window.location.hostname;
+const runtimeAuthDomain = runtimeHost === "trend.moads.agency"
+  ? "trend.moads.agency"
+  : "gen-lang-client-0651837818.firebaseapp.com";
+
 const firebaseConfig = {
   apiKey: "AIzaSyBro7c7o8kiRdAuZZpu73KdKyApX7JuflE",
-  authDomain: "gen-lang-client-0651837818.firebaseapp.com",
+  authDomain: runtimeAuthDomain,
   projectId: "gen-lang-client-0651837818",
   storageBucket: "gen-lang-client-0651837818.firebasestorage.app",
   messagingSenderId: "399776789069",
@@ -388,6 +395,7 @@ $("btnLogin").onclick = async () => {
   try {
     track("login_click", {method: "google"});
     if (forceRedirect) {
+      await setPersistence(auth, browserSessionPersistence);
       setStatus("Redirecting to Google sign-in…");
       await signInWithRedirect(auth, provider);
       return;
@@ -404,6 +412,7 @@ $("btnLogin").onclick = async () => {
 
     if (!forceRedirect && popupFailed) {
       try {
+        await setPersistence(auth, browserSessionPersistence);
         setStatus("Popup blocked. Redirecting to Google sign-in…");
         await signInWithRedirect(auth, provider);
         return;

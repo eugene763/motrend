@@ -167,13 +167,13 @@ function showSuccessPanel(jobId) {
     prepareBtn.style.display = "none";
     downloadBtn.href = safePreparedUrl;
     openExternalBtn.href = safePreparedUrl;
-    downloadBtn.style.display = "inline-block";
+    downloadBtn.style.display = "flex";
     downloadOr.style.display = "block";
-    openExternalBtn.style.display = "inline-block";
-    copyDownloadBtn.style.display = "inline-block";
+    openExternalBtn.style.display = "flex";
+    copyDownloadBtn.style.display = "flex";
     fallbackHint.style.display = "block";
   } else {
-    prepareBtn.style.display = "inline-block";
+    prepareBtn.style.display = "flex";
     downloadBtn.href = "#";
     openExternalBtn.href = "#";
     downloadBtn.style.display = "none";
@@ -213,7 +213,7 @@ function hideSuccessPanel() {
 
   prepareBtn.disabled = false;
   prepareBtn.textContent = "Prepare download";
-  prepareBtn.style.display = "inline-block";
+  prepareBtn.style.display = "flex";
   panel.style.display = "none";
   downloadBtn.href = "#";
   downloadBtn.style.display = "none";

@@ -171,13 +171,16 @@ function callableErrorMessage(error) {
   const message = typeof error?.message === "string" ? error.message : "";
 
   if (code.includes("resource-exhausted")) {
-    return "Not enough credits for this generation.";
+    return message || "Not enough credits for this generation.";
   }
   if (code.includes("unauthenticated")) {
     return "Please sign in first.";
   }
   if (code.includes("failed-precondition")) {
-    return "Template is unavailable. Pick another one.";
+    return message || "Template is unavailable. Pick another one.";
+  }
+  if (code.includes("permission-denied")) {
+    return message || "You have no access to this trend.";
   }
   return message || "Something went wrong. Try again.";
 }
@@ -186,6 +189,8 @@ let currentUser = null;
 let selectedTemplate = null;
 let unsubscribeUserDoc = null;
 let unsubscribeJobs = null;
+let latestJobs = [];
+const refreshingJobIds = new Set();
 
 $("btnEmailSignIn").onclick = async () => {
   clearAuthError();
@@ -420,6 +425,92 @@ function updateLatestJobUI(job) {
   }
 }
 
+function canRefreshJob(job) {
+  return job?.status === "queued" || job?.status === "processing";
+}
+
+function renderJobsList() {
+  const jobsEl = $("jobs");
+  if (!jobsEl) return;
+
+  if (!latestJobs.length) {
+    jobsEl.textContent = "No trends yet.";
+    hideSuccessPanel();
+    return;
+  }
+
+  jobsEl.innerHTML = "";
+
+  latestJobs.forEach((item) => {
+    const job = item.data || {};
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.justifyContent = "space-between";
+    row.style.marginBottom = "8px";
+
+    const meta = document.createElement("div");
+    const outputUrl = safeUrl(job?.kling?.outputUrl || "");
+    meta.textContent = `${item.id.slice(0, 6)}… • ${statusLabel(job.status)} ${outputUrl ? "• ✅" : ""}`;
+    row.appendChild(meta);
+
+    if (canRefreshJob(job)) {
+      const refreshBtn = document.createElement("button");
+      refreshBtn.className = "btn2";
+      refreshBtn.style.padding = "6px 10px";
+
+      const isRefreshing = refreshingJobIds.has(item.id);
+      refreshBtn.disabled = isRefreshing;
+      if (isRefreshing) {
+        refreshBtn.innerHTML =
+          '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Refreshing...';
+      } else {
+        refreshBtn.textContent = "Refresh status";
+      }
+
+      refreshBtn.onclick = async () => {
+        if (!currentUser || refreshingJobIds.has(item.id)) return;
+        clearFormError();
+        refreshingJobIds.add(item.id);
+        renderJobsList();
+
+        try {
+          const response = await createJob({refreshJobId: item.id});
+          const payload = response?.data || {};
+          const idx = latestJobs.findIndex((entry) => entry.id === item.id);
+          if (idx >= 0 && payload && typeof payload === "object") {
+            const status = typeof payload.status === "string" ?
+              payload.status :
+              latestJobs[idx].data?.status;
+            const kling = payload.kling && typeof payload.kling === "object" ?
+              payload.kling :
+              latestJobs[idx].data?.kling;
+
+            latestJobs[idx] = {
+              ...latestJobs[idx],
+              data: {
+                ...latestJobs[idx].data,
+                status,
+                kling,
+              },
+            };
+          }
+        } catch (error) {
+          showFormError(callableErrorMessage(error));
+        } finally {
+          refreshingJobIds.delete(item.id);
+          renderJobsList();
+        }
+      };
+
+      row.appendChild(refreshBtn);
+    }
+
+    jobsEl.appendChild(row);
+  });
+
+  updateLatestJobUI(latestJobs[0].data);
+}
+
 function watchLatestJobs(uid) {
   const qy = query(
     collection(db, "jobs"),
@@ -429,30 +520,17 @@ function watchLatestJobs(uid) {
   );
 
   return onSnapshot(qy, (snap) => {
-    const jobsEl = $("jobs");
-
     if (snap.empty) {
-      jobsEl.textContent = "No jobs yet.";
-      hideSuccessPanel();
+      latestJobs = [];
+      renderJobsList();
       return;
     }
 
-    jobsEl.innerHTML = "";
-
-    let firstJob = null;
-    snap.forEach((docSnap) => {
-      const job = docSnap.data() || {};
-      if (!firstJob) firstJob = job;
-
-      const row = document.createElement("div");
-      const outputUrl = safeUrl(job?.kling?.outputUrl || "");
-      row.textContent = `${docSnap.id.slice(0, 6)}… • ${statusLabel(job.status)} ${outputUrl ? "• ✅" : ""}`;
-      jobsEl.appendChild(row);
-    });
-
-    if (firstJob) {
-      updateLatestJobUI(firstJob);
-    }
+    latestJobs = snap.docs.map((docSnap) => ({
+      id: docSnap.id,
+      data: docSnap.data() || {},
+    }));
+    renderJobsList();
   });
 }
 
@@ -546,9 +624,12 @@ onAuthStateChanged(auth, async (user) => {
     closeAuth();
     hideSuccessPanel();
     setStatus("");
+    latestJobs = [];
+    refreshingJobIds.clear();
+    renderJobsList();
 
     await loadTemplates();
-    $("jobs").textContent = "Sign in to see your jobs.";
+    $("jobs").textContent = "Sign in to see your trends.";
     return;
   }
 

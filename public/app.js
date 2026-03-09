@@ -321,7 +321,6 @@ if (prepareDownloadBtn) {
       preparedDownloadJobId = activeDoneJobId;
       preparedDownloadUrl = downloadUrl;
       showSuccessPanel(activeDoneJobId);
-      triggerDownload(downloadUrl);
     } catch (error) {
       showFormError(callableErrorMessage(error));
     } finally {

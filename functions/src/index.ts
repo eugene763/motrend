@@ -9,6 +9,9 @@ import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
 import {randomUUID} from "crypto";
+import {Readable, Transform} from "stream";
+import {pipeline} from "stream/promises";
+import {ReadableStream as WebReadableStream} from "stream/web";
 import jwt from "jsonwebtoken";
 
 admin.initializeApp();
@@ -511,20 +514,17 @@ async function fetchVideoToStorage(params: {
       );
     }
 
-    const bodyBytes = Buffer.from(await response.arrayBuffer());
-    if (bodyBytes.length > MAX_DOWNLOAD_BYTES) {
-      throw new HttpsError(
-        "failed-precondition",
-        "Video file is too large to prepare for download."
-      );
-    }
-
     const contentType = pickString(
       response.headers.get("content-type")
     ) || "video/mp4";
 
     const file = admin.storage().bucket().file(params.storagePath);
-    await file.save(bodyBytes, {
+    const body = response.body;
+    if (!body) {
+      throw new Error("Source download returned empty stream.");
+    }
+
+    const writeStream = file.createWriteStream({
       resumable: false,
       metadata: {
         contentType,
@@ -535,9 +535,37 @@ async function fetchVideoToStorage(params: {
       },
     });
 
+    let totalBytes = 0;
+    const limiter = new Transform({
+      transform: (chunk, _encoding, callback) => {
+        const size = Buffer.isBuffer(chunk) ? chunk.length :
+          Buffer.byteLength(String(chunk));
+        totalBytes += size;
+        if (totalBytes > MAX_DOWNLOAD_BYTES) {
+          callback(new HttpsError(
+            "failed-precondition",
+            "Video file is too large to prepare for download."
+          ));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+
+    try {
+      await pipeline(
+        Readable.fromWeb(body as unknown as WebReadableStream),
+        limiter,
+        writeStream
+      );
+    } catch (error) {
+      await file.delete({ignoreNotFound: true});
+      throw error;
+    }
+
     return {
       contentType,
-      sizeBytes: bodyBytes.length,
+      sizeBytes: totalBytes,
       downloadToken: params.downloadToken,
     };
   } finally {
@@ -759,6 +787,7 @@ export const createJob = onCall(
   {
     cors: corsAllowedOrigins,
     secrets: [klingAccessKey, klingSecretKey],
+    memory: "512MiB",
   },
   async (req) => {
     if (!req.auth) {

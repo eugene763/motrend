@@ -621,6 +621,7 @@ onAuthStateChanged(auth, async (user) => {
     $("jobsCard").style.display = "none";
     $("btnWallet").style.display = "none";
     $("btnLogout").style.display = "none";
+    $("supportBtn").style.display = "none";
     closeAuth();
     hideSuccessPanel();
     setStatus("");
@@ -638,6 +639,7 @@ onAuthStateChanged(auth, async (user) => {
   $("jobsCard").style.display = "block";
   $("btnWallet").style.display = "inline-block";
   $("btnLogout").style.display = "inline-block";
+  $("supportBtn").style.display = "inline-flex";
   $("userLine").textContent = user.email || "Signed in";
 
   if (analytics) {

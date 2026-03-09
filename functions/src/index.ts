@@ -8,6 +8,7 @@ import {onCall, HttpsError} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
+import {randomUUID} from "crypto";
 import jwt from "jsonwebtoken";
 
 admin.initializeApp();
@@ -23,7 +24,6 @@ const KLING_HTTP_TIMEOUT_MS = 20_000;
 const DOWNLOAD_FETCH_TIMEOUT_MS = 60_000;
 const REFRESH_COOLDOWN_MS = 7_000;
 const DOWNLOAD_LOCK_MS = 2 * 60 * 1000;
-const DOWNLOAD_SIGNED_URL_TTL_MS = 15 * 60 * 1000;
 const MAX_DOWNLOAD_BYTES = 120 * 1024 * 1024;
 const KLING_BASE_URL =
   process.env.KLING_BASE_URL || "https://api-singapore.klingai.com";
@@ -67,6 +67,7 @@ interface KlingState {
 interface DownloadState {
   storagePath?: string;
   fileName?: string;
+  downloadToken?: string;
   contentType?: string;
   sizeBytes?: number;
   expiresAt?: admin.firestore.Timestamp;
@@ -454,27 +455,30 @@ function defaultDownloadFileName(jobId: string): string {
   return sanitizeFileName(`motrend-${jobId}.mp4`);
 }
 
-async function getSignedDownloadUrl(params: {
+function buildFirebaseDownloadUrl(params: {
   storagePath: string;
-  fileName: string;
-  contentType: string;
-}): Promise<string> {
-  const file = admin.storage().bucket().file(params.storagePath);
-  const [signedUrl] = await file.getSignedUrl({
-    version: "v4",
-    action: "read",
-    expires: Date.now() + DOWNLOAD_SIGNED_URL_TTL_MS,
-    responseDisposition: `attachment; filename="${params.fileName}"`,
-    responseType: params.contentType,
-  });
-  return signedUrl;
+  downloadToken: string;
+}): string {
+  const bucketName = admin.storage().bucket().name;
+  return "https://firebasestorage.googleapis.com/v0/b/" +
+    `${bucketName}/o/${encodeURIComponent(params.storagePath)}` +
+    `?alt=media&token=${encodeURIComponent(params.downloadToken)}`;
+}
+
+function createDownloadToken(): string {
+  return randomUUID();
 }
 
 async function fetchVideoToStorage(params: {
   sourceUrl: string;
   storagePath: string;
   fileName: string;
-}): Promise<{contentType: string; sizeBytes: number}> {
+  downloadToken: string;
+}): Promise<{
+  contentType: string;
+  sizeBytes: number;
+  downloadToken: string;
+}> {
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     controller.abort();
@@ -525,12 +529,16 @@ async function fetchVideoToStorage(params: {
       metadata: {
         contentType,
         contentDisposition: `attachment; filename="${params.fileName}"`,
+        metadata: {
+          firebaseStorageDownloadTokens: params.downloadToken,
+        },
       },
     });
 
     return {
       contentType,
       sizeBytes: bodyBytes.length,
+      downloadToken: params.downloadToken,
     };
   } finally {
     clearTimeout(timeout);
@@ -580,18 +588,21 @@ async function prepareOwnedJobDownload(params: {
       defaultDownloadPath(uid, jobId);
     const fileName = pickString(job.download?.fileName) ||
       defaultDownloadFileName(jobId);
+    const downloadToken = pickString(job.download?.downloadToken);
     const contentType = pickString(job.download?.contentType) || "video/mp4";
     const expiresAtMs = timestampMs(job.download?.expiresAt);
 
     if (
       expiresAtMs !== null &&
       expiresAtMs > nowMs &&
-      job.download?.storagePath
+      job.download?.storagePath &&
+      downloadToken
     ) {
       return {
         mode: "cached" as const,
         storagePath,
         fileName,
+        downloadToken,
         contentType,
         expiresAtMs,
       };
@@ -618,6 +629,7 @@ async function prepareOwnedJobDownload(params: {
       outputUrl,
       storagePath,
       fileName,
+      downloadToken: downloadToken || createDownloadToken(),
     };
   });
 
@@ -629,13 +641,12 @@ async function prepareOwnedJobDownload(params: {
   }
 
   if (decision.mode === "cached") {
-    const signedUrl = await getSignedDownloadUrl({
+    const downloadUrl = buildFirebaseDownloadUrl({
       storagePath: decision.storagePath,
-      fileName: decision.fileName,
-      contentType: decision.contentType,
+      downloadToken: decision.downloadToken,
     });
     return {
-      downloadUrl: signedUrl,
+      downloadUrl,
       expiresAtMs: decision.expiresAtMs,
       cached: true,
     };
@@ -646,12 +657,14 @@ async function prepareOwnedJobDownload(params: {
       sourceUrl: decision.outputUrl,
       storagePath: decision.storagePath,
       fileName: decision.fileName,
+      downloadToken: decision.downloadToken,
     });
 
     const expiresAtMs = Date.now() + OUTPUT_TTL_MS;
     await jobRef.update({
       "download.storagePath": decision.storagePath,
       "download.fileName": decision.fileName,
+      "download.downloadToken": downloaded.downloadToken,
       "download.contentType": downloaded.contentType,
       "download.sizeBytes": downloaded.sizeBytes,
       "download.expiresAt": admin.firestore.Timestamp.fromMillis(expiresAtMs),
@@ -660,14 +673,13 @@ async function prepareOwnedJobDownload(params: {
       "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    const signedUrl = await getSignedDownloadUrl({
+    const downloadUrl = buildFirebaseDownloadUrl({
       storagePath: decision.storagePath,
-      fileName: decision.fileName,
-      contentType: downloaded.contentType,
+      downloadToken: downloaded.downloadToken,
     });
 
     return {
-      downloadUrl: signedUrl,
+      downloadUrl,
       expiresAtMs,
       cached: false,
     };
@@ -1006,6 +1018,7 @@ export const cleanupDownloadsQuarterHourly = onSchedule(
       await jobDoc.ref.update({
         "download.storagePath": admin.firestore.FieldValue.delete(),
         "download.fileName": admin.firestore.FieldValue.delete(),
+        "download.downloadToken": admin.firestore.FieldValue.delete(),
         "download.contentType": admin.firestore.FieldValue.delete(),
         "download.sizeBytes": admin.firestore.FieldValue.delete(),
         "download.expiresAt": admin.firestore.FieldValue.delete(),

@@ -10,6 +10,7 @@ import {
   createUserWithEmailAndPassword,
   getAuth,
   onAuthStateChanged,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
@@ -385,6 +386,27 @@ $("btnLogin").onclick = async () => {
 
 $("btnLogout").onclick = async () => {
   await signOut(auth);
+};
+
+$("btnForgotPassword").onclick = async () => {
+  clearAuthError();
+  const email = $("authEmail").value.trim();
+  if (!email) {
+    showAuthError("Enter your email first.");
+    $("authEmail")?.focus();
+    return;
+  }
+
+  try {
+    track("password_reset_requested", {method: "email"});
+    await sendPasswordResetEmail(auth, email);
+  } catch {
+    // Keep response generic to avoid account enumeration.
+  }
+
+  showAuthError(
+    "If an account exists, we sent a reset link to this email."
+  );
 };
 
 $("btnSaveProfile").onclick = async () => {

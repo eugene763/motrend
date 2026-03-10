@@ -30,6 +30,8 @@ const DOWNLOAD_LOCK_MS = 2 * 60 * 1000;
 const MAX_DOWNLOAD_BYTES = 120 * 1024 * 1024;
 const SUPPORT_CODES_COLLECTION = "support_codes";
 const CREDIT_ADJUSTMENTS_COLLECTION = "credit_adjustments";
+const QUEUE_COLLECTION = "job_queue";
+const QUEUE_LEASE_MS = 2 * 60 * 1000;
 const KLING_BASE_URL =
   process.env.KLING_BASE_URL || "https://api-singapore.klingai.com";
 
@@ -45,6 +47,11 @@ type JobStatus =
   | "processing"
   | "done"
   | "failed";
+
+type QueueTaskType =
+  | "kling_submit"
+  | "kling_poll"
+  | "download_prepare";
 
 interface UserDoc {
   creditsBalance?: number;
@@ -109,6 +116,18 @@ interface JobDoc {
   kling?: KlingState;
   download?: DownloadState;
   refund?: RefundState;
+  createdAt?: admin.firestore.Timestamp;
+  updatedAt?: admin.firestore.Timestamp;
+}
+
+interface QueueTaskDoc {
+  type?: QueueTaskType;
+  jobId?: string;
+  uid?: string;
+  status?: "queued" | "processing" | "done" | "failed";
+  leaseUntil?: admin.firestore.Timestamp;
+  attempts?: number;
+  lastError?: string;
   createdAt?: admin.firestore.Timestamp;
   updatedAt?: admin.firestore.Timestamp;
 }
@@ -677,6 +696,23 @@ function buildKlingPollUpdates(
   return updates;
 }
 
+function enqueueQueueTaskInTransaction(
+  tx: admin.firestore.Transaction,
+  params: {type: QueueTaskType; uid: string; jobId: string}
+): string {
+  const taskRef = db.collection(QUEUE_COLLECTION).doc();
+  tx.set(taskRef, {
+    type: params.type,
+    uid: params.uid,
+    jobId: params.jobId,
+    status: "queued",
+    attempts: 0,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  return taskRef.id;
+}
+
 function sanitizeFileName(value: string): string {
   return value.replace(/[^\w.-]/g, "_");
 }
@@ -845,10 +881,7 @@ async function prepareOwnedJobDownload(params: {
     const nowMs = Date.now();
     const storagePath = pickString(job.download?.storagePath) ||
       defaultDownloadPath(uid, jobId);
-    const fileName = pickString(job.download?.fileName) ||
-      defaultDownloadFileName(jobId);
     const downloadToken = pickString(job.download?.downloadToken);
-    const contentType = pickString(job.download?.contentType) || "video/mp4";
     const expiresAtMs = timestampMs(job.download?.expiresAt);
 
     if (
@@ -860,9 +893,7 @@ async function prepareOwnedJobDownload(params: {
       return {
         mode: "cached" as const,
         storagePath,
-        fileName,
         downloadToken,
-        contentType,
         expiresAtMs,
       };
     }
@@ -882,20 +913,22 @@ async function prepareOwnedJobDownload(params: {
       "download.lastError": admin.firestore.FieldValue.delete(),
       "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
     });
+    enqueueQueueTaskInTransaction(tx, {
+      type: "download_prepare",
+      uid,
+      jobId,
+    });
 
     return {
-      mode: "fetch" as const,
-      outputUrl,
-      storagePath,
-      fileName,
-      downloadToken: downloadToken || createDownloadToken(),
+      mode: "queued" as const,
+      retryAfterMs: 2_000,
     };
   });
 
-  if (decision.mode === "pending") {
+  if (decision.mode === "pending" || decision.mode === "queued") {
     return {
       pending: true,
-      retryAfterMs: decision.retryAfterMs,
+      retryAfterMs: decision.retryAfterMs || 2_000,
     };
   }
 
@@ -911,49 +944,10 @@ async function prepareOwnedJobDownload(params: {
     };
   }
 
-  try {
-    const downloaded = await fetchVideoToStorage({
-      sourceUrl: decision.outputUrl,
-      storagePath: decision.storagePath,
-      fileName: decision.fileName,
-      downloadToken: decision.downloadToken,
-    });
-
-    const expiresAtMs = Date.now() + OUTPUT_TTL_MS;
-    await jobRef.update({
-      "download.storagePath": decision.storagePath,
-      "download.fileName": decision.fileName,
-      "download.downloadToken": downloaded.downloadToken,
-      "download.contentType": downloaded.contentType,
-      "download.sizeBytes": downloaded.sizeBytes,
-      "download.expiresAt": admin.firestore.Timestamp.fromMillis(expiresAtMs),
-      "download.lockUntil": admin.firestore.FieldValue.delete(),
-      "download.lastError": admin.firestore.FieldValue.delete(),
-      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    const downloadUrl = buildFirebaseDownloadUrl({
-      storagePath: decision.storagePath,
-      downloadToken: downloaded.downloadToken,
-    });
-
-    return {
-      downloadUrl,
-      expiresAtMs,
-      cached: false,
-    };
-  } catch (error) {
-    const msg = errorMessage(error);
-    await jobRef.update({
-      "download.lockUntil": admin.firestore.FieldValue.delete(),
-      "download.lastError": msg,
-      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
-    });
-    if (error instanceof HttpsError) {
-      throw error;
-    }
-    throw new HttpsError("internal", "Failed to prepare download.");
-  }
+  return {
+    pending: true,
+    retryAfterMs: 2_000,
+  };
 }
 
 async function refreshOwnedJobStatus(
@@ -962,7 +956,7 @@ async function refreshOwnedJobStatus(
 ): Promise<{status: JobStatus; kling: Record<string, unknown>}> {
   const jobRef = db.collection("jobs").doc(jobId);
 
-  const lockResult = await db.runTransaction(async (tx) => {
+  await db.runTransaction(async (tx) => {
     const snap = await tx.get(jobRef);
     if (!snap.exists) {
       throw new HttpsError("not-found", "Trend not found.");
@@ -978,7 +972,7 @@ async function refreshOwnedJobStatus(
     const refreshable = status === "queued" || status === "processing";
 
     if (!refreshable || !taskId) {
-      return {shouldPoll: false};
+      return;
     }
 
     const lastStatusCheckAtMs = timestampMs(job.kling?.lastStatusCheckAt);
@@ -996,14 +990,12 @@ async function refreshOwnedJobStatus(
       "kling.lastStatusCheckAt": admin.firestore.Timestamp.now(),
       "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
     });
-    return {shouldPoll: true, taskId};
+    enqueueQueueTaskInTransaction(tx, {
+      type: "kling_poll",
+      uid,
+      jobId,
+    });
   });
-
-  if (lockResult.shouldPoll && lockResult.taskId) {
-    const result = await pollKlingTask(lockResult.taskId);
-    const updates = buildKlingPollUpdates(result);
-    await jobRef.update(updates);
-  }
 
   const latestSnap = await jobRef.get();
   const latestJob = (latestSnap.data() as JobDoc | undefined) || {};
@@ -1305,87 +1297,243 @@ export const processJobTrigger001 = onDocumentUpdated(
     if (!inputAdded || after.status !== "queued") return;
 
     const jobRef = afterSnap.ref;
-    const lockedJob = await db.runTransaction(async (tx) => {
+    await db.runTransaction(async (tx) => {
       const snap = await tx.get(jobRef);
       const current = (snap.data() as JobDoc | undefined) || {};
-      if (current.status !== "queued" || !current.inputImageUrl) return null;
-      if (pickString(current.kling?.taskId)) return null;
+      if (current.status !== "queued" || !current.inputImageUrl) return;
+      if (pickString(current.kling?.taskId)) return;
 
       tx.update(jobRef, {
         "status": "processing" as JobStatus,
         "kling.state": "submitting",
         "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
       });
-
-      return {
-        templateId: current.templateId || "",
-        inputImageUrl: current.inputImageUrl,
-      };
+      enqueueQueueTaskInTransaction(tx, {
+        type: "kling_submit",
+        uid: pickString(current.uid) || "",
+        jobId: afterSnap.id,
+      });
     });
+  }
+);
 
-    if (!lockedJob || !lockedJob.templateId || !lockedJob.inputImageUrl) {
-      return;
+async function processKlingSubmitTask(jobId: string): Promise<void> {
+  const jobRef = db.collection("jobs").doc(jobId);
+  const snap = await jobRef.get();
+  if (!snap.exists) return;
+
+  const job = (snap.data() as JobDoc | undefined) || {};
+  const templateId = pickString(job.templateId);
+  const inputImageUrl = pickString(job.inputImageUrl);
+  if (!templateId || !inputImageUrl) return;
+  if (pickString(job.kling?.taskId)) return;
+  if (job.status !== "processing" && job.status !== "queued") return;
+
+  try {
+    const templateSnap = await db.doc(`templates/${templateId}`).get();
+    const template = (templateSnap.data() as TemplateDoc | undefined) || {};
+    const referenceVideoUrl = pickString(
+      template.referenceVideoUrl,
+      template.kling?.referenceVideoUrl
+    );
+    if (!referenceVideoUrl) {
+      throw new Error("Template has no referenceVideoUrl");
     }
 
-    try {
-      const templateSnap = await db.doc(
-        `templates/${lockedJob.templateId}`
-      ).get();
-      const template = (templateSnap.data() as TemplateDoc | undefined) || {};
-      const referenceVideoUrl = pickString(
-        template.referenceVideoUrl,
-        template.kling?.referenceVideoUrl
-      );
-      if (!referenceVideoUrl) {
-        throw new Error("Template has no referenceVideoUrl");
+    const submit = await submitKlingTask({
+      jobId,
+      inputImageUrl,
+      referenceVideoUrl,
+    });
+
+    const updates: Record<string, unknown> = {
+      "status": "processing" as JobStatus,
+      "kling.taskId": submit.taskId,
+      "kling.state": "processing",
+      "kling.error": admin.firestore.FieldValue.delete(),
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    };
+    if (submit.requestId) {
+      updates["kling.requestId"] = submit.requestId;
+    }
+    await jobRef.update(updates);
+  } catch (error) {
+    const msg = errorMessage(error);
+    logger.error("Kling submit failed", {jobId, message: msg});
+
+    if (isKling500Code1200Error(msg)) {
+      try {
+        const refunded = await refundCreditsForJobKling1200(jobRef);
+        logger.warn("Credits refunded after Kling 500 code 1200", {
+          jobId,
+          refunded,
+        });
+      } catch (refundError) {
+        logger.error("Credit refund failed", {
+          jobId,
+          message: errorMessage(refundError),
+        });
+      }
+    }
+
+    await jobRef.update({
+      "status": "failed" as JobStatus,
+      "kling.state": "failed",
+      "kling.error": msg,
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    });
+    throw error;
+  }
+}
+
+async function processKlingPollTask(jobId: string): Promise<void> {
+  const jobRef = db.collection("jobs").doc(jobId);
+  const snap = await jobRef.get();
+  if (!snap.exists) return;
+
+  const job = (snap.data() as JobDoc | undefined) || {};
+  const status = job.status || "queued";
+  const taskId = pickString(job.kling?.taskId);
+  const refreshable = status === "queued" || status === "processing";
+  if (!refreshable || !taskId) return;
+
+  const result = await pollKlingTask(taskId);
+  const updates = buildKlingPollUpdates(result);
+  await jobRef.update(updates);
+}
+
+async function processDownloadPrepareTask(jobId: string): Promise<void> {
+  const jobRef = db.collection("jobs").doc(jobId);
+  const snap = await jobRef.get();
+  if (!snap.exists) return;
+
+  const job = (snap.data() as JobDoc | undefined) || {};
+  const uid = pickString(job.uid);
+  if (!uid) return;
+  if (job.status !== "done") return;
+
+  const outputUrl = pickString(job.kling?.outputUrl);
+  if (!outputUrl) {
+    await jobRef.update({
+      "download.lockUntil": admin.firestore.FieldValue.delete(),
+      "download.lastError": "Download source is unavailable.",
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return;
+  }
+
+  const nowMs = Date.now();
+  const expiresAtMs = timestampMs(job.download?.expiresAt);
+  if (expiresAtMs !== null && expiresAtMs > nowMs) {
+    await jobRef.update({
+      "download.lockUntil": admin.firestore.FieldValue.delete(),
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return;
+  }
+
+  const storagePath = pickString(job.download?.storagePath) ||
+    defaultDownloadPath(uid, jobId);
+  const fileName = pickString(job.download?.fileName) ||
+    defaultDownloadFileName(jobId);
+  const downloadToken = pickString(job.download?.downloadToken) ||
+    createDownloadToken();
+
+  try {
+    const downloaded = await fetchVideoToStorage({
+      sourceUrl: outputUrl,
+      storagePath,
+      fileName,
+      downloadToken,
+    });
+
+    const nextExpiresAtMs = Date.now() + OUTPUT_TTL_MS;
+    await jobRef.update({
+      "download.storagePath": storagePath,
+      "download.fileName": fileName,
+      "download.downloadToken": downloaded.downloadToken,
+      "download.contentType": downloaded.contentType,
+      "download.sizeBytes": downloaded.sizeBytes,
+      "download.expiresAt": admin.firestore.Timestamp.fromMillis(
+        nextExpiresAtMs
+      ),
+      "download.lockUntil": admin.firestore.FieldValue.delete(),
+      "download.lastError": admin.firestore.FieldValue.delete(),
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    const msg = errorMessage(error);
+    await jobRef.update({
+      "download.lockUntil": admin.firestore.FieldValue.delete(),
+      "download.lastError": msg,
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    });
+    throw error;
+  }
+}
+
+export const processQueueTask = onDocumentCreated(
+  {
+    document: `${QUEUE_COLLECTION}/{taskId}`,
+    secrets: [klingAccessKey, klingSecretKey],
+    memory: "512MiB",
+    maxInstances: 1,
+    concurrency: 1,
+  },
+  async (event) => {
+    const taskRef = event.data?.ref;
+    if (!taskRef) return;
+
+    const claimed = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(taskRef);
+      if (!snap.exists) return null;
+      const task = (snap.data() as QueueTaskDoc | undefined) || {};
+      if (task.status !== "queued") return null;
+      const type = task.type;
+      const jobId = pickString(task.jobId);
+      if (!type || !jobId) {
+        tx.update(taskRef, {
+          status: "failed",
+          lastError: "Invalid queue task payload.",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        return null;
       }
 
-      const submit = await submitKlingTask({
-        jobId: afterSnap.id,
-        inputImageUrl: lockedJob.inputImageUrl,
-        referenceVideoUrl,
+      tx.update(taskRef, {
+        status: "processing",
+        leaseUntil: admin.firestore.Timestamp.fromMillis(
+          Date.now() + QUEUE_LEASE_MS
+        ),
+        attempts: admin.firestore.FieldValue.increment(1),
+        lastError: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
+      return {type, jobId};
+    });
 
-      const updates: Record<string, unknown> = {
-        "status": "processing" as JobStatus,
-        "kling.taskId": submit.taskId,
-        "kling.state": "processing",
-        "kling.error": admin.firestore.FieldValue.delete(),
-        "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
-      };
-      if (submit.requestId) {
-        updates["kling.requestId"] = submit.requestId;
+    if (!claimed) return;
+
+    try {
+      if (claimed.type === "kling_submit") {
+        await processKlingSubmitTask(claimed.jobId);
+      } else if (claimed.type === "kling_poll") {
+        await processKlingPollTask(claimed.jobId);
+      } else if (claimed.type === "download_prepare") {
+        await processDownloadPrepareTask(claimed.jobId);
       }
-      await jobRef.update({
-        ...updates,
+
+      await taskRef.update({
+        status: "done",
+        leaseUntil: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     } catch (error) {
-      const msg = errorMessage(error);
-      logger.error("Kling submit failed", {
-        jobId: afterSnap.id,
-        message: msg,
-      });
-
-      if (isKling500Code1200Error(msg)) {
-        try {
-          const refunded = await refundCreditsForJobKling1200(jobRef);
-          logger.warn("Credits refunded after Kling 500 code 1200", {
-            jobId: afterSnap.id,
-            refunded,
-          });
-        } catch (refundError) {
-          logger.error("Credit refund failed", {
-            jobId: afterSnap.id,
-            message: errorMessage(refundError),
-          });
-        }
-      }
-
-      await jobRef.update({
-        "status": "failed" as JobStatus,
-        "kling.state": "failed",
-        "kling.error": msg,
-        "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+      await taskRef.update({
+        status: "failed",
+        leaseUntil: admin.firestore.FieldValue.delete(),
+        lastError: errorMessage(error),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
   }

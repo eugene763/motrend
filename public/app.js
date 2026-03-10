@@ -520,6 +520,7 @@ let activeDoneJobId = "";
 let preparedDownloadJobId = "";
 let preparedDownloadUrl = "";
 let isPreparingDownload = false;
+let hidePreviousReadyHintInSession = false;
 let currentSupportCode = "";
 let isAdminUser = false;
 let adminSelectedUid = "";
@@ -1539,14 +1540,26 @@ function renderJobsList() {
     if (latest.id === doneForPanel.id) {
       setStatus("Done. Download is ready.");
     } else if (latest?.data?.status === "processing") {
-      setStatus("Processing… Previous trend download is ready.");
+      setStatus(
+        hidePreviousReadyHintInSession ?
+          "Processing…" :
+          "Processing… Previous trend download is ready."
+      );
     } else if (latest?.data?.status === "queued") {
-      setStatus("Queued. Previous trend download is ready.");
+      setStatus(
+        hidePreviousReadyHintInSession ?
+          "Queued. Waiting for processing…" :
+          "Queued. Previous trend download is ready."
+      );
     } else if (latest?.data?.status === "failed") {
       const error = latest?.data?.kling?.error || "try another photo/template";
-      setStatus(
-        `Latest trend failed: ${error}. Previous trend download is ready.`
-      );
+      if (hidePreviousReadyHintInSession) {
+        setStatus(`Latest trend failed: ${error}.`);
+      } else {
+        setStatus(
+          `Latest trend failed: ${error}. Previous trend download is ready.`
+        );
+      }
     } else {
       setStatus("Download is ready.");
     }
@@ -1608,6 +1621,7 @@ $("btnGenerate").onclick = async () => {
 
   const btn = $("btnGenerate");
   btn.disabled = true;
+  hidePreviousReadyHintInSession = true;
   hideSuccessPanel();
   setStatus("Creating job…");
 
@@ -1631,7 +1645,7 @@ $("btnGenerate").onclick = async () => {
       const uploadDir = uploadPath.replace(/\/[^/]+$/, "");
       referenceVideoPath = `${uploadDir}/reference${preparedVideo.extension}`;
 
-      setStatus("Uploading reference video…");
+      setStatus("Video download");
       const referenceRef = ref(storage, referenceVideoPath);
       await uploadBytes(referenceRef, preparedVideo.blob, {
         contentType: preparedVideo.contentType,
@@ -1722,6 +1736,7 @@ onAuthStateChanged(auth, async (user) => {
     selectedTemplate = null;
     selectedTrendKind = TREND_SELECTION_TEMPLATE;
     availableTemplates = [];
+    hidePreviousReadyHintInSession = false;
     updateSelectedTrendField();
     selectedReferenceVideoFile = null;
     selectedReferenceVideoName = "";
@@ -1774,6 +1789,7 @@ onAuthStateChanged(auth, async (user) => {
 
   await syncSupportProfile();
 
+  hidePreviousReadyHintInSession = false;
   await loadTemplates();
   unsubscribeUserDoc = watchUserDoc(user.uid);
   unsubscribeJobs = watchLatestJobs(user.uid);

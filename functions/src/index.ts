@@ -1154,7 +1154,7 @@ export const createJob = onCall(
     secrets: [klingAccessKey, klingSecretKey],
     memory: "512MiB",
     minInstances: 5,
-    maxInstances: 300,
+    maxInstances: 200,
     concurrency: 1000,
   },
   async (req) => {

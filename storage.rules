@@ -21,7 +21,7 @@ service firebase.storage {
       allow write: if isOwner(uid) && (
         request.resource == null || (
           request.resource.contentType.matches('image/.*') &&
-          request.resource.size < 10 * 1024 * 1024
+          request.resource.size < 40 * 1024 * 1024
         )
       );
     }

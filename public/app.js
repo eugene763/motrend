@@ -530,9 +530,11 @@ const MAX_REFERENCE_VIDEO_BYTES = 200 * 1024 * 1024;
 const PHOTO_HINT_KEY = "motrend_photo_hint_v1";
 const VIDEO_HINT_KEY = "motrend_video_hint_v1";
 const PHOTO_HINT_MESSAGE =
-  "Supported image formats: .jpg / .jpeg / .png\n" +
-  "File size: ≤10MB, dimensions: 300px ~ 65536px, aspect ratio: 1:2.5 ~ 2.5:1";
-const VIDEO_HINT_MESSAGE = "выбор файла на устройстве";
+  "For best results, choose a high-quality photo with clear facial features, visible hands, and a body position that matches the selected reference. Formats: .jpg / .jpeg / .png\n" +
+  "File size: ≤10MB.\n" +
+  "Dimensions: 300px ~ 65536px";
+const VIDEO_HINT_MESSAGE =
+  "Supported formats: .mp4 / .mov, file size: ≤100MB, dimensions: 340px ~ 3850px.";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

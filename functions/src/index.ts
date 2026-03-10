@@ -1153,7 +1153,7 @@ export const createJob = onCall(
     cors: corsAllowedOrigins,
     secrets: [klingAccessKey, klingSecretKey],
     memory: "512MiB",
-    minInstances: 1,
+    minInstances: 0,
     maxInstances: 120,
     concurrency: 80,
   },

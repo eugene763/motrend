@@ -1153,8 +1153,9 @@ export const createJob = onCall(
     cors: corsAllowedOrigins,
     secrets: [klingAccessKey, klingSecretKey],
     memory: "512MiB",
-    minInstances: 1,
-    maxInstances: 50,
+    minInstances: 2,
+    maxInstances: 100,
+    concurrency: 200,
   },
   async (req) => {
     const uid = requireAuthUid(req);

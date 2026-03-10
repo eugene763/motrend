@@ -67,7 +67,10 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const storage = getStorage(app);
-const functions = getFunctions(app, "us-central1");
+const functionsTarget = (
+  runtimeHost === "localhost" || runtimeHost === "127.0.0.1"
+) ? "us-central1" : window.location.origin;
+const functions = getFunctions(app, functionsTarget);
 const createJob = httpsCallable(functions, "createJob");
 
 let analytics = null;

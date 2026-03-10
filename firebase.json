@@ -29,6 +29,15 @@
       "firebase.json",
       "**/.*",
       "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/createJob",
+        "function": {
+          "functionId": "createJob",
+          "region": "us-central1"
+        }
+      }
     ]
   },
   "emulators": {

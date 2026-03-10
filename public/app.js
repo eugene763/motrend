@@ -162,6 +162,21 @@ function setStatus(message) {
   el.textContent = message;
 }
 
+function setSupportButtonMessage(supportCode = "") {
+  const btn = $("supportBtn");
+  if (!btn) return;
+
+  const baseUrl = "https://wa.me/995574413278";
+  const cleanCode = typeof supportCode === "string" ?
+    supportCode.trim().toUpperCase() :
+    "";
+  const text = cleanCode ?
+    `Hello, I am having an issue with the MoTrend© app. Support ID: ${cleanCode}.` :
+    "Hello, I am having an issue with the MoTrend© app.";
+
+  btn.href = `${baseUrl}?text=${encodeURIComponent(text)}`;
+}
+
 function openAuth(message = "") {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "block";
@@ -314,6 +329,108 @@ function callableErrorMessage(error) {
   return message || "Something went wrong. Try again.";
 }
 
+function setSupportCodeUi(supportCode = "") {
+  const normalized = typeof supportCode === "string" ?
+    supportCode.trim().toUpperCase() :
+    "";
+  currentSupportCode = normalized;
+  const el = $("supportCode");
+  if (el) {
+    el.textContent = normalized || "—";
+  }
+  setSupportButtonMessage(normalized);
+}
+
+function setAdminLookupError(message = "") {
+  const errorEl = $("adminLookupError");
+  if (!errorEl) return;
+  if (!message) {
+    errorEl.textContent = "";
+    errorEl.style.display = "none";
+    return;
+  }
+  errorEl.textContent = message;
+  errorEl.style.display = "block";
+}
+
+function clearAdminLookupResult() {
+  const resultEl = $("adminLookupResult");
+  if (resultEl) {
+    resultEl.textContent = "";
+    resultEl.style.display = "none";
+  }
+  adminSelectedUid = "";
+  adminSelectedSupportCode = "";
+  const grantWrap = $("adminGrantWrap");
+  if (grantWrap) {
+    grantWrap.style.display = "none";
+  }
+  const amountInput = $("adminGrantAmount");
+  if (amountInput && !amountInput.value) {
+    amountInput.value = "10";
+  }
+  const reasonInput = $("adminGrantReason");
+  if (reasonInput) {
+    reasonInput.value = "";
+  }
+}
+
+function renderAdminLookupResult(payload) {
+  const resultEl = $("adminLookupResult");
+  if (!resultEl) return;
+
+  const credits = Number.isFinite(payload?.user?.creditsBalance) ?
+    payload.user.creditsBalance :
+    0;
+  const lines = [
+    `UID: ${payload?.uid || "—"}`,
+    `Support ID: ${payload?.supportCode || "—"}`,
+    `Email: ${payload?.user?.email || "—"}`,
+    `Credits: ${credits}`,
+    `Country: ${payload?.user?.country || "—"}`,
+    `Language: ${payload?.user?.language || "—"}`,
+  ];
+
+  const jobs = Array.isArray(payload?.recentJobs) ? payload.recentJobs : [];
+  if (jobs.length) {
+    lines.push("Recent trends:");
+    jobs.forEach((job) => {
+      const shortId = typeof job?.id === "string" ? job.id.slice(0, 8) : "—";
+      const status = typeof job?.status === "string" ? job.status : "—";
+      const templateId = typeof job?.templateId === "string" ? job.templateId : "—";
+      lines.push(`- ${shortId} • ${status} • ${templateId}`);
+    });
+  } else {
+    lines.push("Recent trends: none");
+  }
+
+  resultEl.textContent = lines.join("\n");
+  resultEl.style.display = "block";
+
+  adminSelectedUid = typeof payload?.uid === "string" ? payload.uid : "";
+  adminSelectedSupportCode = typeof payload?.supportCode === "string" ?
+    payload.supportCode :
+    "";
+  const grantWrap = $("adminGrantWrap");
+  if (grantWrap) {
+    grantWrap.style.display = adminSelectedUid ? "block" : "none";
+  }
+}
+
+function setAdminCardVisible(visible) {
+  const adminCard = $("adminCard");
+  if (!adminCard) return;
+  adminCard.style.display = visible ? "block" : "none";
+  if (!visible) {
+    setAdminLookupError("");
+    clearAdminLookupResult();
+    const supportCodeInput = $("adminSupportCode");
+    if (supportCodeInput) {
+      supportCodeInput.value = "";
+    }
+  }
+}
+
 let currentUser = null;
 let selectedTemplate = null;
 let unsubscribeUserDoc = null;
@@ -324,6 +441,10 @@ let activeDoneJobId = "";
 let preparedDownloadJobId = "";
 let preparedDownloadUrl = "";
 let isPreparingDownload = false;
+let currentSupportCode = "";
+let isAdminUser = false;
+let adminSelectedUid = "";
+let adminSelectedSupportCode = "";
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
 
 function sleep(ms) {
@@ -385,6 +506,30 @@ if (prepareDownloadBtn) {
       }
     }
   };
+}
+
+async function syncSupportProfile() {
+  if (!currentUser) {
+    isAdminUser = false;
+    setSupportCodeUi("");
+    setAdminCardVisible(false);
+    return;
+  }
+
+  try {
+    const response = await createJob({supportProfile: true});
+    const payload = response?.data || {};
+    const supportCode = typeof payload?.supportCode === "string" ?
+      payload.supportCode :
+      "";
+    setSupportCodeUi(supportCode);
+    isAdminUser = payload?.isAdmin === true;
+    setAdminCardVisible(isAdminUser);
+  } catch (error) {
+    console.warn("getSupportProfile failed", error);
+    isAdminUser = false;
+    setAdminCardVisible(false);
+  }
 }
 
 const openExternalAuthBtn = $("btnOpenExternalAuth");
@@ -536,6 +681,91 @@ $("btnWallet").onclick = () => {
   alert("Wallet: позже подключим оплату/кредиты.");
 };
 
+const btnFindSupportUser = $("btnFindSupportUser");
+if (btnFindSupportUser) {
+  btnFindSupportUser.onclick = async () => {
+    if (!currentUser || !isAdminUser) return;
+    const input = $("adminSupportCode");
+    const code = typeof input?.value === "string" ?
+      input.value.trim().toUpperCase() :
+      "";
+    if (!code) {
+      setAdminLookupError("Enter Support ID.");
+      clearAdminLookupResult();
+      return;
+    }
+
+    setAdminLookupError("");
+    clearAdminLookupResult();
+    btnFindSupportUser.disabled = true;
+    btnFindSupportUser.innerHTML =
+      '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Searching...';
+
+    try {
+      const response = await createJob({findSupportCode: code});
+      const payload = response?.data || {};
+      renderAdminLookupResult(payload);
+      if (input) input.value = code;
+    } catch (error) {
+      setAdminLookupError(callableErrorMessage(error));
+      clearAdminLookupResult();
+    } finally {
+      btnFindSupportUser.disabled = false;
+      btnFindSupportUser.textContent = "Find user";
+    }
+  };
+}
+
+const btnGrantCredits = $("btnGrantCredits");
+if (btnGrantCredits) {
+  btnGrantCredits.onclick = async () => {
+    if (!currentUser || !isAdminUser || !adminSelectedUid) return;
+    const amountInput = $("adminGrantAmount");
+    const reasonInput = $("adminGrantReason");
+    const amount = Number(amountInput?.value || 0);
+    const reason = typeof reasonInput?.value === "string" ?
+      reasonInput.value.trim() :
+      "";
+
+    if (!Number.isFinite(amount) || amount < 1 || amount > 500) {
+      setAdminLookupError("Amount must be between 1 and 500.");
+      return;
+    }
+    if (reason.length < 3) {
+      setAdminLookupError("Reason must be at least 3 characters.");
+      return;
+    }
+
+    setAdminLookupError("");
+    btnGrantCredits.disabled = true;
+    btnGrantCredits.innerHTML =
+      '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Granting...';
+
+    try {
+      const response = await createJob({
+        grantCredits: true,
+        uid: adminSelectedUid,
+        amount,
+        reason,
+      });
+      const payload = response?.data || {};
+      const supportCode = adminSelectedSupportCode || payload?.supportCode || "";
+      setAdminLookupError("");
+      setStatus("Credits granted.");
+
+      if (supportCode) {
+        const lookup = await createJob({findSupportCode: supportCode});
+        renderAdminLookupResult(lookup?.data || {});
+      }
+    } catch (error) {
+      setAdminLookupError(callableErrorMessage(error));
+    } finally {
+      btnGrantCredits.disabled = false;
+      btnGrantCredits.textContent = "Grant credits";
+    }
+  };
+}
+
 function stopAllTemplateVideos(exceptEl = null) {
   document.querySelectorAll(".tplVideo").forEach((video) => {
     if (video === exceptEl) return;
@@ -686,6 +916,9 @@ function watchUserDoc(uid) {
     $("credits").textContent = data.creditsBalance ?? 0;
     $("country").textContent = data.country ?? "—";
     $("lang").textContent = data.language ?? "—";
+    if (typeof data.supportCode === "string" && data.supportCode.trim()) {
+      setSupportCodeUi(data.supportCode);
+    }
     const needsOnboarding = !data.country || !data.language;
     $("onboarding").style.display = needsOnboarding ? "block" : "none";
   });
@@ -957,11 +1190,14 @@ onAuthStateChanged(auth, async (user) => {
     $("credits").textContent = "0";
     $("country").textContent = "—";
     $("lang").textContent = "—";
+    setSupportCodeUi("");
     $("userCard").style.display = "none";
     $("jobsCard").style.display = "none";
     $("btnWallet").style.display = "none";
     $("btnLogout").style.display = "none";
     $("supportBtn").style.display = "none";
+    setAdminCardVisible(false);
+    isAdminUser = false;
     closeAuth();
     updateAuthInAppActions();
     hideSuccessPanel();
@@ -996,6 +1232,8 @@ onAuthStateChanged(auth, async (user) => {
     email: user.email,
     updatedAt: serverTimestamp(),
   }, {merge: true});
+
+  await syncSupportProfile();
 
   await loadTemplates();
   unsubscribeUserDoc = watchUserDoc(user.uid);

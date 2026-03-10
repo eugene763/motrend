@@ -8,7 +8,7 @@ import {onCall, HttpsError} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as logger from "firebase-functions/logger";
 import * as admin from "firebase-admin";
-import {randomUUID} from "crypto";
+import {createHash, randomUUID} from "crypto";
 import {Readable, Transform} from "stream";
 import {pipeline} from "stream/promises";
 import {ReadableStream as WebReadableStream} from "stream/web";
@@ -28,6 +28,8 @@ const DOWNLOAD_FETCH_TIMEOUT_MS = 60_000;
 const REFRESH_COOLDOWN_MS = 7_000;
 const DOWNLOAD_LOCK_MS = 2 * 60 * 1000;
 const MAX_DOWNLOAD_BYTES = 120 * 1024 * 1024;
+const SUPPORT_CODES_COLLECTION = "support_codes";
+const CREDIT_ADJUSTMENTS_COLLECTION = "credit_adjustments";
 const KLING_BASE_URL =
   process.env.KLING_BASE_URL || "https://api-singapore.klingai.com";
 
@@ -46,6 +48,10 @@ type JobStatus =
 
 interface UserDoc {
   creditsBalance?: number;
+  supportCode?: string;
+  email?: string;
+  country?: string;
+  language?: string;
 }
 
 interface TemplateDoc {
@@ -87,6 +93,12 @@ interface RefundState {
   refundedAt?: admin.firestore.Timestamp;
 }
 
+interface SupportCodeDoc {
+  uid?: string;
+  createdAt?: admin.firestore.Timestamp;
+  updatedAt?: admin.firestore.Timestamp;
+}
+
 interface JobDoc {
   uid?: string;
   templateId?: string;
@@ -97,6 +109,8 @@ interface JobDoc {
   kling?: KlingState;
   download?: DownloadState;
   refund?: RefundState;
+  createdAt?: admin.firestore.Timestamp;
+  updatedAt?: admin.firestore.Timestamp;
 }
 
 interface KlingSubmitInput {
@@ -212,6 +226,138 @@ function positiveFiniteInt(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   const normalized = Math.floor(value);
   return normalized > 0 ? normalized : null;
+}
+
+function baseSupportCode(uid: string): string {
+  const digest = createHash("sha256")
+    .update(uid)
+    .digest("hex")
+    .slice(0, 10)
+    .toUpperCase();
+  return `U-${digest}`;
+}
+
+function normalizeSupportCode(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new HttpsError("invalid-argument", "supportCode is required");
+  }
+  const code = value.trim().toUpperCase();
+  if (!/^U-[A-Z0-9]{10}(?:-[A-Z0-9]{2})?$/.test(code)) {
+    throw new HttpsError("invalid-argument", "Invalid supportCode format");
+  }
+  return code;
+}
+
+function parseGrantAmount(value: unknown): number {
+  const asNumber = typeof value === "number" ?
+    value :
+    (typeof value === "string" ? Number(value.trim()) : Number.NaN);
+  if (!Number.isFinite(asNumber)) {
+    throw new HttpsError("invalid-argument", "amount must be a number");
+  }
+  const amount = Math.floor(asNumber);
+  if (amount < 1 || amount > 500) {
+    throw new HttpsError(
+      "invalid-argument",
+      "amount must be between 1 and 500"
+    );
+  }
+  return amount;
+}
+
+function parseGrantReason(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new HttpsError("invalid-argument", "reason is required");
+  }
+  const reason = value.trim();
+  if (reason.length < 3 || reason.length > 200) {
+    throw new HttpsError(
+      "invalid-argument",
+      "reason length must be between 3 and 200 chars"
+    );
+  }
+  return reason;
+}
+
+function requireAuthUid(req: {auth?: {uid?: string}}): string {
+  const uid = req.auth?.uid;
+  if (!uid) {
+    throw new HttpsError("unauthenticated", "Sign in first");
+  }
+  return uid;
+}
+
+function requireAdminUid(req: {
+  auth?: {uid?: string; token?: {[key: string]: unknown}};
+}): string {
+  const uid = requireAuthUid(req);
+  if (req.auth?.token?.admin !== true) {
+    throw new HttpsError("permission-denied", "Admin access required");
+  }
+  return uid;
+}
+
+async function ensureSupportCodeForUid(uid: string): Promise<string> {
+  const userRef = db.collection("users").doc(uid);
+  return await db.runTransaction(async (tx) => {
+    const userSnap = await tx.get(userRef);
+    const userData = (userSnap.data() as UserDoc | undefined) || {};
+    const existingCodeRaw = pickString(userData.supportCode);
+
+    if (existingCodeRaw) {
+      const existingCode = existingCodeRaw.toUpperCase();
+      const codeRef = db.collection(SUPPORT_CODES_COLLECTION).doc(existingCode);
+      const codeSnap = await tx.get(codeRef);
+      const ownerUid = pickString(
+        (codeSnap.data() as SupportCodeDoc | undefined)?.uid
+      );
+
+      if (!codeSnap.exists || ownerUid === uid) {
+        tx.set(codeRef, {
+          uid,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        if (existingCode !== existingCodeRaw) {
+          tx.set(userRef, {
+            supportCode: existingCode,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          }, {merge: true});
+        }
+        return existingCode;
+      }
+    }
+
+    const baseCode = baseSupportCode(uid);
+    const maxAttempts = 10;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const suffix = attempt === 0 ?
+        "" :
+        `-${Math.floor(Math.random() * (36 ** 2))
+          .toString(36)
+          .toUpperCase()
+          .padStart(2, "0")}`;
+      const candidate = `${baseCode}${suffix}`;
+      const codeRef = db.collection(SUPPORT_CODES_COLLECTION).doc(candidate);
+      const codeSnap = await tx.get(codeRef);
+      const ownerUid = pickString(
+        (codeSnap.data() as SupportCodeDoc | undefined)?.uid
+      );
+      if (!codeSnap.exists || ownerUid === uid) {
+        tx.set(codeRef, {
+          uid,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        tx.set(userRef, {
+          supportCode: candidate,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+        return candidate;
+      }
+    }
+
+    throw new HttpsError("internal", "Failed to allocate supportCode");
+  });
 }
 
 async function refundCreditsForJobKling1200(
@@ -868,6 +1014,140 @@ async function refreshOwnedJobStatus(
   };
 }
 
+async function findUserBySupportCodeForAdmin(
+  adminUid: string,
+  supportCodeInput: unknown
+): Promise<Record<string, unknown>> {
+  const supportCode = normalizeSupportCode(supportCodeInput);
+
+  const codeSnap = await db.collection(SUPPORT_CODES_COLLECTION)
+    .doc(supportCode)
+    .get();
+  const targetUid = pickString(
+    (codeSnap.data() as SupportCodeDoc | undefined)?.uid
+  );
+  if (!targetUid) {
+    throw new HttpsError("not-found", "Support ID not found.");
+  }
+
+  const userRef = db.collection("users").doc(targetUid);
+  const userSnap = await userRef.get();
+  const userData = (userSnap.data() as UserDoc | undefined) || {};
+  const creditsBalance = (
+    typeof userData.creditsBalance === "number" &&
+    Number.isFinite(userData.creditsBalance)
+  ) ? userData.creditsBalance : 0;
+
+  const jobsSnap = await db.collection("jobs")
+    .where("uid", "==", targetUid)
+    .orderBy("createdAt", "desc")
+    .limit(5)
+    .get();
+
+  logger.info("Admin support lookup", {
+    adminUid,
+    targetUid,
+    supportCode,
+    jobsFound: jobsSnap.size,
+  });
+
+  return {
+    uid: targetUid,
+    supportCode,
+    user: {
+      email: pickString(userData.email) || null,
+      country: pickString(userData.country) || null,
+      language: pickString(userData.language) || null,
+      creditsBalance,
+    },
+    recentJobs: jobsSnap.docs.map((jobSnap) => {
+      const job = (jobSnap.data() as JobDoc | undefined) || {};
+      return {
+        id: jobSnap.id,
+        status: pickString(job.status) || "queued",
+        templateId: pickString(job.templateId) || null,
+        createdAtMs: timestampMs(job.createdAt),
+        updatedAtMs: timestampMs(job.updatedAt),
+        klingState: pickString(job.kling?.state) || null,
+        klingError: pickString(job.kling?.error) || null,
+      };
+    }),
+  };
+}
+
+async function grantCreditsForAdmin(params: {
+  adminUid: string;
+  targetUidInput: unknown;
+  amountInput: unknown;
+  reasonInput: unknown;
+}): Promise<Record<string, unknown>> {
+  const targetUidRaw = params.targetUidInput;
+  if (typeof targetUidRaw !== "string" || !targetUidRaw.trim()) {
+    throw new HttpsError("invalid-argument", "uid is required");
+  }
+  const targetUid = targetUidRaw.trim();
+  const amount = parseGrantAmount(params.amountInput);
+  const reason = parseGrantReason(params.reasonInput);
+
+  const supportCode = await ensureSupportCodeForUid(targetUid);
+  const adjustmentRef = db.collection(CREDIT_ADJUSTMENTS_COLLECTION).doc();
+  const userRef = db.collection("users").doc(targetUid);
+
+  let newBalance = 0;
+  let previousBalance = 0;
+
+  await db.runTransaction(async (tx) => {
+    const userSnap = await tx.get(userRef);
+    if (!userSnap.exists) {
+      throw new HttpsError("not-found", "User not found.");
+    }
+    const userData = (userSnap.data() as UserDoc | undefined) || {};
+    const hasCreditsBalance = (
+      typeof userData.creditsBalance === "number" &&
+      Number.isFinite(userData.creditsBalance)
+    );
+    previousBalance = hasCreditsBalance ?
+      userData.creditsBalance as number :
+      INITIAL_CREDITS;
+    newBalance = previousBalance + amount;
+
+    tx.set(userRef, {
+      creditsBalance: newBalance,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    tx.set(adjustmentRef, {
+      uid: targetUid,
+      supportCode,
+      amount,
+      reason,
+      type: "manual_grant",
+      adminUid: params.adminUid,
+      balanceBefore: previousBalance,
+      balanceAfter: newBalance,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  });
+
+  logger.warn("Credits granted by admin", {
+    adminUid: params.adminUid,
+    targetUid,
+    supportCode,
+    amount,
+    previousBalance,
+    newBalance,
+    adjustmentId: adjustmentRef.id,
+  });
+
+  return {
+    uid: targetUid,
+    supportCode,
+    amount,
+    newBalance,
+    adjustmentId: adjustmentRef.id,
+  };
+}
+
 export const createJob = onCall(
   {
     cors: corsAllowedOrigins,
@@ -875,11 +1155,36 @@ export const createJob = onCall(
     memory: "512MiB",
   },
   async (req) => {
-    if (!req.auth) {
-      throw new HttpsError("unauthenticated", "Sign in first");
+    const uid = requireAuthUid(req);
+
+    if (req.data?.supportProfile === true) {
+      const supportCode = await ensureSupportCodeForUid(uid);
+      const isAdmin = req.auth?.token?.admin === true;
+      return {
+        uid,
+        supportCode,
+        isAdmin,
+      };
     }
 
-    const uid = req.auth.uid;
+    if (typeof req.data?.findSupportCode === "string") {
+      const adminUid = requireAdminUid(req);
+      return await findUserBySupportCodeForAdmin(
+        adminUid,
+        req.data?.findSupportCode
+      );
+    }
+
+    if (req.data?.grantCredits === true) {
+      const adminUid = requireAdminUid(req);
+      return await grantCreditsForAdmin({
+        adminUid,
+        targetUidInput: req.data?.uid,
+        amountInput: req.data?.amount,
+        reasonInput: req.data?.reason,
+      });
+    }
+
     const prepareDownloadJobIdRaw = req.data?.prepareDownloadJobId;
     if (typeof prepareDownloadJobIdRaw === "string") {
       const prepareDownloadJobId = prepareDownloadJobIdRaw.trim();
@@ -966,6 +1271,9 @@ export const onUserDocCreated = onDocumentCreated(
   async (event) => {
     const userRef = event.data?.ref;
     if (!userRef) return;
+    const uid = event.params.uid || userRef.id;
+
+    await ensureSupportCodeForUid(uid);
 
     const existingData = (event.data?.data() as UserDoc | undefined) || {};
     const existingCredits = existingData.creditsBalance;

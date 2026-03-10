@@ -549,6 +549,7 @@ function renderTemplateCard(template) {
   const card = document.createElement("div");
   card.className = "card tplCard";
   card.style.margin = "0";
+  card.style.cursor = "pointer";
 
   const thumbUrl = safeUrl(template.preview?.thumbnailUrl || "");
   const videoUrl = safeUrl(template.preview?.previewVideoUrl || "");
@@ -603,35 +604,41 @@ function renderTemplateCard(template) {
     }, 50);
   }
 
-  media.onclick = async () => {
-    document.querySelectorAll(".tplCard").forEach((el) => {
-      el.classList.remove("isHot");
-    });
-    card.classList.add("isHot");
-
-    if (!videoEl) return;
-    stopAllTemplateVideos(videoEl);
-
-    try {
-      videoEl.muted = false;
-      videoEl.volume = 1;
-      await videoEl.play();
-    } catch {
-      // no-op
-    }
-  };
-
-  useBtn.onclick = () => {
+  const selectTemplate = async () => {
     selectedTemplate = template;
     $("selTemplate").value = `${template.title} (${template.durationSec}s ${mode})`;
     document.querySelectorAll(".tplCard").forEach((el) => {
       el.classList.remove("isSelected");
+      el.classList.remove("isHot");
     });
     card.classList.add("isSelected");
+    card.classList.add("isHot");
+
+    stopAllTemplateVideos(videoEl);
+    if (videoEl) {
+      try {
+        videoEl.muted = false;
+        videoEl.volume = 1;
+        await videoEl.play();
+      } catch {
+        // no-op
+      }
+    }
+
     track("template_selected", {
       templateId: template.id,
       title: template.title || "",
     });
+  };
+
+  card.onclick = () => {
+    selectTemplate();
+  };
+
+  useBtn.onclick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    selectTemplate();
   };
 
   return card;

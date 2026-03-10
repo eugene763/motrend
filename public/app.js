@@ -165,6 +165,12 @@ function setStatus(message) {
   el.textContent = message;
 }
 
+function setStatusHintVisible(visible) {
+  const hint = $("statusHint");
+  if (!hint) return;
+  hint.style.display = visible ? "block" : "none";
+}
+
 function hasSeenHint(key) {
   try {
     return localStorage.getItem(key) === "1";
@@ -521,6 +527,11 @@ let preparedDownloadJobId = "";
 let preparedDownloadUrl = "";
 let isPreparingDownload = false;
 let hidePreviousReadyHintInSession = false;
+let estimatedProgressActive = false;
+let estimatedProgressPercent = 0;
+let estimatedProgressTimer = null;
+let estimatedProgressJobId = "";
+let estimatedProgressLabel = "Generating your trend…";
 let currentSupportCode = "";
 let isAdminUser = false;
 let adminSelectedUid = "";
@@ -540,6 +551,90 @@ const PHOTO_HINT_MESSAGE =
   "Dimensions: 300px ~ 65536px";
 const VIDEO_HINT_MESSAGE =
   "Supported formats: .mp4 / .mov, file size: ≤100MB, dimensions: 340px ~ 3850px.";
+
+function randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function renderEstimatedProgressStatus() {
+  if (!estimatedProgressActive) return;
+  setStatus(`${estimatedProgressLabel} ${Math.floor(estimatedProgressPercent)}%`);
+  setStatusHintVisible(true);
+}
+
+function clearEstimatedProgressTimer() {
+  if (estimatedProgressTimer) {
+    clearTimeout(estimatedProgressTimer);
+    estimatedProgressTimer = null;
+  }
+}
+
+function nextEstimatedProgressDelayMs() {
+  if (estimatedProgressPercent < 50) {
+    // 0 -> 50 quickly in ~25-40 sec.
+    return randomInt(500, 800);
+  }
+  if (estimatedProgressPercent < 70) {
+    // 50 -> 70 at a medium pace.
+    return randomInt(1500, 2500);
+  }
+  if (estimatedProgressPercent < 90) {
+    // 70 -> 90 slowly: 1% every 8-12 sec.
+    return randomInt(8000, 12000);
+  }
+  // Hold at 90 until a real done status arrives.
+  return null;
+}
+
+function scheduleEstimatedProgressTick() {
+  if (!estimatedProgressActive) return;
+  const delay = nextEstimatedProgressDelayMs();
+  if (delay === null) return;
+
+  estimatedProgressTimer = setTimeout(() => {
+    if (!estimatedProgressActive) return;
+    estimatedProgressPercent = Math.min(90, estimatedProgressPercent + 1);
+    renderEstimatedProgressStatus();
+    scheduleEstimatedProgressTick();
+  }, delay);
+}
+
+function startEstimatedProgress(label = "Generating your trend…") {
+  clearEstimatedProgressTimer();
+  estimatedProgressActive = true;
+  estimatedProgressPercent = 0;
+  estimatedProgressJobId = "";
+  estimatedProgressLabel = label;
+  renderEstimatedProgressStatus();
+  scheduleEstimatedProgressTick();
+}
+
+function attachEstimatedProgressJob(jobId) {
+  estimatedProgressJobId = jobId || "";
+}
+
+function setEstimatedProgressLabel(label) {
+  estimatedProgressLabel = label;
+  renderEstimatedProgressStatus();
+}
+
+function stopEstimatedProgress() {
+  clearEstimatedProgressTimer();
+  estimatedProgressActive = false;
+  estimatedProgressPercent = 0;
+  estimatedProgressJobId = "";
+  estimatedProgressLabel = "Generating your trend…";
+  setStatusHintVisible(false);
+}
+
+function completeEstimatedProgress() {
+  clearEstimatedProgressTimer();
+  estimatedProgressActive = false;
+  estimatedProgressPercent = 100;
+  estimatedProgressLabel = "Generating your trend…";
+  setStatus("Done. Download is ready. 100%");
+  setStatusHintVisible(false);
+}
 
 function clearTrendSelectionUi() {
   document.querySelectorAll(".tplCard").forEach((el) => {
@@ -1430,9 +1525,19 @@ function updateLatestJobUI(jobId, job) {
   const status = job?.status || "";
   const outputUrl = safeUrl(job?.kling?.outputUrl || "");
   const error = job?.kling?.error || "";
+  const trackedCurrentJob = (
+    estimatedProgressActive &&
+    !!estimatedProgressJobId &&
+    estimatedProgressJobId === jobId
+  );
 
   if (status === "done" && outputUrl && jobId) {
-    setStatus("Done. Download is ready.");
+    if (trackedCurrentJob) {
+      completeEstimatedProgress();
+    } else {
+      setStatus("Done. Download is ready.");
+      setStatusHintVisible(false);
+    }
     showSuccessPanel(jobId);
     return;
   }
@@ -1440,11 +1545,25 @@ function updateLatestJobUI(jobId, job) {
   hideSuccessPanel();
 
   if (status === "queued") {
-    setStatus("Queued. Waiting for processing…");
+    if (trackedCurrentJob) {
+      setEstimatedProgressLabel("Generating your trend…");
+    } else {
+      setStatus("Queued. Waiting for processing…");
+      setStatusHintVisible(false);
+    }
   } else if (status === "processing") {
-    setStatus("Processing…");
+    if (trackedCurrentJob) {
+      setEstimatedProgressLabel("Generating your trend…");
+    } else {
+      setStatus("Processing…");
+      setStatusHintVisible(false);
+    }
   } else if (status === "failed") {
+    if (trackedCurrentJob) {
+      stopEstimatedProgress();
+    }
     setStatus(`Failed: ${error || "try another photo/template"}`);
+    setStatusHintVisible(false);
   }
 }
 
@@ -1542,6 +1661,11 @@ function renderJobsList() {
   });
 
   const latest = latestJobs[0];
+  const latestTrackedByProgress = (
+    estimatedProgressActive &&
+    !!estimatedProgressJobId &&
+    latest?.id === estimatedProgressJobId
+  );
   const isDoneWithOutput = (item) => (
     item?.data?.status === "done" &&
     !!safeUrl(item?.data?.kling?.outputUrl || "")
@@ -1565,30 +1689,50 @@ function renderJobsList() {
   if (doneForPanel) {
     showSuccessPanel(doneForPanel.id);
     if (latest.id === doneForPanel.id) {
-      setStatus("Done. Download is ready.");
+      if (latestTrackedByProgress) {
+        completeEstimatedProgress();
+      } else {
+        setStatus("Done. Download is ready.");
+        setStatusHintVisible(false);
+      }
     } else if (latest?.data?.status === "processing") {
-      setStatus(
-        hidePreviousReadyHintInSession ?
-          "Processing…" :
-          "Processing… Previous trend download is ready."
-      );
+      if (latestTrackedByProgress) {
+        setEstimatedProgressLabel("Generating your trend…");
+      } else {
+        setStatus(
+          hidePreviousReadyHintInSession ?
+            "Processing…" :
+            "Processing… Previous trend download is ready."
+        );
+        setStatusHintVisible(false);
+      }
     } else if (latest?.data?.status === "queued") {
-      setStatus(
-        hidePreviousReadyHintInSession ?
-          "Queued. Waiting for processing…" :
-          "Queued. Previous trend download is ready."
-      );
+      if (latestTrackedByProgress) {
+        setEstimatedProgressLabel("Generating your trend…");
+      } else {
+        setStatus(
+          hidePreviousReadyHintInSession ?
+            "Queued. Waiting for processing…" :
+            "Queued. Previous trend download is ready."
+        );
+        setStatusHintVisible(false);
+      }
     } else if (latest?.data?.status === "failed") {
       const error = latest?.data?.kling?.error || "try another photo/template";
-      if (hidePreviousReadyHintInSession) {
+      if (latestTrackedByProgress) {
+        stopEstimatedProgress();
+      }
+      if (hidePreviousReadyHintInSession || latestTrackedByProgress) {
         setStatus(`Latest trend failed: ${error}.`);
       } else {
         setStatus(
           `Latest trend failed: ${error}. Previous trend download is ready.`
         );
       }
+      setStatusHintVisible(false);
     } else {
       setStatus("Download is ready.");
+      setStatusHintVisible(false);
     }
     return;
   }
@@ -1649,8 +1793,8 @@ $("btnGenerate").onclick = async () => {
   const btn = $("btnGenerate");
   btn.disabled = true;
   hidePreviousReadyHintInSession = true;
+  startEstimatedProgress("Generating your trend…");
   hideSuccessPanel();
-  setStatus("Creating job…");
 
   try {
     const response = await callCreateJob({templateId: selectedTemplate.id});
@@ -1660,6 +1804,7 @@ $("btnGenerate").onclick = async () => {
     if (!jobId || !uploadPath) {
       throw new Error("createJob returned empty payload");
     }
+    attachEstimatedProgressJob(jobId);
 
     let referenceVideoPath = "";
     let referenceVideoUrl = "";
@@ -1672,7 +1817,7 @@ $("btnGenerate").onclick = async () => {
       const uploadDir = uploadPath.replace(/\/[^/]+$/, "");
       referenceVideoPath = `${uploadDir}/reference${preparedVideo.extension}`;
 
-      setStatus("Video download");
+      setEstimatedProgressLabel("Video download");
       const referenceRef = ref(storage, referenceVideoPath);
       await uploadBytes(referenceRef, preparedVideo.blob, {
         contentType: preparedVideo.contentType,
@@ -1680,10 +1825,10 @@ $("btnGenerate").onclick = async () => {
       referenceVideoUrl = await getDownloadURL(referenceRef);
     }
 
-    setStatus("Preparing photo…");
+    setEstimatedProgressLabel("Preparing photo…");
     const uploadInput = await prepareUploadImage(rawFile);
 
-    setStatus("Uploading photo…");
+    setEstimatedProgressLabel("Uploading photo…");
     const photoRef = ref(storage, uploadPath);
     await uploadBytes(photoRef, uploadInput.blob, {
       contentType: uploadInput.contentType || "image/jpeg",
@@ -1703,8 +1848,9 @@ $("btnGenerate").onclick = async () => {
 
     await updateDoc(doc(db, "jobs", jobId), updates);
 
-    setStatus("Queued. Generating…");
+    setEstimatedProgressLabel("Generating your trend…");
   } catch (error) {
+    stopEstimatedProgress();
     setStatus("");
     showFormError(callableErrorMessage(error));
   } finally {
@@ -1764,6 +1910,7 @@ onAuthStateChanged(auth, async (user) => {
     selectedTrendKind = TREND_SELECTION_TEMPLATE;
     availableTemplates = [];
     hidePreviousReadyHintInSession = false;
+    stopEstimatedProgress();
     updateSelectedTrendField();
     selectedReferenceVideoFile = null;
     selectedReferenceVideoName = "";
@@ -1793,6 +1940,7 @@ onAuthStateChanged(auth, async (user) => {
   }
 
   closeAuth();
+  stopEstimatedProgress();
   $("userCard").style.display = "block";
   $("jobsCard").style.display = "block";
   $("btnWallet").style.display = "inline-block";

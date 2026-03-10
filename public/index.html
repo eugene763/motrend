@@ -113,7 +113,19 @@ a{color:#fff}
 .btnGoogle{display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;}
 .btnGoogle svg{position:static;width:14px;height:14px;display:block;flex:0 0 auto;}
 .btnGoogle span{display:inline;}
-.btnExternalAuth{display:none;text-decoration:none;}
+.btnExternalAuth{
+  display:none;
+  align-items:center;
+  justify-content:center;
+  width:100%;
+  padding:12px 14px;
+  border-radius:12px;
+  border:1px solid #565656;
+  background:#000;
+  color:#9f9f9f;
+  text-decoration:none;
+}
+.btnExternalAuth:hover{border-color:#7a7a7a;color:#c6c6c6;}
 .brandFooter{margin:16px 0 6px;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--muted);font-size:16px}
 .brandFooter a{display:inline-flex;align-items:center;text-decoration:none}
 .brandFooter img{height:20px;width:auto;display:block;opacity:.95;border-radius:0}
@@ -189,12 +201,11 @@ a{color:#fff}
     <button id="btnForgotPassword" class="btn2">Forgot password?</button>
     <a
       id="btnOpenExternalAuth"
-      class="btn btnExternalAuth"
+      class="btnExternalAuth"
       href="#"
       target="_blank"
       rel="noopener noreferrer"
-      style="margin-left:auto"
-    >Open in browser for Google sign-in</a>
+    >Open in browser</a>
   </div>
 
   <div id="authError" class="muted" style="margin-top:10px;display:none"></div>

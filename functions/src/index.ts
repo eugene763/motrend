@@ -80,14 +80,23 @@ interface DownloadState {
   lastError?: string;
 }
 
+interface RefundState {
+  applied?: boolean;
+  amount?: number;
+  reason?: string;
+  refundedAt?: admin.firestore.Timestamp;
+}
+
 interface JobDoc {
   uid?: string;
   templateId?: string;
   status?: JobStatus;
+  debitedCredits?: number;
   inputImagePath?: string;
   inputImageUrl?: string;
   kling?: KlingState;
   download?: DownloadState;
+  refund?: RefundState;
 }
 
 interface KlingSubmitInput {
@@ -183,6 +192,80 @@ function isTransientStatus(statusCode: number): boolean {
 
 function isTransientKlingCode(code: number): boolean {
   return code === 1200;
+}
+
+function isKling500Code1200Error(message: string): boolean {
+  if (!message.toLowerCase().includes("kling 500")) return false;
+  return /"code"\s*:\s*1200/.test(message);
+}
+
+function templateCostCredits(template?: TemplateDoc): number {
+  const durationSec = (
+    typeof template?.durationSec === "number" && template.durationSec > 0
+  ) ? template.durationSec : 10;
+  return (
+    typeof template?.costCredits === "number" && template.costCredits > 0
+  ) ? Math.floor(template.costCredits) : Math.max(1, Math.ceil(durationSec));
+}
+
+function positiveFiniteInt(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : null;
+}
+
+async function refundCreditsForJobKling1200(
+  jobRef: admin.firestore.DocumentReference
+): Promise<boolean> {
+  return await db.runTransaction(async (tx) => {
+    const jobSnap = await tx.get(jobRef);
+    if (!jobSnap.exists) return false;
+
+    const job = (jobSnap.data() as JobDoc | undefined) || {};
+    if (job.refund?.applied === true) return false;
+
+    const uid = pickString(job.uid);
+    if (!uid) return false;
+
+    let refundAmount = positiveFiniteInt(job.debitedCredits);
+    if (refundAmount === null) {
+      const templateId = pickString(job.templateId);
+      if (!templateId) return false;
+
+      const templateRef = db.doc(`templates/${templateId}`);
+      const templateSnap = await tx.get(templateRef);
+      if (!templateSnap.exists) return false;
+      const template = (templateSnap.data() as TemplateDoc | undefined) || {};
+      refundAmount = templateCostCredits(template);
+    }
+    if (refundAmount === null) return false;
+
+    const userRef = db.collection("users").doc(uid);
+    const userSnap = await tx.get(userRef);
+    const userData = (userSnap.data() as UserDoc | undefined) || {};
+    const hasCreditsBalance = (
+      typeof userData.creditsBalance === "number" &&
+      Number.isFinite(userData.creditsBalance)
+    );
+    const currentCredits = hasCreditsBalance ?
+      userData.creditsBalance as number :
+      INITIAL_CREDITS;
+
+    tx.set(userRef, {
+      creditsBalance: currentCredits + refundAmount,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    tx.update(jobRef, {
+      "refund.applied": true,
+      "refund.amount": refundAmount,
+      "refund.reason": "kling_500_code_1200",
+      "refund.refundedAt": admin.firestore.FieldValue.serverTimestamp(),
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    return true;
+  });
 }
 
 async function submitKlingTask(
@@ -832,12 +915,7 @@ export const createJob = onCall(
       throw new HttpsError("failed-precondition", "Template is not active");
     }
 
-    const durationSec = (
-      typeof template.durationSec === "number" && template.durationSec > 0
-    ) ? template.durationSec : 10;
-    const costCredits = (
-      typeof template.costCredits === "number" && template.costCredits > 0
-    ) ? Math.floor(template.costCredits) : Math.max(1, Math.ceil(durationSec));
+    const costCredits = templateCostCredits(template);
 
     const result = await db.runTransaction(async (tx) => {
       const userRef = db.collection("users").doc(uid);
@@ -870,6 +948,7 @@ export const createJob = onCall(
         uid,
         templateId,
         status: "queued" as JobStatus,
+        debitedCredits: costCredits,
         inputImagePath: uploadPath,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -975,6 +1054,21 @@ export const processJobTrigger001 = onDocumentUpdated(
         jobId: afterSnap.id,
         message: msg,
       });
+
+      if (isKling500Code1200Error(msg)) {
+        try {
+          const refunded = await refundCreditsForJobKling1200(jobRef);
+          logger.warn("Credits refunded after Kling 500 code 1200", {
+            jobId: afterSnap.id,
+            refunded,
+          });
+        } catch (refundError) {
+          logger.error("Credit refund failed", {
+            jobId: afterSnap.id,
+            message: errorMessage(refundError),
+          });
+        }
+      }
 
       await jobRef.update({
         "status": "failed" as JobStatus,

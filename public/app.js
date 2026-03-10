@@ -611,6 +611,12 @@ function syncTrendSelectionUi() {
   updateSelectedTrendField();
 }
 
+function scrollToGenerateOnMobile() {
+  if (!window.matchMedia("(max-width: 640px)").matches) return;
+  const generateCard = $("generateCard") || $("btnGenerate")?.closest(".card");
+  generateCard?.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1147,7 +1153,7 @@ function renderReferenceVideoCard() {
   const title = document.createElement("div");
   title.style.fontWeight = "700";
   title.style.marginTop = "8px";
-  title.textContent = "Your video reference";
+  title.textContent = "mp4 / mov,  ≤100MB";
 
   const meta = document.createElement("div");
   meta.className = "muted";
@@ -1157,7 +1163,7 @@ function renderReferenceVideoCard() {
   actionBtn.className = "btn tplUse";
   actionBtn.style.marginTop = "10px";
   actionBtn.style.width = "100%";
-  actionBtn.textContent = "Download";
+  actionBtn.textContent = "Upload";
 
   const picker = $("fileReferenceVideo");
 
@@ -1209,6 +1215,9 @@ function renderReferenceVideoCard() {
 
       updateReferenceMetaUi();
       syncTrendSelectionUi();
+      if (file) {
+        scrollToGenerateOnMobile();
+      }
     };
   }
 
@@ -1308,6 +1317,7 @@ function renderTemplateCard(template) {
       templateId: template.id,
       title: template.title || "",
     });
+    scrollToGenerateOnMobile();
   };
 
   card.onclick = () => {
@@ -1363,14 +1373,13 @@ async function loadTemplates() {
 
     container.innerHTML = "";
 
-    container.appendChild(renderReferenceVideoCard());
-
     if (snap.empty) {
       availableTemplates = [];
       const empty = document.createElement("div");
       empty.className = "templatesLoading muted";
       empty.textContent = "No templates available.";
       container.appendChild(empty);
+      container.appendChild(renderReferenceVideoCard());
       syncTrendSelectionUi();
       return;
     }
@@ -1378,6 +1387,7 @@ async function loadTemplates() {
     availableTemplates.forEach((template) => {
       container.appendChild(renderTemplateCard(template));
     });
+    container.appendChild(renderReferenceVideoCard());
     syncTrendSelectionUi();
   } catch (error) {
     container.innerHTML =

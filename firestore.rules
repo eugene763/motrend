@@ -43,6 +43,8 @@ service cloud.firestore {
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
           'inputImageUrl',
           'inputImagePath',
+          'referenceVideoUrl',
+          'referenceVideoPath',
           'updatedAt',
         ]);
       allow delete: if false;

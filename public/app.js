@@ -165,6 +165,52 @@ function setStatus(message) {
   el.textContent = message;
 }
 
+function hasSeenHint(key) {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markHintSeen(key) {
+  try {
+    localStorage.setItem(key, "1");
+  } catch {
+    // no-op
+  }
+}
+
+function showUploadHint(message) {
+  return new Promise((resolve) => {
+    const modal = $("uploadHintModal");
+    const text = $("uploadHintText");
+    const okBtn = $("btnUploadHintOk");
+
+    if (!modal || !text || !okBtn) {
+      resolve();
+      return;
+    }
+
+    const onOk = () => {
+      okBtn.removeEventListener("click", onOk);
+      modal.style.display = "none";
+      resolve();
+    };
+
+    text.textContent = message;
+    modal.style.display = "flex";
+    okBtn.addEventListener("click", onOk, {once: true});
+  });
+}
+
+async function maybeShowUploadHint(key, message) {
+  if (shouldUseRedirectLogin()) return;
+  if (hasSeenHint(key)) return;
+  await showUploadHint(message);
+  markHintSeen(key);
+}
+
 function setSupportButtonMessage(supportCode = "") {
   const btn = $("supportBtn");
   if (!btn) return;
@@ -460,6 +506,8 @@ function setAdminCardVisible(visible) {
 
 let currentUser = null;
 let selectedTemplate = null;
+let selectedReferenceVideoFile = null;
+let selectedReferenceVideoName = "";
 let unsubscribeUserDoc = null;
 let unsubscribeJobs = null;
 let latestJobs = [];
@@ -478,6 +526,13 @@ const TARGET_UPLOAD_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_UPLOAD_IMAGE_DIMENSION = 1080;
 const MIN_UPLOAD_IMAGE_DIMENSION = 960;
 const UPLOAD_IMAGE_QUALITY_STEPS = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65];
+const MAX_REFERENCE_VIDEO_BYTES = 200 * 1024 * 1024;
+const PHOTO_HINT_KEY = "motrend_photo_hint_v1";
+const VIDEO_HINT_KEY = "motrend_video_hint_v1";
+const PHOTO_HINT_MESSAGE =
+  "Supported image formats: .jpg / .jpeg / .png\n" +
+  "File size: ≤10MB, dimensions: 300px ~ 65536px, aspect ratio: 1:2.5 ~ 2.5:1";
+const VIDEO_HINT_MESSAGE = "выбор файла на устройстве";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -584,6 +639,28 @@ async function prepareUploadImage(file) {
   return {
     blob: bestBlob,
     contentType: "image/jpeg",
+  };
+}
+
+function guessVideoExtension(file) {
+  const name = typeof file?.name === "string" ? file.name.toLowerCase() : "";
+  if (name.endsWith(".mov")) return ".mov";
+  if (name.endsWith(".webm")) return ".webm";
+  if (name.endsWith(".mkv")) return ".mkv";
+  return ".mp4";
+}
+
+function prepareReferenceVideoInput(file) {
+  if (!file || !file.type?.startsWith("video/")) {
+    throw new Error("Please choose a video file.");
+  }
+  if (file.size > MAX_REFERENCE_VIDEO_BYTES) {
+    throw new Error("Reference video is too large. Max file size is 200 MB.");
+  }
+  return {
+    blob: file,
+    contentType: file.type || "video/mp4",
+    extension: guessVideoExtension(file),
   };
 }
 
@@ -975,6 +1052,78 @@ function stopAllTemplateVideos(exceptEl = null) {
   });
 }
 
+function renderReferenceVideoCard() {
+  const card = document.createElement("div");
+  card.className = "card tplCard";
+  card.style.margin = "0";
+  card.style.cursor = "pointer";
+
+  const media = document.createElement("div");
+  media.className = "tplMedia";
+
+  const placeholder = document.createElement("div");
+  placeholder.className = "refPlaceholder";
+  placeholder.textContent = "Your video reference";
+  media.appendChild(placeholder);
+
+  const title = document.createElement("div");
+  title.style.fontWeight = "700";
+  title.style.marginTop = "8px";
+  title.textContent = "Your video reference";
+
+  const meta = document.createElement("div");
+  meta.className = "muted";
+  meta.textContent = selectedReferenceVideoName || "No video selected";
+
+  const actionBtn = document.createElement("button");
+  actionBtn.className = "btn tplUse";
+  actionBtn.style.marginTop = "10px";
+  actionBtn.style.width = "100%";
+  actionBtn.textContent = "Download";
+
+  const picker = $("fileReferenceVideo");
+
+  const updateSelectedUi = () => {
+    const selected = !!selectedReferenceVideoFile;
+    card.classList.toggle("isSelected", selected);
+    card.classList.toggle("isHot", selected);
+    meta.textContent = selectedReferenceVideoName || "No video selected";
+  };
+
+  const openPicker = async () => {
+    if (!picker) return;
+    clearFormError();
+    await maybeShowUploadHint(VIDEO_HINT_KEY, VIDEO_HINT_MESSAGE);
+    picker.click();
+  };
+
+  card.onclick = () => {
+    openPicker();
+  };
+  actionBtn.onclick = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openPicker();
+  };
+
+  if (picker) {
+    picker.onchange = () => {
+      const file = picker.files?.[0] || null;
+      selectedReferenceVideoFile = file;
+      selectedReferenceVideoName = file ? file.name : "";
+      updateSelectedUi();
+    };
+  }
+
+  card.appendChild(media);
+  card.appendChild(title);
+  card.appendChild(meta);
+  card.appendChild(actionBtn);
+  updateSelectedUi();
+
+  return card;
+}
+
 function renderTemplateCard(template) {
   const card = document.createElement("div");
   card.className = "card tplCard";
@@ -1096,8 +1245,13 @@ async function loadTemplates() {
     const snap = await getDocs(qy);
     container.innerHTML = "";
 
+    container.appendChild(renderReferenceVideoCard());
+
     if (snap.empty) {
-      container.innerHTML = "<div class=\"templatesLoading muted\">No templates available.</div>";
+      const empty = document.createElement("div");
+      empty.className = "templatesLoading muted";
+      empty.textContent = "No templates available.";
+      container.appendChild(empty);
       return;
     }
 
@@ -1339,6 +1493,21 @@ $("btnGenerate").onclick = async () => {
       throw new Error("createJob returned empty payload");
     }
 
+    let referenceVideoPath = "";
+    let referenceVideoUrl = "";
+    if (selectedReferenceVideoFile) {
+      const preparedVideo = prepareReferenceVideoInput(selectedReferenceVideoFile);
+      const uploadDir = uploadPath.replace(/\/[^/]+$/, "");
+      referenceVideoPath = `${uploadDir}/reference${preparedVideo.extension}`;
+
+      setStatus("Uploading reference video…");
+      const referenceRef = ref(storage, referenceVideoPath);
+      await uploadBytes(referenceRef, preparedVideo.blob, {
+        contentType: preparedVideo.contentType,
+      });
+      referenceVideoUrl = await getDownloadURL(referenceRef);
+    }
+
     setStatus("Preparing photo…");
     const uploadInput = await prepareUploadImage(rawFile);
 
@@ -1350,11 +1519,17 @@ $("btnGenerate").onclick = async () => {
 
     const inputImageUrl = await getDownloadURL(photoRef);
 
-    await updateDoc(doc(db, "jobs", jobId), {
+    const updates = {
       inputImageUrl,
       inputImagePath: uploadPath,
       updatedAt: serverTimestamp(),
-    });
+    };
+    if (referenceVideoPath && referenceVideoUrl) {
+      updates.referenceVideoPath = referenceVideoPath;
+      updates.referenceVideoUrl = referenceVideoUrl;
+    }
+
+    await updateDoc(doc(db, "jobs", jobId), updates);
 
     setStatus("Queued. Generating…");
   } catch (error) {
@@ -1367,10 +1542,18 @@ $("btnGenerate").onclick = async () => {
 
 const fileInput = $("filePhoto");
 if (fileInput) {
-  fileInput.addEventListener("click", (event) => {
-    if (currentUser) return;
+  fileInput.addEventListener("click", async (event) => {
+    if (!currentUser) {
+      event.preventDefault();
+      openAuth("Sign in to upload a photo.");
+      return;
+    }
+
+    if (shouldUseRedirectLogin() || hasSeenHint(PHOTO_HINT_KEY)) return;
+
     event.preventDefault();
-    openAuth("Sign in to upload a photo.");
+    await maybeShowUploadHint(PHOTO_HINT_KEY, PHOTO_HINT_MESSAGE);
+    fileInput.click();
   });
 }
 
@@ -1405,6 +1588,12 @@ onAuthStateChanged(auth, async (user) => {
     $("credits").textContent = "0";
     $("country").textContent = "—";
     $("lang").textContent = "—";
+    selectedReferenceVideoFile = null;
+    selectedReferenceVideoName = "";
+    const referencePicker = $("fileReferenceVideo");
+    if (referencePicker) {
+      referencePicker.value = "";
+    }
     setSupportCodeUi("");
     $("userCard").style.display = "none";
     $("jobsCard").style.display = "none";

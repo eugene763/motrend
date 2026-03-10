@@ -113,6 +113,8 @@ interface JobDoc {
   debitedCredits?: number;
   inputImagePath?: string;
   inputImageUrl?: string;
+  referenceVideoPath?: string;
+  referenceVideoUrl?: string;
   kling?: KlingState;
   download?: DownloadState;
   refund?: RefundState;
@@ -1332,12 +1334,16 @@ async function processKlingSubmitTask(jobId: string): Promise<void> {
   try {
     const templateSnap = await db.doc(`templates/${templateId}`).get();
     const template = (templateSnap.data() as TemplateDoc | undefined) || {};
-    const referenceVideoUrl = pickString(
+    const templateReferenceVideoUrl = pickString(
       template.referenceVideoUrl,
       template.kling?.referenceVideoUrl
     );
+    const referenceVideoUrl = pickString(
+      job.referenceVideoUrl,
+      templateReferenceVideoUrl
+    );
     if (!referenceVideoUrl) {
-      throw new Error("Template has no referenceVideoUrl");
+      throw new Error("No referenceVideoUrl provided.");
     }
 
     const submit = await submitKlingTask({

@@ -612,9 +612,10 @@ function syncTrendSelectionUi() {
 }
 
 function scrollToGenerateOnMobile() {
-  if (!window.matchMedia("(max-width: 640px)").matches) return;
+  if (!window.matchMedia("(max-width: 640px)").matches) return false;
   const generateCard = $("generateCard") || $("btnGenerate")?.closest(".card");
   generateCard?.scrollIntoView({behavior: "smooth", block: "start"});
+  return true;
 }
 
 function sleep(ms) {
@@ -1317,7 +1318,14 @@ function renderTemplateCard(template) {
       templateId: template.id,
       title: template.title || "",
     });
-    scrollToGenerateOnMobile();
+    const didScrollToGenerate = scrollToGenerateOnMobile();
+    if (didScrollToGenerate && videoEl) {
+      try {
+        videoEl.muted = true;
+      } catch {
+        // no-op
+      }
+    }
   };
 
   card.onclick = () => {

@@ -1034,7 +1034,9 @@ function renderTemplateCard(template) {
     }, 50);
   }
 
-  const selectTemplate = async () => {
+  const selectTemplate = async ({toggleAudioOnSameSelection = false} = {}) => {
+    const isSameSelection = selectedTemplate?.id === template.id;
+
     selectedTemplate = template;
     $("selTemplate").value = `${template.title} (${template.durationSec}s ${mode})`;
     document.querySelectorAll(".tplCard").forEach((el) => {
@@ -1047,7 +1049,11 @@ function renderTemplateCard(template) {
     stopAllTemplateVideos(videoEl);
     if (videoEl) {
       try {
-        videoEl.muted = false;
+        if (isSameSelection && toggleAudioOnSameSelection) {
+          videoEl.muted = !videoEl.muted;
+        } else {
+          videoEl.muted = false;
+        }
         videoEl.volume = 1;
         await videoEl.play();
       } catch {
@@ -1062,7 +1068,7 @@ function renderTemplateCard(template) {
   };
 
   card.onclick = () => {
-    selectTemplate();
+    selectTemplate({toggleAudioOnSameSelection: true});
   };
 
   useBtn.onclick = (event) => {

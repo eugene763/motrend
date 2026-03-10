@@ -556,6 +556,16 @@ function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+function createClientRequestId(prefix = "req") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return `${prefix}_${crypto.randomUUID()}`;
+  }
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function renderEstimatedProgressStatus() {
   if (!estimatedProgressActive) return;
   setStatus(`${estimatedProgressLabel} ${Math.floor(estimatedProgressPercent)}%`);
@@ -884,7 +894,11 @@ function shouldRetryCreateJob(error) {
   );
 }
 
-async function callCreateJob(payload, maxAttempts = 4) {
+async function callCreateJob(payload, options = {}) {
+  const retryable = options.retryable !== false;
+  const maxAttempts = retryable ?
+    Math.max(1, options.maxAttempts || 4) :
+    1;
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -1199,7 +1213,7 @@ if (btnGrantCredits) {
         uid: adminSelectedUid,
         amount,
         reason,
-      });
+      }, {retryable: false});
       const payload = response?.data || {};
       const supportCode = adminSelectedSupportCode || payload?.supportCode || "";
       setAdminLookupError("");
@@ -1618,6 +1632,15 @@ function renderJobsList() {
         try {
           const response = await callCreateJob({refreshJobId: item.id});
           const payload = response?.data || {};
+          const queuedForRefresh = payload?.queuedForRefresh === true;
+          if (queuedForRefresh) {
+            const retryAfterMs = (
+              typeof payload?.retryAfterMs === "number" &&
+              payload.retryAfterMs > 0
+            ) ? payload.retryAfterMs : 2000;
+            const retryAfterSec = Math.max(1, Math.ceil(retryAfterMs / 1000));
+            setStatus(`Refresh queued. Check again in ~${retryAfterSec}s.`);
+          }
           const idx = latestJobs.findIndex((entry) => entry.id === item.id);
           if (idx >= 0 && payload && typeof payload === "object") {
             const status = typeof payload.status === "string" ?
@@ -1797,7 +1820,11 @@ $("btnGenerate").onclick = async () => {
   hideSuccessPanel();
 
   try {
-    const response = await callCreateJob({templateId: selectedTemplate.id});
+    const clientRequestId = createClientRequestId("gen");
+    const response = await callCreateJob({
+      templateId: selectedTemplate.id,
+      clientRequestId,
+    });
     const jobId = response.data?.jobId;
     const uploadPath = response.data?.uploadPath;
 

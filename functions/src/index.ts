@@ -23,6 +23,7 @@ const klingSecretKey = defineSecret("KLING_SECRET_KEY");
 const INITIAL_CREDITS = 20;
 const INPUT_TTL_MS = 6 * 60 * 60 * 1000;
 const OUTPUT_TTL_MS = 60 * 60 * 1000;
+const JOB_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const KLING_HTTP_TIMEOUT_MS = 20_000;
 const DOWNLOAD_FETCH_TIMEOUT_MS = 60_000;
 const REFRESH_COOLDOWN_MS = 7_000;
@@ -30,7 +31,13 @@ const DOWNLOAD_LOCK_MS = 2 * 60 * 1000;
 const MAX_DOWNLOAD_BYTES = 120 * 1024 * 1024;
 const SUPPORT_CODES_COLLECTION = "support_codes";
 const CREDIT_ADJUSTMENTS_COLLECTION = "credit_adjustments";
-const QUEUE_COLLECTION = "job_queue";
+const JOB_REQUESTS_COLLECTION = "job_requests";
+const LEGACY_QUEUE_COLLECTION = "job_queue";
+const QUEUE_COLLECTIONS: Record<QueueTaskType, string> = {
+  kling_submit: "job_queue_kling_submit",
+  kling_poll: "job_queue_kling_poll",
+  download_prepare: "job_queue_download_prepare",
+};
 const QUEUE_LEASE_MS = 2 * 60 * 1000;
 const KLING_BASE_URL =
   process.env.KLING_BASE_URL || "https://api-singapore.klingai.com";
@@ -52,6 +59,12 @@ type QueueTaskType =
   | "kling_submit"
   | "kling_poll"
   | "download_prepare";
+
+function isQueueTaskType(value: string | null): value is QueueTaskType {
+  return value === "kling_submit" ||
+    value === "kling_poll" ||
+    value === "download_prepare";
+}
 
 interface UserDoc {
   creditsBalance?: number;
@@ -134,6 +147,15 @@ interface QueueTaskDoc {
   updatedAt?: admin.firestore.Timestamp;
 }
 
+interface JobRequestDoc {
+  uid?: string;
+  templateId?: string;
+  jobId?: string;
+  uploadPath?: string;
+  createdAt?: admin.firestore.Timestamp;
+  updatedAt?: admin.firestore.Timestamp;
+}
+
 interface KlingSubmitInput {
   jobId: string;
   inputImageUrl: string;
@@ -205,12 +227,6 @@ function makeKlingJwt(accessKey: string, secretKey: string): string {
   }, secretKey, {algorithm: "HS256"});
 }
 
-function parseTimeMs(value: unknown): number | null {
-  if (typeof value !== "string") return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
-}
-
 function timestampMs(value: unknown): number | null {
   if (!value || typeof value !== "object") return null;
   if (!("toMillis" in value)) return null;
@@ -267,6 +283,41 @@ function normalizeSupportCode(value: unknown): string {
     throw new HttpsError("invalid-argument", "Invalid supportCode format");
   }
   return code;
+}
+
+function normalizeClientRequestId(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") {
+    throw new HttpsError(
+      "invalid-argument",
+      "clientRequestId must be a string"
+    );
+  }
+  const requestId = value.trim();
+  if (!requestId) {
+    throw new HttpsError("invalid-argument", "clientRequestId is empty");
+  }
+  if (requestId.length > 120) {
+    throw new HttpsError("invalid-argument", "clientRequestId is too long");
+  }
+  if (!/^[A-Za-z0-9._:-]+$/.test(requestId)) {
+    throw new HttpsError("invalid-argument", "Invalid clientRequestId");
+  }
+  return requestId;
+}
+
+function hashForLog(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function maskSupportCodeForLog(value: string | null): string | null {
+  if (!value) return null;
+  if (value.length <= 6) return "***";
+  return `${value.slice(0, 4)}***${value.slice(-2)}`;
+}
+
+function maskPathForLog(value: string): string {
+  return `sha:${hashForLog(value)}`;
 }
 
 function parseGrantAmount(value: unknown): number {
@@ -702,7 +753,8 @@ function enqueueQueueTaskInTransaction(
   tx: admin.firestore.Transaction,
   params: {type: QueueTaskType; uid: string; jobId: string}
 ): string {
-  const taskRef = db.collection(QUEUE_COLLECTION).doc();
+  const queueCollection = QUEUE_COLLECTIONS[params.type];
+  const taskRef = db.collection(queueCollection).doc();
   tx.set(taskRef, {
     type: params.type,
     uid: params.uid,
@@ -955,10 +1007,15 @@ async function prepareOwnedJobDownload(params: {
 async function refreshOwnedJobStatus(
   uid: string,
   jobId: string
-): Promise<{status: JobStatus; kling: Record<string, unknown>}> {
+): Promise<{
+  status: JobStatus;
+  kling: Record<string, unknown>;
+  queuedForRefresh: boolean;
+  retryAfterMs?: number;
+}> {
   const jobRef = db.collection("jobs").doc(jobId);
 
-  await db.runTransaction(async (tx) => {
+  const refreshDecision = await db.runTransaction(async (tx) => {
     const snap = await tx.get(jobRef);
     if (!snap.exists) {
       throw new HttpsError("not-found", "Trend not found.");
@@ -974,18 +1031,24 @@ async function refreshOwnedJobStatus(
     const refreshable = status === "queued" || status === "processing";
 
     if (!refreshable || !taskId) {
-      return;
+      return {
+        queuedForRefresh: false,
+      };
     }
 
+    const nowMs = Date.now();
     const lastStatusCheckAtMs = timestampMs(job.kling?.lastStatusCheckAt);
     if (
       lastStatusCheckAtMs !== null &&
-      Date.now() - lastStatusCheckAtMs < REFRESH_COOLDOWN_MS
+      nowMs - lastStatusCheckAtMs < REFRESH_COOLDOWN_MS
     ) {
-      throw new HttpsError(
-        "resource-exhausted",
-        "Please wait a few seconds before refreshing again."
-      );
+      return {
+        queuedForRefresh: true,
+        retryAfterMs: Math.max(
+          1_000,
+          REFRESH_COOLDOWN_MS - (nowMs - lastStatusCheckAtMs)
+        ),
+      };
     }
 
     tx.update(jobRef, {
@@ -997,6 +1060,11 @@ async function refreshOwnedJobStatus(
       uid,
       jobId,
     });
+
+    return {
+      queuedForRefresh: true,
+      retryAfterMs: 2_000,
+    };
   });
 
   const latestSnap = await jobRef.get();
@@ -1005,6 +1073,10 @@ async function refreshOwnedJobStatus(
   return {
     status: (latestJob.status || "queued") as JobStatus,
     kling: klingResponsePayload(latestJob.kling),
+    queuedForRefresh: refreshDecision.queuedForRefresh === true,
+    retryAfterMs: typeof refreshDecision.retryAfterMs === "number" ?
+      refreshDecision.retryAfterMs :
+      undefined,
   };
 }
 
@@ -1039,9 +1111,9 @@ async function findUserBySupportCodeForAdmin(
     .get();
 
   logger.info("Admin support lookup", {
-    adminUid,
-    targetUid,
-    supportCode,
+    adminHash: hashForLog(adminUid),
+    targetUserHash: hashForLog(targetUid),
+    supportCodeMasked: maskSupportCodeForLog(supportCode),
     jobsFound: jobsSnap.size,
   });
 
@@ -1124,9 +1196,9 @@ async function grantCreditsForAdmin(params: {
   });
 
   logger.warn("Credits granted by admin", {
-    adminUid: params.adminUid,
-    targetUid,
-    supportCode,
+    adminHash: hashForLog(params.adminUid),
+    targetUserHash: hashForLog(targetUid),
+    supportCodeMasked: maskSupportCodeForLog(supportCode),
     amount,
     previousBalance,
     newBalance,
@@ -1210,6 +1282,7 @@ export const createJob = onCall(
     if (!/^[\w-]+$/.test(templateId)) {
       throw new HttpsError("invalid-argument", "Invalid templateId");
     }
+    const clientRequestId = normalizeClientRequestId(req.data?.clientRequestId);
 
     const templateSnap = await db.doc(`templates/${templateId}`).get();
     const template = (templateSnap.data() as TemplateDoc | undefined) || {};
@@ -1218,8 +1291,37 @@ export const createJob = onCall(
     }
 
     const costCredits = templateCostCredits(template);
+    const requestRef = clientRequestId ?
+      db.collection(JOB_REQUESTS_COLLECTION)
+        .doc(`${uid}_${clientRequestId}`) :
+      null;
 
     const result = await db.runTransaction(async (tx) => {
+      if (requestRef) {
+        const requestSnap = await tx.get(requestRef);
+        if (requestSnap.exists) {
+          const requestData =
+            (requestSnap.data() as JobRequestDoc | undefined) || {};
+          const existingTemplateId = pickString(requestData.templateId);
+          const existingJobId = pickString(requestData.jobId);
+          const existingUploadPath = pickString(requestData.uploadPath);
+
+          if (existingTemplateId && existingTemplateId !== templateId) {
+            throw new HttpsError(
+              "failed-precondition",
+              "clientRequestId already used for a different template."
+            );
+          }
+          if (existingJobId && existingUploadPath) {
+            return {
+              jobId: existingJobId,
+              uploadPath: existingUploadPath,
+              reused: true,
+            };
+          }
+        }
+      }
+
       const userRef = db.collection("users").doc(uid);
       const userSnap = await tx.get(userRef);
       const userData = (userSnap.data() as UserDoc | undefined) || {};
@@ -1255,6 +1357,17 @@ export const createJob = onCall(
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
+
+      if (requestRef) {
+        tx.set(requestRef, {
+          uid,
+          templateId,
+          jobId: jobRef.id,
+          uploadPath,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        }, {merge: true});
+      }
 
       return {jobId: jobRef.id, uploadPath};
     });
@@ -1478,9 +1591,132 @@ async function processDownloadPrepareTask(jobId: string): Promise<void> {
   }
 }
 
-export const processQueueTask = onDocumentCreated(
+async function runQueueTaskByType(
+  type: QueueTaskType,
+  jobId: string
+): Promise<void> {
+  if (type === "kling_submit") {
+    await processKlingSubmitTask(jobId);
+    return;
+  }
+  if (type === "kling_poll") {
+    await processKlingPollTask(jobId);
+    return;
+  }
+  await processDownloadPrepareTask(jobId);
+}
+
+async function processQueueTaskRef(
+  taskRef: admin.firestore.DocumentReference,
+  expectedType: QueueTaskType | null
+): Promise<void> {
+  const claimed = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(taskRef);
+    if (!snap.exists) return null;
+    const task = (snap.data() as QueueTaskDoc | undefined) || {};
+    if (task.status !== "queued") return null;
+
+    const rawTypeValue = pickString(task.type);
+    const rawType = isQueueTaskType(rawTypeValue) ? rawTypeValue : null;
+    const type = expectedType || rawType;
+    const jobId = pickString(task.jobId);
+    if ((rawTypeValue && !rawType) || !type || !jobId) {
+      tx.update(taskRef, {
+        status: "failed",
+        lastError: "Invalid queue task payload.",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return null;
+    }
+
+    if (rawType && expectedType && rawType !== expectedType) {
+      tx.update(taskRef, {
+        status: "failed",
+        lastError: "Queue task type mismatch.",
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return null;
+    }
+
+    tx.update(taskRef, {
+      status: "processing",
+      leaseUntil: admin.firestore.Timestamp.fromMillis(
+        Date.now() + QUEUE_LEASE_MS
+      ),
+      attempts: admin.firestore.FieldValue.increment(1),
+      lastError: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return {type, jobId};
+  });
+
+  if (!claimed) return;
+
+  try {
+    await runQueueTaskByType(claimed.type, claimed.jobId);
+    await taskRef.update({
+      status: "done",
+      leaseUntil: admin.firestore.FieldValue.delete(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (error) {
+    await taskRef.update({
+      status: "failed",
+      leaseUntil: admin.firestore.FieldValue.delete(),
+      lastError: errorMessage(error),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
+}
+
+export const processKlingSubmitQueueTask = onDocumentCreated(
   {
-    document: `${QUEUE_COLLECTION}/{taskId}`,
+    document: `${QUEUE_COLLECTIONS.kling_submit}/{taskId}`,
+    secrets: [klingAccessKey, klingSecretKey],
+    memory: "512MiB",
+    maxInstances: 6,
+    concurrency: 4,
+  },
+  async (event) => {
+    const taskRef = event.data?.ref;
+    if (!taskRef) return;
+    await processQueueTaskRef(taskRef, "kling_submit");
+  }
+);
+
+export const processKlingPollQueueTask = onDocumentCreated(
+  {
+    document: `${QUEUE_COLLECTIONS.kling_poll}/{taskId}`,
+    secrets: [klingAccessKey, klingSecretKey],
+    memory: "512MiB",
+    maxInstances: 20,
+    concurrency: 10,
+  },
+  async (event) => {
+    const taskRef = event.data?.ref;
+    if (!taskRef) return;
+    await processQueueTaskRef(taskRef, "kling_poll");
+  }
+);
+
+export const processDownloadPrepareQueueTask = onDocumentCreated(
+  {
+    document: `${QUEUE_COLLECTIONS.download_prepare}/{taskId}`,
+    secrets: [klingAccessKey, klingSecretKey],
+    memory: "512MiB",
+    maxInstances: 4,
+    concurrency: 2,
+  },
+  async (event) => {
+    const taskRef = event.data?.ref;
+    if (!taskRef) return;
+    await processQueueTaskRef(taskRef, "download_prepare");
+  }
+);
+
+export const processQueueTaskLegacy = onDocumentCreated(
+  {
+    document: `${LEGACY_QUEUE_COLLECTION}/{taskId}`,
     secrets: [klingAccessKey, klingSecretKey],
     memory: "512MiB",
     maxInstances: 1,
@@ -1489,94 +1725,20 @@ export const processQueueTask = onDocumentCreated(
   async (event) => {
     const taskRef = event.data?.ref;
     if (!taskRef) return;
-
-    const claimed = await db.runTransaction(async (tx) => {
-      const snap = await tx.get(taskRef);
-      if (!snap.exists) return null;
-      const task = (snap.data() as QueueTaskDoc | undefined) || {};
-      if (task.status !== "queued") return null;
-      const type = task.type;
-      const jobId = pickString(task.jobId);
-      if (!type || !jobId) {
-        tx.update(taskRef, {
-          status: "failed",
-          lastError: "Invalid queue task payload.",
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-        return null;
-      }
-
-      tx.update(taskRef, {
-        status: "processing",
-        leaseUntil: admin.firestore.Timestamp.fromMillis(
-          Date.now() + QUEUE_LEASE_MS
-        ),
-        attempts: admin.firestore.FieldValue.increment(1),
-        lastError: admin.firestore.FieldValue.delete(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      return {type, jobId};
-    });
-
-    if (!claimed) return;
-
-    try {
-      if (claimed.type === "kling_submit") {
-        await processKlingSubmitTask(claimed.jobId);
-      } else if (claimed.type === "kling_poll") {
-        await processKlingPollTask(claimed.jobId);
-      } else if (claimed.type === "download_prepare") {
-        await processDownloadPrepareTask(claimed.jobId);
-      }
-
-      await taskRef.update({
-        status: "done",
-        leaseUntil: admin.firestore.FieldValue.delete(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    } catch (error) {
-      await taskRef.update({
-        status: "failed",
-        leaseUntil: admin.firestore.FieldValue.delete(),
-        lastError: errorMessage(error),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    }
+    await processQueueTaskRef(taskRef, null);
   }
 );
 
 export const cleanupInputsHourly = onSchedule(
-  {schedule: "every 60 minutes"},
+  {schedule: "every 24 hours"},
   async () => {
-    const cutoffMs = Date.now() - INPUT_TTL_MS;
-    const bucket = admin.storage().bucket();
-
-    const [files] = await bucket.getFiles({prefix: "user_uploads/"});
-    let deletedCount = 0;
-
-    for (const file of files) {
-      let createdAtMs = parseTimeMs(file.metadata?.timeCreated);
-      if (createdAtMs === null) {
-        const [metadata] = await file.getMetadata();
-        createdAtMs = parseTimeMs(metadata?.timeCreated);
+    logger.info(
+      "cleanupInputsHourly skipped: managed by bucket lifecycle policy",
+      {
+        targetPrefix: "user_uploads/",
+        previousTtlMs: INPUT_TTL_MS,
       }
-      if (createdAtMs === null || createdAtMs > cutoffMs) continue;
-
-      try {
-        await file.delete({ignoreNotFound: true});
-        deletedCount += 1;
-      } catch (error) {
-        logger.warn("Failed to delete old upload", {
-          file: file.name,
-          message: errorMessage(error),
-        });
-      }
-    }
-
-    logger.info("cleanupInputsHourly finished", {
-      scanned: files.length,
-      deleted: deletedCount,
-    });
+    );
   }
 );
 
@@ -1584,53 +1746,121 @@ export const cleanupDownloadsQuarterHourly = onSchedule(
   {schedule: "every 15 minutes"},
   async () => {
     const nowTs = admin.firestore.Timestamp.now();
-    const jobsSnap = await db.collection("jobs")
-      .where("download.expiresAt", "<=", nowTs)
-      .limit(200)
-      .get();
-
-    if (jobsSnap.empty) {
-      return;
-    }
 
     let deletedFiles = 0;
     let cleanedDocs = 0;
+    let scannedDocs = 0;
+    let lastDoc:
+      | admin.firestore.QueryDocumentSnapshot
+      | null = null;
 
-    for (const jobDoc of jobsSnap.docs) {
-      const job = (jobDoc.data() as JobDoc | undefined) || {};
-      const storagePath = pickString(job.download?.storagePath);
-
-      if (storagePath) {
-        try {
-          await admin.storage().bucket().file(storagePath)
-            .delete({ignoreNotFound: true});
-          deletedFiles += 1;
-        } catch (error) {
-          logger.warn("Failed to delete cached download", {
-            file: storagePath,
-            message: errorMessage(error),
-          });
-        }
+    let hasMore = true;
+    while (hasMore) {
+      let jobsQuery = db.collection("jobs")
+        .where("download.expiresAt", "<=", nowTs)
+        .orderBy("download.expiresAt", "asc")
+        .limit(200);
+      if (lastDoc) {
+        jobsQuery = jobsQuery.startAfter(lastDoc);
       }
 
-      await jobDoc.ref.update({
-        "download.storagePath": admin.firestore.FieldValue.delete(),
-        "download.fileName": admin.firestore.FieldValue.delete(),
-        "download.downloadToken": admin.firestore.FieldValue.delete(),
-        "download.contentType": admin.firestore.FieldValue.delete(),
-        "download.sizeBytes": admin.firestore.FieldValue.delete(),
-        "download.expiresAt": admin.firestore.FieldValue.delete(),
-        "download.lockUntil": admin.firestore.FieldValue.delete(),
-        "download.lastError": admin.firestore.FieldValue.delete(),
-        "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
-      });
-      cleanedDocs += 1;
+      const jobsSnap = await jobsQuery.get();
+      if (jobsSnap.empty) {
+        hasMore = false;
+        continue;
+      }
+
+      scannedDocs += jobsSnap.size;
+      for (const jobDoc of jobsSnap.docs) {
+        const job = (jobDoc.data() as JobDoc | undefined) || {};
+        const storagePath = pickString(job.download?.storagePath);
+
+        if (storagePath) {
+          try {
+            await admin.storage().bucket().file(storagePath)
+              .delete({ignoreNotFound: true});
+            deletedFiles += 1;
+          } catch (error) {
+            logger.warn("Failed to delete cached download", {
+              fileHash: maskPathForLog(storagePath),
+              message: errorMessage(error),
+            });
+          }
+        }
+
+        await jobDoc.ref.update({
+          "download.storagePath": admin.firestore.FieldValue.delete(),
+          "download.fileName": admin.firestore.FieldValue.delete(),
+          "download.downloadToken": admin.firestore.FieldValue.delete(),
+          "download.contentType": admin.firestore.FieldValue.delete(),
+          "download.sizeBytes": admin.firestore.FieldValue.delete(),
+          "download.expiresAt": admin.firestore.FieldValue.delete(),
+          "download.lockUntil": admin.firestore.FieldValue.delete(),
+          "download.lastError": admin.firestore.FieldValue.delete(),
+          "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+        });
+        cleanedDocs += 1;
+      }
+
+      lastDoc = jobsSnap.docs[jobsSnap.docs.length - 1];
+      if (jobsSnap.size < 200) {
+        hasMore = false;
+      }
     }
 
     logger.info("cleanupDownloadsQuarterHourly finished", {
-      scanned: jobsSnap.size,
+      scanned: scannedDocs,
       cleanedDocs,
       deletedFiles,
+    });
+  }
+);
+
+export const cleanupJobRequestsDaily = onSchedule(
+  {schedule: "every 24 hours"},
+  async () => {
+    const cutoffTs = admin.firestore.Timestamp.fromMillis(
+      Date.now() - JOB_REQUEST_TTL_MS
+    );
+    let deleted = 0;
+    let scanned = 0;
+    let lastDoc:
+      | admin.firestore.QueryDocumentSnapshot
+      | null = null;
+
+    let hasMore = true;
+    while (hasMore) {
+      let queryRef = db.collection(JOB_REQUESTS_COLLECTION)
+        .where("createdAt", "<=", cutoffTs)
+        .orderBy("createdAt", "asc")
+        .limit(300);
+      if (lastDoc) {
+        queryRef = queryRef.startAfter(lastDoc);
+      }
+
+      const snap = await queryRef.get();
+      if (snap.empty) {
+        hasMore = false;
+        continue;
+      }
+      scanned += snap.size;
+
+      const batch = db.batch();
+      for (const docSnap of snap.docs) {
+        batch.delete(docSnap.ref);
+        deleted += 1;
+      }
+      await batch.commit();
+
+      lastDoc = snap.docs[snap.docs.length - 1];
+      if (snap.size < 300) {
+        hasMore = false;
+      }
+    }
+
+    logger.info("cleanupJobRequestsDaily finished", {
+      scanned,
+      deleted,
     });
   }
 );

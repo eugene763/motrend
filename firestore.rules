@@ -11,13 +11,21 @@ service cloud.firestore {
     }
 
     function userCreateValid() {
-      return !('creditsBalance' in request.resource.data) ||
-        request.resource.data.creditsBalance == 0;
+      return request.resource.data.keys().hasOnly([
+          'email',
+          'country',
+          'language',
+          'updatedAt',
+        ]);
     }
 
     function userUpdateValid() {
-      return request.resource.data.creditsBalance ==
-        resource.data.creditsBalance;
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'email',
+        'country',
+        'language',
+        'updatedAt',
+      ]);
     }
 
     // Public catalog: client can only read templates.

@@ -1,568 +1,125 @@
-import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { getAnalytics, logEvent, setUserId, setUserProperties } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
 import {
-  getAnalytics,
-  logEvent,
-  setUserId,
-  setUserProperties,
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
-import {
-  GoogleAuthProvider,
-  browserSessionPersistence,
-  createUserWithEmailAndPassword,
-  getRedirectResult,
-  getAuth,
-  onAuthStateChanged,
-  sendPasswordResetEmail,
-  setPersistence,
-  signInWithEmailAndPassword,
-  signInWithRedirect,
-  signInWithPopup,
-  signOut,
+  getAuth, GoogleAuthProvider,
+  signInWithPopup, onAuthStateChanged, signOut,
+  signInWithEmailAndPassword, createUserWithEmailAndPassword
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import {
-  collection,
-  doc,
-  getDocs,
-  getFirestore,
-  limit,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where,
+  getFirestore, doc, setDoc, updateDoc, serverTimestamp,
+  collection, query, where, getDocs, orderBy, limit, onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-import {
-  getDownloadURL,
-  getStorage,
-  ref,
-  uploadBytes,
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
-import {
-  getFunctions,
-  httpsCallable,
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
-
-const runtimeHost = window.location.hostname.toLowerCase();
-const sameSiteAuthDomains = new Set([
-  "trend.moads.agency",
-  "www.trend.moads.agency",
-]);
-const runtimeAuthDomain = sameSiteAuthDomains.has(runtimeHost) ?
-  runtimeHost :
-  "gen-lang-client-0651837818.firebaseapp.com";
+import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
+import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBro7c7o8kiRdAuZZpu73KdKyApX7JuflE",
-  authDomain: runtimeAuthDomain,
+  authDomain: "gen-lang-client-0651837818.firebaseapp.com",
   projectId: "gen-lang-client-0651837818",
   storageBucket: "gen-lang-client-0651837818.firebasestorage.app",
   messagingSenderId: "399776789069",
   appId: "1:399776789069:web:1567626bd149e1d5116204",
-  measurementId: "G-KJC19LBS34",
+  measurementId: "G-KJC19LBS34"
 };
 
 const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const storage = getStorage(app);
-const functions = getFunctions(app, "us-central1");
-const createJob = httpsCallable(functions, "createJob");
+const fns = getFunctions(app, "us-central1");
+const createJob = httpsCallable(fns, "createJob");
+const getDownloadTicket = httpsCallable(fns, "getDownloadTicket");
 
+// analytics (может не стартовать в некоторых окружениях — это ок)
 let analytics = null;
-try {
-  analytics = getAnalytics(app);
-} catch {
-  analytics = null;
-}
+try { analytics = getAnalytics(app); } catch {}
 
 function track(name, params = {}) {
   if (!analytics) return;
-  try {
-    logEvent(analytics, name, params);
-  } catch {
-    // no-op
-  }
+  try { logEvent(analytics, name, params); } catch {}
 }
+
+const auth = getAuth(app);
+const db = getFirestore(app);
+const st = getStorage(app);
 
 const $ = (id) => document.getElementById(id);
 
-function shouldUseRedirectLogin() {
-  const ua = navigator.userAgent || "";
-  return /Telegram|Instagram|FBAN|FBAV|FB_IAB|Line\/|WebView|; wv\)|\bwv\b/i.test(ua);
-}
-
-function isTelegramInAppBrowser() {
-  const ua = navigator.userAgent || "";
-  return /Telegram/i.test(ua);
-}
-
-function isAndroid() {
-  const ua = navigator.userAgent || "";
-  return /Android/i.test(ua);
-}
-
-function buildExternalBrowserUrl() {
-  const currentUrl = window.location.href;
-  if (!isAndroid()) return currentUrl;
-
-  const host = window.location.host;
-  const pathAndQuery = `${window.location.pathname}${window.location.search}`;
-  const fallback = encodeURIComponent(currentUrl);
-  return `intent://${host}${pathAndQuery}#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=${fallback};end`;
-}
-
-function updateAuthInAppActions() {
-  const openBtn = $("btnOpenExternalAuth");
-  if (!openBtn) return;
-
-  const inApp = shouldUseRedirectLogin();
-  if (!inApp) {
-    openBtn.style.display = "none";
-    openBtn.href = "#";
-    return;
-  }
-
-  openBtn.href = buildExternalBrowserUrl();
-  openBtn.style.display = "inline-flex";
-}
-
-function showAuthError(message) {
+function showAuthError(msg) {
   const el = $("authError");
   if (!el) return;
-  el.textContent = message;
   el.style.display = "block";
+  el.textContent = msg;
 }
-
 function clearAuthError() {
   const el = $("authError");
   if (!el) return;
-  el.textContent = "";
   el.style.display = "none";
+  el.textContent = "";
 }
-
-function showFormError(message) {
+function showFormError(msg) {
   const el = $("formError");
   if (!el) return;
-  el.textContent = message;
   el.style.display = "block";
+  el.textContent = msg;
 }
-
 function clearFormError() {
   const el = $("formError");
   if (!el) return;
-  el.textContent = "";
   el.style.display = "none";
+  el.textContent = "";
 }
 
-function setStatus(message) {
-  const el = $("status");
-  if (!el) return;
-  el.textContent = message;
+let currentResultJobId = null;
+let currentResultUrl = "";
+
+function showResult(url, jobId) {
+  currentResultJobId = jobId || null;
+  currentResultUrl = url || "";
+  $("result").style.display = "block";
+
+  const a = $("downloadResult");
+  a.href = "#";
+  a.style.display = "inline-flex";
+
+  const copyBtn = $("copyResultLink");
+  copyBtn.style.display = "inline-flex";
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(currentResultUrl);
+      $("status").textContent = "Link copied ✅";
+    } catch {
+      $("status").textContent = "Failed to copy link";
+    }
+  };
+
+  $("resultHint").style.display = "block";
 }
 
-function setSupportButtonMessage(supportCode = "") {
-  const btn = $("supportBtn");
-  if (!btn) return;
-
-  const baseUrl = "https://wa.me/995574413278";
-  const cleanCode = typeof supportCode === "string" ?
-    supportCode.trim().toUpperCase() :
-    "";
-  const text = cleanCode ?
-    `Hello, I am having an issue with the MoTrend© app. Support ID: ${cleanCode}.` :
-    "Hello, I am having an issue with the MoTrend© app.";
-
-  btn.href = `${baseUrl}?text=${encodeURIComponent(text)}`;
-}
-
-function openAuth(message = "") {
+function openAuth(msg = "") {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "block";
-  updateAuthInAppActions();
-  if (message) {
-    showAuthError(message);
-  } else {
-    clearAuthError();
-  }
-  authBox?.scrollIntoView({behavior: "smooth", block: "start"});
+  if (msg) showAuthError(msg); else clearAuthError();
+  authBox?.scrollIntoView({ behavior: "smooth", block: "start" });
   $("authEmail")?.focus();
 }
-
 function closeAuth() {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "none";
   clearAuthError();
 }
 
-function showSuccessPanel(jobId) {
-  const panel = $("jobSuccessPanel");
-  const prepareBtn = $("prepareDownloadBtn");
-  const downloadBtn = $("downloadTrendBtn");
-  const downloadOr = $("downloadOr");
-  const openExternalBtn = $("openExternalBtn");
-  const copyDownloadBtn = $("copyDownloadBtn");
-  const fallbackHint = $("downloadFallbackHint");
-  if (
-    !panel ||
-    !prepareBtn ||
-    !downloadBtn ||
-    !downloadOr ||
-    !openExternalBtn ||
-    !copyDownloadBtn ||
-    !fallbackHint
-  ) {
-    return;
-  }
-
-  if (activeDoneJobId !== jobId) {
-    preparedDownloadJobId = "";
-    preparedDownloadUrl = "";
-  }
-  activeDoneJobId = jobId || "";
-
-  prepareBtn.disabled = isPreparingDownload || !activeDoneJobId;
-  if (isPreparingDownload) {
-    prepareBtn.innerHTML =
-      '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Preparing...';
-  } else {
-    prepareBtn.textContent = "Prepare download";
-  }
-
-  const safePreparedUrl = safeUrl(
-    preparedDownloadJobId === activeDoneJobId ? preparedDownloadUrl : ""
-  );
-  if (safePreparedUrl) {
-    prepareBtn.style.display = "none";
-    downloadBtn.href = safePreparedUrl;
-    openExternalBtn.href = safePreparedUrl;
-    downloadBtn.style.display = "flex";
-    downloadOr.style.display = "block";
-    openExternalBtn.style.display = "flex";
-    copyDownloadBtn.style.display = "flex";
-    fallbackHint.style.display = "block";
-  } else {
-    prepareBtn.style.display = "flex";
-    downloadBtn.href = "#";
-    openExternalBtn.href = "#";
-    downloadBtn.style.display = "none";
-    downloadOr.style.display = "none";
-    openExternalBtn.style.display = "none";
-    copyDownloadBtn.style.display = "none";
-    fallbackHint.style.display = "none";
-  }
-
-  panel.style.display = "block";
-}
-
-function hideSuccessPanel() {
-  const panel = $("jobSuccessPanel");
-  const prepareBtn = $("prepareDownloadBtn");
-  const downloadBtn = $("downloadTrendBtn");
-  const downloadOr = $("downloadOr");
-  const openExternalBtn = $("openExternalBtn");
-  const copyDownloadBtn = $("copyDownloadBtn");
-  const fallbackHint = $("downloadFallbackHint");
-  if (
-    !panel ||
-    !prepareBtn ||
-    !downloadBtn ||
-    !downloadOr ||
-    !openExternalBtn ||
-    !copyDownloadBtn ||
-    !fallbackHint
-  ) {
-    return;
-  }
-
-  activeDoneJobId = "";
-  preparedDownloadJobId = "";
-  preparedDownloadUrl = "";
-  isPreparingDownload = false;
-
-  prepareBtn.disabled = false;
-  prepareBtn.textContent = "Prepare download";
-  prepareBtn.style.display = "flex";
-  panel.style.display = "none";
-  downloadBtn.href = "#";
-  downloadBtn.style.display = "none";
-  downloadOr.style.display = "none";
-  openExternalBtn.href = "#";
-  openExternalBtn.style.display = "none";
-  copyDownloadBtn.style.display = "none";
-  fallbackHint.style.display = "none";
-}
-
-function safeUrl(value) {
-  if (typeof value !== "string") return "";
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-
-  try {
-    const url = new URL(trimmed, window.location.origin);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return "";
-    }
-    return url.toString();
-  } catch {
-    return "";
-  }
-}
-
-function callableErrorMessage(error) {
-  const code = typeof error?.code === "string" ? error.code : "";
-  const message = typeof error?.message === "string" ? error.message : "";
-
-  if (code.includes("resource-exhausted")) {
-    return message || "Not enough credits for this generation.";
-  }
-  if (code.includes("unauthenticated")) {
-    return "Please sign in first.";
-  }
-  if (code.includes("failed-precondition")) {
-    return message || "Template is unavailable. Pick another one.";
-  }
-  if (code.includes("permission-denied")) {
-    return message || "You have no access to this trend.";
-  }
-  return message || "Something went wrong. Try again.";
-}
-
-function setSupportCodeUi(supportCode = "") {
-  const normalized = typeof supportCode === "string" ?
-    supportCode.trim().toUpperCase() :
-    "";
-  currentSupportCode = normalized;
-  const el = $("supportCode");
-  if (el) {
-    el.textContent = normalized || "—";
-  }
-  setSupportButtonMessage(normalized);
-}
-
-function setAdminLookupError(message = "") {
-  const errorEl = $("adminLookupError");
-  if (!errorEl) return;
-  if (!message) {
-    errorEl.textContent = "";
-    errorEl.style.display = "none";
-    return;
-  }
-  errorEl.textContent = message;
-  errorEl.style.display = "block";
-}
-
-function clearAdminLookupResult() {
-  const resultEl = $("adminLookupResult");
-  if (resultEl) {
-    resultEl.textContent = "";
-    resultEl.style.display = "none";
-  }
-  adminSelectedUid = "";
-  adminSelectedSupportCode = "";
-  const grantWrap = $("adminGrantWrap");
-  if (grantWrap) {
-    grantWrap.style.display = "none";
-  }
-  const amountInput = $("adminGrantAmount");
-  if (amountInput && !amountInput.value) {
-    amountInput.value = "10";
-  }
-  const reasonInput = $("adminGrantReason");
-  if (reasonInput) {
-    reasonInput.value = "";
-  }
-}
-
-function renderAdminLookupResult(payload) {
-  const resultEl = $("adminLookupResult");
-  if (!resultEl) return;
-
-  const credits = Number.isFinite(payload?.user?.creditsBalance) ?
-    payload.user.creditsBalance :
-    0;
-  const lines = [
-    `UID: ${payload?.uid || "—"}`,
-    `Support ID: ${payload?.supportCode || "—"}`,
-    `Email: ${payload?.user?.email || "—"}`,
-    `Credits: ${credits}`,
-    `Country: ${payload?.user?.country || "—"}`,
-    `Language: ${payload?.user?.language || "—"}`,
-  ];
-
-  const jobs = Array.isArray(payload?.recentJobs) ? payload.recentJobs : [];
-  if (jobs.length) {
-    lines.push("Recent trends:");
-    jobs.forEach((job) => {
-      const shortId = typeof job?.id === "string" ? job.id.slice(0, 8) : "—";
-      const status = typeof job?.status === "string" ? job.status : "—";
-      const templateId = typeof job?.templateId === "string" ? job.templateId : "—";
-      lines.push(`- ${shortId} • ${status} • ${templateId}`);
-    });
-  } else {
-    lines.push("Recent trends: none");
-  }
-
-  resultEl.textContent = lines.join("\n");
-  resultEl.style.display = "block";
-
-  adminSelectedUid = typeof payload?.uid === "string" ? payload.uid : "";
-  adminSelectedSupportCode = typeof payload?.supportCode === "string" ?
-    payload.supportCode :
-    "";
-  const grantWrap = $("adminGrantWrap");
-  if (grantWrap) {
-    grantWrap.style.display = adminSelectedUid ? "block" : "none";
-  }
-}
-
-function setAdminCardVisible(visible) {
-  const adminCard = $("adminCard");
-  if (!adminCard) return;
-  adminCard.style.display = visible ? "block" : "none";
-  if (!visible) {
-    setAdminLookupError("");
-    clearAdminLookupResult();
-    const supportCodeInput = $("adminSupportCode");
-    if (supportCodeInput) {
-      supportCodeInput.value = "";
-    }
-  }
-}
-
 let currentUser = null;
 let selectedTemplate = null;
 let unsubscribeUserDoc = null;
-let unsubscribeJobs = null;
-let latestJobs = [];
-const refreshingJobIds = new Set();
-let activeDoneJobId = "";
-let preparedDownloadJobId = "";
-let preparedDownloadUrl = "";
-let isPreparingDownload = false;
-let currentSupportCode = "";
-let isAdminUser = false;
-let adminSelectedUid = "";
-let adminSelectedSupportCode = "";
-const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function triggerDownload(url) {
-  const safe = safeUrl(url);
-  if (!safe) return;
-  window.open(safe, "_blank", "noopener,noreferrer");
-}
-
-async function prepareDownloadLink(jobId) {
-  for (let attempt = 0; attempt < PREPARE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
-    const response = await createJob({prepareDownloadJobId: jobId});
-    const payload = response?.data || {};
-    const downloadUrl = safeUrl(
-      typeof payload.downloadUrl === "string" ? payload.downloadUrl : ""
-    );
-    if (downloadUrl) {
-      return downloadUrl;
-    }
-
-    const isPending = payload?.pending === true;
-    if (!isPending) {
-      break;
-    }
-
-    const retryAfterMs = (
-      typeof payload.retryAfterMs === "number" && payload.retryAfterMs > 0
-    ) ? Math.min(payload.retryAfterMs, 10_000) : 2_000;
-    await sleep(retryAfterMs);
-  }
-
-  throw new Error("Download is still preparing. Please tap again.");
-}
-
-const prepareDownloadBtn = $("prepareDownloadBtn");
-if (prepareDownloadBtn) {
-  prepareDownloadBtn.onclick = async () => {
-    if (!currentUser || !activeDoneJobId || isPreparingDownload) return;
-
-    clearFormError();
-    isPreparingDownload = true;
-    showSuccessPanel(activeDoneJobId);
-
-    try {
-      const downloadUrl = await prepareDownloadLink(activeDoneJobId);
-
-      preparedDownloadJobId = activeDoneJobId;
-      preparedDownloadUrl = downloadUrl;
-      showSuccessPanel(activeDoneJobId);
-    } catch (error) {
-      showFormError(callableErrorMessage(error));
-    } finally {
-      isPreparingDownload = false;
-      if (activeDoneJobId) {
-        showSuccessPanel(activeDoneJobId);
-      }
-    }
-  };
-}
-
-async function syncSupportProfile() {
-  if (!currentUser) {
-    isAdminUser = false;
-    setSupportCodeUi("");
-    setAdminCardVisible(false);
-    return;
-  }
-
-  try {
-    const response = await createJob({supportProfile: true});
-    const payload = response?.data || {};
-    const supportCode = typeof payload?.supportCode === "string" ?
-      payload.supportCode :
-      "";
-    setSupportCodeUi(supportCode);
-    isAdminUser = payload?.isAdmin === true;
-    setAdminCardVisible(isAdminUser);
-  } catch (error) {
-    console.warn("getSupportProfile failed", error);
-    isAdminUser = false;
-    setAdminCardVisible(false);
-  }
-}
-
-const openExternalAuthBtn = $("btnOpenExternalAuth");
-if (openExternalAuthBtn) {
-  openExternalAuthBtn.onclick = () => {
-    updateAuthInAppActions();
-  };
-}
-
-const copyDownloadBtn = $("copyDownloadBtn");
-if (copyDownloadBtn) {
-  copyDownloadBtn.onclick = async () => {
-    const safe = safeUrl(preparedDownloadUrl);
-    if (!safe) return;
-    try {
-      await navigator.clipboard.writeText(safe);
-      setStatus("Download link copied.");
-    } catch {
-      showFormError("Unable to copy link. Please copy it manually.");
-    }
-  };
-}
+let unsubscribeLatestJobs = null;
 
 $("btnEmailSignIn").onclick = async () => {
   clearAuthError();
   const email = $("authEmail").value.trim();
   const pass = $("authPass").value;
-
   try {
-    track("login_click", {method: "email"});
+    track("login_click", { method: "email" });
     await signInWithEmailAndPassword(auth, email, pass);
-  } catch (error) {
-    showAuthError(callableErrorMessage(error));
+  } catch (e) {
+    showAuthError(e?.message || "Sign-in failed");
   }
 };
 
@@ -570,241 +127,91 @@ $("btnEmailSignUp").onclick = async () => {
   clearAuthError();
   const email = $("authEmail").value.trim();
   const pass = $("authPass").value;
-
   try {
-    track("signup_click", {method: "email"});
+    track("signup_click", { method: "email" });
     await createUserWithEmailAndPassword(auth, email, pass);
-  } catch (error) {
-    showAuthError(callableErrorMessage(error));
+  } catch (e) {
+    showAuthError(e?.message || "Sign-up failed");
   }
 };
 
 $("btnLogin").onclick = async () => {
   clearAuthError();
-  const provider = new GoogleAuthProvider();
-  const forceRedirect = shouldUseRedirectLogin();
-  if (isTelegramInAppBrowser()) {
-    showAuthError(
-      "Google sign-in is blocked inside Telegram. Open this page in Chrome/Safari, or use email sign-in."
-    );
-    return;
-  }
-
   try {
-    track("login_click", {method: "google"});
-    if (forceRedirect) {
-      await setPersistence(auth, browserSessionPersistence);
-      setStatus("Redirecting to Google sign-in…");
-      await signInWithRedirect(auth, provider);
-      return;
-    }
+    track("login_click", { method: "google" });
+    const provider = new GoogleAuthProvider();
     await signInWithPopup(auth, provider);
-  } catch (error) {
-    const code = typeof error?.code === "string" ? error.code : "";
-    const popupFailed = [
-      "auth/popup-blocked",
-      "auth/popup-closed-by-user",
-      "auth/cancelled-popup-request",
-      "auth/operation-not-supported-in-this-environment",
-    ].includes(code);
-
-    if (!forceRedirect && popupFailed) {
-      try {
-        await setPersistence(auth, browserSessionPersistence);
-        setStatus("Popup blocked. Redirecting to Google sign-in…");
-        await signInWithRedirect(auth, provider);
-        return;
-      } catch (redirectError) {
-        showAuthError(callableErrorMessage(redirectError));
-        return;
-      }
-    }
-    showAuthError(callableErrorMessage(error));
+  } catch (e) {
+    showAuthError(e?.message || "Google sign-in failed");
   }
 };
 
-$("btnLogout").onclick = async () => {
-  await signOut(auth);
-};
-
-$("btnForgotPassword").onclick = async () => {
-  clearAuthError();
-  const email = $("authEmail").value.trim();
-  if (!email) {
-    showAuthError("Enter your email first.");
-    $("authEmail")?.focus();
-    return;
-  }
-
-  try {
-    track("password_reset_requested", {method: "email"});
-    await sendPasswordResetEmail(auth, email);
-  } catch (error) {
-    const code = typeof error?.code === "string" ? error.code : "";
-    console.warn("Password reset request failed", error);
-
-    if (code.includes("auth/invalid-email")) {
-      showAuthError("Enter a valid email.");
-      return;
-    }
-    if (code.includes("auth/too-many-requests")) {
-      showAuthError("Too many attempts. Try again in a few minutes.");
-      return;
-    }
-    if (code.includes("auth/network-request-failed")) {
-      showAuthError("Network error. Check connection and try again.");
-      return;
-    }
-    if (code.includes("auth/operation-not-allowed")) {
-      showAuthError("Password reset is not enabled in Firebase Auth.");
-      return;
-    }
-    // Keep response generic for account-related outcomes.
-  }
-
-  showAuthError(
-    "If an account exists, we sent a reset link to this email."
-  );
-};
+$("btnLogout").onclick = () => signOut(auth);
 
 $("btnSaveProfile").onclick = async () => {
-  if (!currentUser) return;
-  await setDoc(doc(db, "users", currentUser.uid), {
-    email: currentUser.email,
-    country: $("inpCountry").value,
+  const u = currentUser;
+  if (!u) return;
+  await setDoc(doc(db, "users", u.uid), {
+    email: u.email,
     language: $("inpLang").value,
+    country: $("inpCountry").value,
     updatedAt: serverTimestamp(),
-  }, {merge: true});
+  }, { merge: true });
 };
 
 $("btnWallet").onclick = () => {
   alert("Wallet: позже подключим оплату/кредиты.");
 };
 
-const btnFindSupportUser = $("btnFindSupportUser");
-if (btnFindSupportUser) {
-  btnFindSupportUser.onclick = async () => {
-    if (!currentUser || !isAdminUser) return;
-    const input = $("adminSupportCode");
-    const code = typeof input?.value === "string" ?
-      input.value.trim().toUpperCase() :
-      "";
-    if (!code) {
-      setAdminLookupError("Enter Support ID.");
-      clearAdminLookupResult();
-      return;
-    }
-
-    setAdminLookupError("");
-    clearAdminLookupResult();
-    btnFindSupportUser.disabled = true;
-    btnFindSupportUser.innerHTML =
-      '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Searching...';
-
-    try {
-      const response = await createJob({findSupportCode: code});
-      const payload = response?.data || {};
-      renderAdminLookupResult(payload);
-      if (input) input.value = code;
-    } catch (error) {
-      setAdminLookupError(callableErrorMessage(error));
-      clearAdminLookupResult();
-    } finally {
-      btnFindSupportUser.disabled = false;
-      btnFindSupportUser.textContent = "Find user";
-    }
-  };
-}
-
-const btnGrantCredits = $("btnGrantCredits");
-if (btnGrantCredits) {
-  btnGrantCredits.onclick = async () => {
-    if (!currentUser || !isAdminUser || !adminSelectedUid) return;
-    const amountInput = $("adminGrantAmount");
-    const reasonInput = $("adminGrantReason");
-    const amount = Number(amountInput?.value || 0);
-    const reason = typeof reasonInput?.value === "string" ?
-      reasonInput.value.trim() :
-      "";
-
-    if (!Number.isFinite(amount) || amount < 1 || amount > 500) {
-      setAdminLookupError("Amount must be between 1 and 500.");
-      return;
-    }
-    if (reason.length < 3) {
-      setAdminLookupError("Reason must be at least 3 characters.");
-      return;
-    }
-
-    setAdminLookupError("");
-    btnGrantCredits.disabled = true;
-    btnGrantCredits.innerHTML =
-      '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Granting...';
-
-    try {
-      const response = await createJob({
-        grantCredits: true,
-        uid: adminSelectedUid,
-        amount,
-        reason,
-      });
-      const payload = response?.data || {};
-      const supportCode = adminSelectedSupportCode || payload?.supportCode || "";
-      setAdminLookupError("");
-      setStatus("Credits granted.");
-
-      if (supportCode) {
-        const lookup = await createJob({findSupportCode: supportCode});
-        renderAdminLookupResult(lookup?.data || {});
-      }
-    } catch (error) {
-      setAdminLookupError(callableErrorMessage(error));
-    } finally {
-      btnGrantCredits.disabled = false;
-      btnGrantCredits.textContent = "Grant credits";
-    }
-  };
-}
-
 function stopAllTemplateVideos(exceptEl = null) {
-  document.querySelectorAll(".tplVideo").forEach((video) => {
-    if (video === exceptEl) return;
-    try {
-      video.pause();
-      video.currentTime = 0;
-      video.muted = true;
-    } catch {
-      // no-op
-    }
+  document.querySelectorAll(".tplVideo").forEach(v => {
+    if (v === exceptEl) return;
+    try { v.pause(); v.currentTime = 0; v.muted = true; } catch {}
   });
 }
 
-function renderTemplateCard(template) {
-  const card = document.createElement("div");
-  card.className = "card tplCard";
-  card.style.margin = "0";
-  card.style.cursor = "pointer";
+function escapeHtml(s) {
+  const el = document.createElement("span");
+  el.textContent = s;
+  return el.innerHTML;
+}
+function safeUrl(u) {
+  if (typeof u !== "string") return "";
+  const trimmed = u.trim();
+  if (!trimmed) return "";
+  try {
+    const url = new URL(trimmed, window.location.origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+function renderTemplateCard(t) {
+  const div = document.createElement("div");
+  div.className = "card tplCard";
+  div.style.margin = "0";
 
-  const thumbUrl = safeUrl(template.preview?.thumbnailUrl || "");
-  const videoUrl = safeUrl(template.preview?.previewVideoUrl || "");
-  const mode = template.modeDefault || "std";
-  const titleText = template.title || "Template";
+  const thumbUrl = safeUrl(t.preview?.thumbnailUrl || "");
+  const videoUrl = safeUrl(t.preview?.previewVideoUrl || "");
+  const mode = t.modeDefault || "std";
+  const titleText = t.title || "Template";
 
   const media = document.createElement("div");
   media.className = "tplMedia";
 
-  let videoEl = null;
+  let vid = null;
   if (videoUrl) {
-    videoEl = document.createElement("video");
-    videoEl.className = "tplVideo";
-    videoEl.src = videoUrl;
-    if (thumbUrl) videoEl.poster = thumbUrl;
-    videoEl.playsInline = true;
-    videoEl.muted = true;
-    videoEl.loop = true;
-    videoEl.autoplay = true;
-    videoEl.preload = "metadata";
-    media.appendChild(videoEl);
+    vid = document.createElement("video");
+    vid.className = "tplVideo";
+    vid.playsInline = true;
+    vid.muted = true;
+    vid.loop = true;
+    vid.autoplay = true;
+    vid.preload = "metadata";
+    vid.src = videoUrl;
+    if (thumbUrl) vid.poster = thumbUrl;
+    media.appendChild(vid);
   } else if (thumbUrl) {
     const img = document.createElement("img");
     img.src = thumbUrl;
@@ -812,14 +219,14 @@ function renderTemplateCard(template) {
     media.appendChild(img);
   }
 
-  const title = document.createElement("div");
-  title.style.fontWeight = "700";
-  title.style.marginTop = "8px";
-  title.textContent = titleText;
+  const titleEl = document.createElement("div");
+  titleEl.style.fontWeight = "700";
+  titleEl.style.marginTop = "8px";
+  titleEl.textContent = titleText;
 
   const meta = document.createElement("div");
   meta.className = "muted";
-  meta.textContent = `${template.durationSec ?? "—"}s • ${mode}`;
+  meta.textContent = `${t.durationSec ?? "—"}s • ${mode}`;
 
   const useBtn = document.createElement("button");
   useBtn.className = "btn tplUse";
@@ -827,62 +234,35 @@ function renderTemplateCard(template) {
   useBtn.style.width = "100%";
   useBtn.textContent = "Use";
 
-  card.appendChild(media);
-  card.appendChild(title);
-  card.appendChild(meta);
-  card.appendChild(useBtn);
+  div.appendChild(media);
+  div.appendChild(titleEl);
+  div.appendChild(meta);
+  div.appendChild(useBtn);
 
-  if (videoEl) {
-    setTimeout(() => {
-      videoEl.play().catch(() => {});
-    }, 50);
-  }
+  if (vid) setTimeout(() => { vid.play().catch(() => {}); }, 50);
 
-  const selectTemplate = async () => {
-    selectedTemplate = template;
-    $("selTemplate").value = `${template.title} (${template.durationSec}s ${mode})`;
-    document.querySelectorAll(".tplCard").forEach((el) => {
-      el.classList.remove("isSelected");
-      el.classList.remove("isHot");
-    });
-    card.classList.add("isSelected");
-    card.classList.add("isHot");
-
-    stopAllTemplateVideos(videoEl);
-    if (videoEl) {
-      try {
-        videoEl.muted = false;
-        videoEl.volume = 1;
-        await videoEl.play();
-      } catch {
-        // no-op
-      }
-    }
-
-    track("template_selected", {
-      templateId: template.id,
-      title: template.title || "",
-    });
+  media.onclick = async () => {
+    document.querySelectorAll(".tplCard").forEach(c => c.classList.remove("isHot"));
+    div.classList.add("isHot");
+    if (!vid) return;
+    stopAllTemplateVideos(vid);
+    try { vid.muted = false; vid.volume = 1; await vid.play(); } catch {}
   };
 
-  card.onclick = () => {
-    selectTemplate();
+  useBtn.onclick = () => {
+    selectedTemplate = t;
+    $("selTemplate").value = `${t.title} (${t.durationSec}s ${mode})`;
+    document.querySelectorAll(".tplCard").forEach(c => c.classList.remove("isSelected"));
+    div.classList.add("isSelected");
+    track("template_selected", { templateId: t.id, title: t.title || "" });
   };
 
-  useBtn.onclick = (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    selectTemplate();
-  };
-
-  return card;
+  return div;
 }
 
 async function loadTemplates() {
   const container = $("templates");
-  container.innerHTML =
-    '<div class="templatesLoading"><span class="spinner"></span>Loading templates…</div>';
-
+  container.innerHTML = '<div class="templatesLoading"><span class="spinner"></span> Loading templates…</div>';
   try {
     const qy = query(
       collection(db, "templates"),
@@ -890,23 +270,15 @@ async function loadTemplates() {
       orderBy("order", "asc"),
       limit(30)
     );
-
     const snap = await getDocs(qy);
     container.innerHTML = "";
-
-    if (snap.empty) {
-      container.innerHTML = "<div class=\"templatesLoading muted\">No templates available.</div>";
-      return;
-    }
-
-    snap.forEach((docSnap) => {
-      const template = {id: docSnap.id, ...docSnap.data()};
-      container.appendChild(renderTemplateCard(template));
+    snap.forEach(d => {
+      const t = { id: d.id, ...d.data() };
+      container.appendChild(renderTemplateCard(t));
     });
-  } catch (error) {
-    container.innerHTML =
-      '<div class="templatesLoading muted">Failed to load templates.</div>';
-    console.warn(error);
+  } catch (e) {
+    container.innerHTML = '<div class="templatesLoading muted">Failed to load templates. Try again later.</div>';
+    console.warn(e);
   }
 }
 
@@ -916,159 +288,9 @@ function watchUserDoc(uid) {
     $("credits").textContent = data.creditsBalance ?? 0;
     $("country").textContent = data.country ?? "—";
     $("lang").textContent = data.language ?? "—";
-    if (typeof data.supportCode === "string" && data.supportCode.trim()) {
-      setSupportCodeUi(data.supportCode);
-    }
-    const needsOnboarding = !data.country || !data.language;
-    $("onboarding").style.display = needsOnboarding ? "block" : "none";
+    const needs = !data.country || !data.language;
+    $("onboarding").style.display = needs ? "block" : "none";
   });
-}
-
-function statusLabel(status) {
-  if (status === "queued") return "queued";
-  if (status === "processing") return "processing";
-  if (status === "done") return "done";
-  if (status === "failed") return "failed";
-  return "pending";
-}
-
-function updateLatestJobUI(jobId, job) {
-  const status = job?.status || "";
-  const outputUrl = safeUrl(job?.kling?.outputUrl || "");
-  const error = job?.kling?.error || "";
-
-  if (status === "done" && outputUrl && jobId) {
-    setStatus("Done. Download is ready.");
-    showSuccessPanel(jobId);
-    return;
-  }
-
-  hideSuccessPanel();
-
-  if (status === "queued") {
-    setStatus("Queued. Waiting for processing…");
-  } else if (status === "processing") {
-    setStatus("Processing…");
-  } else if (status === "failed") {
-    setStatus(`Failed: ${error || "try another photo/template"}`);
-  }
-}
-
-function canRefreshJob(job) {
-  return job?.status === "queued" || job?.status === "processing";
-}
-
-function renderJobsList() {
-  const jobsEl = $("jobs");
-  if (!jobsEl) return;
-
-  if (!latestJobs.length) {
-    jobsEl.textContent = "No trends yet.";
-    hideSuccessPanel();
-    return;
-  }
-
-  jobsEl.innerHTML = "";
-
-  latestJobs.forEach((item) => {
-    const job = item.data || {};
-    const row = document.createElement("div");
-    row.className = "row";
-    row.style.justifyContent = "space-between";
-    row.style.marginBottom = "8px";
-
-    const meta = document.createElement("div");
-    const outputUrl = safeUrl(job?.kling?.outputUrl || "");
-    meta.textContent = `${item.id.slice(0, 6)}… • ${statusLabel(job.status)} ${outputUrl ? "• ✅" : ""}`;
-    row.appendChild(meta);
-
-    if (canRefreshJob(job)) {
-      const refreshBtn = document.createElement("button");
-      refreshBtn.className = "btnRefresh";
-      refreshBtn.style.padding = "6px 10px";
-
-      const isRefreshing = refreshingJobIds.has(item.id);
-      refreshBtn.disabled = isRefreshing;
-      if (isRefreshing) {
-        refreshBtn.innerHTML =
-          '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Refreshing...';
-      } else {
-        refreshBtn.textContent = "Refresh status";
-      }
-
-      refreshBtn.onclick = async () => {
-        if (!currentUser || refreshingJobIds.has(item.id)) return;
-        clearFormError();
-        refreshingJobIds.add(item.id);
-        renderJobsList();
-
-        try {
-          const response = await createJob({refreshJobId: item.id});
-          const payload = response?.data || {};
-          const idx = latestJobs.findIndex((entry) => entry.id === item.id);
-          if (idx >= 0 && payload && typeof payload === "object") {
-            const status = typeof payload.status === "string" ?
-              payload.status :
-              latestJobs[idx].data?.status;
-            const kling = payload.kling && typeof payload.kling === "object" ?
-              payload.kling :
-              latestJobs[idx].data?.kling;
-
-            latestJobs[idx] = {
-              ...latestJobs[idx],
-              data: {
-                ...latestJobs[idx].data,
-                status,
-                kling,
-              },
-            };
-          }
-        } catch (error) {
-          showFormError(callableErrorMessage(error));
-        } finally {
-          refreshingJobIds.delete(item.id);
-          renderJobsList();
-        }
-      };
-
-      row.appendChild(refreshBtn);
-    }
-
-    jobsEl.appendChild(row);
-  });
-
-  const latest = latestJobs[0];
-  const isDoneWithOutput = (item) => (
-    item?.data?.status === "done" &&
-    !!safeUrl(item?.data?.kling?.outputUrl || "")
-  );
-
-  const activeDone = latestJobs.find((item) =>
-    item.id === activeDoneJobId && isDoneWithOutput(item)
-  );
-  const fallbackDone = latestJobs.find((item) => isDoneWithOutput(item));
-  const doneForPanel = activeDone || fallbackDone || null;
-
-  if (doneForPanel) {
-    showSuccessPanel(doneForPanel.id);
-    if (latest.id === doneForPanel.id) {
-      setStatus("Done. Download is ready.");
-    } else if (latest?.data?.status === "processing") {
-      setStatus("Processing… Previous trend download is ready.");
-    } else if (latest?.data?.status === "queued") {
-      setStatus("Queued. Previous trend download is ready.");
-    } else if (latest?.data?.status === "failed") {
-      const error = latest?.data?.kling?.error || "try another photo/template";
-      setStatus(
-        `Latest trend failed: ${error}. Previous trend download is ready.`
-      );
-    } else {
-      setStatus("Download is ready.");
-    }
-    return;
-  }
-
-  updateLatestJobUI(latest.id, latest.data);
 }
 
 function watchLatestJobs(uid) {
@@ -1078,136 +300,151 @@ function watchLatestJobs(uid) {
     orderBy("createdAt", "desc"),
     limit(5)
   );
-
   return onSnapshot(qy, (snap) => {
     if (snap.empty) {
-      latestJobs = [];
-      renderJobsList();
+      $("jobs").textContent = "No jobs yet.";
       return;
     }
+    const jobsEl = $("jobs");
+    jobsEl.innerHTML = "";
+    snap.forEach(d => {
+      const j = d.data() || {};
+      const status = typeof j.status === "string" ? j.status : "";
 
-    latestJobs = snap.docs.map((docSnap) => ({
-      id: docSnap.id,
-      data: docSnap.data() || {},
-    }));
-    renderJobsList();
+      const outputUrl = j.kling?.outputUrl || null;
+      const row = document.createElement("div");
+      row.textContent = `${d.id.slice(0,6)}… • ${status} • ${outputUrl ? "✅" : ""}`;
+      jobsEl.appendChild(row);
+
+      if (j.status === "done" && outputUrl) {
+        $("status").textContent = "Done ✅";
+        showResult(outputUrl, d.id);
+      }
+      if (j.status === "failed") {
+        $("status").textContent = `Error: ${j.kling?.error || j.errorMessage || "unknown"}`;
+      }
+    });
   });
 }
 
 $("btnGenerate").onclick = async () => {
   clearFormError();
-
-  if (!currentUser) {
-    openAuth("Sign in to upload a photo and generate.");
-    return;
-  }
-
-  if (!selectedTemplate) {
-    showFormError("Pick a template first.");
-    return;
-  }
-
+  if (!currentUser) { openAuth("Sign in to upload a photo and generate."); return; }
+  if (!selectedTemplate) { showFormError("Pick a template first."); return; }
   const file = $("filePhoto").files?.[0];
-  if (!file) {
-    showFormError("Upload a photo.");
-    return;
-  }
+  if (!file) { showFormError("Upload a photo."); return; }
 
   const btn = $("btnGenerate");
   btn.disabled = true;
-  hideSuccessPanel();
-  setStatus("Creating job…");
+  $("status").textContent = "Uploading photo…";
+  $("result").style.display = "none";
+  $("downloadResult").href = "#";
+  $("downloadResult").style.display = "none";
+  $("copyResultLink").style.display = "none";
+  $("resultHint").style.display = "none";
 
   try {
-    const response = await createJob({templateId: selectedTemplate.id});
-    const jobId = response.data?.jobId;
-    const uploadPath = response.data?.uploadPath;
+    console.log("STEP 1 createJob start");
+    const resp = await createJob({ templateId: selectedTemplate.id });
+    console.log("STEP 1 createJob ok", resp.data);
+    const jobId = resp.data.jobId;
+    const path = resp.data.uploadPath;
 
-    if (!jobId || !uploadPath) {
-      throw new Error("createJob returned empty payload");
-    }
+    const r = ref(st, path);
+    console.log("STEP 2 uploadBytes start", path);
+    await uploadBytes(r, file, { contentType: file.type || "image/jpeg" });
+    console.log("STEP 2 uploadBytes ok");
 
-    setStatus("Uploading photo…");
-    const photoRef = ref(storage, uploadPath);
-    await uploadBytes(photoRef, file, {
-      contentType: file.type || "image/jpeg",
-    });
+    console.log("STEP 3 getDownloadURL start");
+    const photoUrl = await getDownloadURL(r);
+    console.log("STEP 3 getDownloadURL ok", photoUrl);
 
-    const inputImageUrl = await getDownloadURL(photoRef);
-
+    console.log("STEP 4 updateDoc start");
     await updateDoc(doc(db, "jobs", jobId), {
-      inputImageUrl,
-      inputImagePath: uploadPath,
+      inputImageUrl: photoUrl,
+      inputImagePath: path,
       updatedAt: serverTimestamp(),
     });
-
-    setStatus("Queued. Generating…");
-  } catch (error) {
-    setStatus("");
-    showFormError(callableErrorMessage(error));
+    console.log("STEP 4 updateDoc ok");
+    $("status").textContent = "Queued. Generating…";
+  } catch (e) {
+    console.error("GENERATE FAILED", e);
+    throw e;
   } finally {
     btn.disabled = false;
   }
 };
 
+$("downloadResult").onclick = async (e) => {
+  e.preventDefault();
+  const jobId = currentResultJobId;
+  if (!jobId) return;
+  const btn = $("downloadResult");
+  const origText = btn.textContent;
+  btn.textContent = "…";
+  btn.disabled = true;
+  try {
+    const { data } = await getDownloadTicket({ jobId });
+    if (data?.ticketId) {
+      window.location.href = "/download?ticket=" + encodeURIComponent(data.ticketId);
+      return;
+    }
+  } catch (err) {
+    $("status").textContent = err?.message || "Download failed";
+  } finally {
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
+};
+
+$("copyResultLink").onclick = async () => {
+  if (!currentResultUrl) return;
+  try {
+    await navigator.clipboard.writeText(currentResultUrl);
+    $("copyResultLink").textContent = "Copied!";
+    setTimeout(() => { $("copyResultLink").textContent = "Copy link"; }, 2000);
+  } catch (e) {
+    console.warn("Copy failed", e);
+  }
+};
+
+// Require auth before interacting with file upload
 const fileInput = $("filePhoto");
 if (fileInput) {
-  fileInput.addEventListener("click", (event) => {
-    if (currentUser) return;
-    event.preventDefault();
-    openAuth("Sign in to upload a photo.");
+  fileInput.addEventListener("click", (e) => {
+    if (!currentUser) {
+      e.preventDefault();
+      openAuth("Sign in to upload a photo.");
+    }
   });
 }
 
-try {
-  await getRedirectResult(auth);
-} catch (error) {
-  const code = typeof error?.code === "string" ? error.code : "";
-  if (isTelegramInAppBrowser() && code.includes("invalid-action-code")) {
-    openAuth(
-      "Google sign-in is blocked inside Telegram. Open this page in Chrome/Safari, or use email sign-in."
-    );
-  } else {
-    openAuth(callableErrorMessage(error));
-  }
-}
-
-onAuthStateChanged(auth, async (user) => {
+onAuthStateChanged(auth, async (u) => {
   if (typeof unsubscribeUserDoc === "function") {
     unsubscribeUserDoc();
     unsubscribeUserDoc = null;
   }
-  if (typeof unsubscribeJobs === "function") {
-    unsubscribeJobs();
-    unsubscribeJobs = null;
+  if (typeof unsubscribeLatestJobs === "function") {
+    unsubscribeLatestJobs();
+    unsubscribeLatestJobs = null;
   }
 
-  currentUser = user;
+  currentUser = u;
+
   $("app").style.display = "block";
 
-  if (!user) {
+  if (!u) {
     $("userLine").textContent = "Guest";
     $("credits").textContent = "0";
     $("country").textContent = "—";
     $("lang").textContent = "—";
-    setSupportCodeUi("");
     $("userCard").style.display = "none";
     $("jobsCard").style.display = "none";
     $("btnWallet").style.display = "none";
     $("btnLogout").style.display = "none";
-    $("supportBtn").style.display = "none";
-    setAdminCardVisible(false);
-    isAdminUser = false;
     closeAuth();
-    updateAuthInAppActions();
-    hideSuccessPanel();
-    setStatus("");
-    latestJobs = [];
-    refreshingJobIds.clear();
-    renderJobsList();
-
-    await loadTemplates();
-    $("jobs").textContent = "Sign in to see your trends.";
+    try { await loadTemplates(); } catch (e) { console.warn(e); }
+    $("jobs").textContent = "Sign in to see your jobs.";
     return;
   }
 
@@ -1216,26 +453,21 @@ onAuthStateChanged(auth, async (user) => {
   $("jobsCard").style.display = "block";
   $("btnWallet").style.display = "inline-block";
   $("btnLogout").style.display = "inline-block";
-  $("supportBtn").style.display = "inline-flex";
-  $("userLine").textContent = user.email || "Signed in";
+  $("userLine").textContent = u.email || "Signed in";
 
   if (analytics) {
-    try {
-      setUserId(analytics, user.uid);
-      setUserProperties(analytics, {user_email: user.email || ""});
-    } catch {
-      // no-op
-    }
+    try { setUserId(analytics, u.uid); } catch {}
+    try { setUserProperties(analytics, { user_email: u.email || "" }); } catch {}
   }
 
-  await setDoc(doc(db, "users", user.uid), {
-    email: user.email,
+  await setDoc(doc(db, "users", u.uid), {
+    email: u.email,
+    createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-  }, {merge: true});
+    creditsBalance: 0
+  }, { merge: true });
 
-  await syncSupportProfile();
-
-  await loadTemplates();
-  unsubscribeUserDoc = watchUserDoc(user.uid);
-  unsubscribeJobs = watchLatestJobs(user.uid);
+  try { await loadTemplates(); } catch (e) { console.warn(e); }
+  unsubscribeUserDoc = watchUserDoc(u.uid);
+  unsubscribeLatestJobs = watchLatestJobs(u.uid);
 });

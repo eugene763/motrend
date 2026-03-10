@@ -474,8 +474,10 @@ let adminSelectedUid = "";
 let adminSelectedSupportCode = "";
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
 const MAX_UPLOAD_IMAGE_BYTES = 40 * 1024 * 1024;
-const TARGET_UPLOAD_IMAGE_BYTES = 8 * 1024 * 1024;
-const UPLOAD_IMAGE_QUALITY_STEPS = [0.9, 0.85, 0.8, 0.75, 0.7];
+const TARGET_UPLOAD_IMAGE_BYTES = 6 * 1024 * 1024;
+const MAX_UPLOAD_IMAGE_DIMENSION = 1920;
+const MIN_UPLOAD_IMAGE_DIMENSION = 960;
+const UPLOAD_IMAGE_QUALITY_STEPS = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -518,10 +520,6 @@ async function prepareUploadImage(file) {
     throw new Error("Image is too large. Max file size is 40 MB.");
   }
 
-  if (file.size <= TARGET_UPLOAD_IMAGE_BYTES) {
-    return {blob: file, contentType: file.type || "image/jpeg"};
-  }
-
   const image = await loadImageFromFile(file);
   const width = image.naturalWidth || image.width || 0;
   const height = image.naturalHeight || image.height || 0;
@@ -529,30 +527,62 @@ async function prepareUploadImage(file) {
     throw new Error("Unable to process this image. Please choose another file.");
   }
 
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) {
-    throw new Error("Unable to process this image. Please choose another file.");
-  }
-  ctx.drawImage(image, 0, 0, width, height);
+  const longestSide = Math.max(width, height);
+  const baseScale = Math.min(1, MAX_UPLOAD_IMAGE_DIMENSION / longestSide);
+  const scaleSteps = [1, 0.85, 0.7, 0.55];
+  let bestBlob = null;
 
-  let finalBlob = null;
-  for (const quality of UPLOAD_IMAGE_QUALITY_STEPS) {
-    const compressed = await canvasToBlob(canvas, "image/jpeg", quality);
-    finalBlob = compressed;
-    if (compressed.size <= TARGET_UPLOAD_IMAGE_BYTES) {
-      break;
+  for (const step of scaleSteps) {
+    const scale = Math.min(1, baseScale * step);
+    const targetW = Math.max(
+      1,
+      Math.round(width * scale)
+    );
+    const targetH = Math.max(
+      1,
+      Math.round(height * scale)
+    );
+
+    if (
+      Math.max(targetW, targetH) < MIN_UPLOAD_IMAGE_DIMENSION &&
+      longestSide > MIN_UPLOAD_IMAGE_DIMENSION
+    ) {
+      continue;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = targetW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Unable to process this image. Please choose another file.");
+    }
+    ctx.drawImage(image, 0, 0, targetW, targetH);
+
+    for (const quality of UPLOAD_IMAGE_QUALITY_STEPS) {
+      const compressed = await canvasToBlob(canvas, "image/jpeg", quality);
+      bestBlob = !bestBlob || compressed.size < bestBlob.size ?
+        compressed :
+        bestBlob;
+      if (compressed.size <= TARGET_UPLOAD_IMAGE_BYTES) {
+        return {
+          blob: compressed,
+          contentType: "image/jpeg",
+        };
+      }
     }
   }
 
-  if (!finalBlob) {
+  if (!bestBlob) {
     throw new Error("Unable to process this image. Please choose another file.");
   }
 
+  if (bestBlob.size > TARGET_UPLOAD_IMAGE_BYTES) {
+    throw new Error("Image is too large after compression. Please choose another photo.");
+  }
+
   return {
-    blob: finalBlob,
+    blob: bestBlob,
     contentType: "image/jpeg",
   };
 }

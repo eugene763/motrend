@@ -457,41 +457,6 @@ function triggerDownload(url) {
   window.open(safe, "_blank", "noopener,noreferrer");
 }
 
-function canShareVideoFile() {
-  return (
-    typeof navigator !== "undefined" &&
-    typeof navigator.share === "function" &&
-    typeof File !== "undefined"
-  );
-}
-
-async function tryNativeVideoShare(url, fileNameBase = "motrend") {
-  const safe = safeUrl(url);
-  if (!safe || !canShareVideoFile()) return false;
-
-  const response = await fetch(safe, {method: "GET"});
-  if (!response.ok) {
-    throw new Error(`Failed to fetch video: ${response.status}`);
-  }
-
-  const blob = await response.blob();
-  const type = (typeof blob.type === "string" && blob.type) ?
-    blob.type :
-    "video/mp4";
-  const file = new File([blob], `${fileNameBase}.mp4`, {type});
-
-  if (typeof navigator.canShare === "function" &&
-    !navigator.canShare({files: [file]})) {
-    return false;
-  }
-
-  await navigator.share({
-    files: [file],
-    title: "MoTrend video",
-  });
-  return true;
-}
-
 async function prepareDownloadLink(jobId) {
   for (let attempt = 0; attempt < PREPARE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
     const response = await createJob({prepareDownloadJobId: jobId});
@@ -584,43 +549,6 @@ if (copyDownloadBtn) {
       setStatus("Download link copied.");
     } catch {
       showFormError("Unable to copy link. Please copy it manually.");
-    }
-  };
-}
-
-const downloadTrendBtn = $("downloadTrendBtn");
-if (downloadTrendBtn) {
-  downloadTrendBtn.onclick = async (event) => {
-    const href = safeUrl(downloadTrendBtn.href || preparedDownloadUrl);
-    if (!href) return;
-
-    if (!canShareVideoFile()) {
-      return;
-    }
-
-    event.preventDefault();
-    clearFormError();
-
-    const previousText = downloadTrendBtn.textContent || "Download";
-    downloadTrendBtn.style.pointerEvents = "none";
-    downloadTrendBtn.textContent = "Preparing...";
-
-    try {
-      const fileNameBase = activeDoneJobId ?
-        `motrend-${activeDoneJobId}` :
-        "motrend";
-      const shared = await tryNativeVideoShare(href, fileNameBase);
-      if (!shared) {
-        triggerDownload(href);
-      } else {
-        setStatus("Choose “Save Video” in share menu.");
-      }
-    } catch (error) {
-      console.warn("Native share failed, fallback to regular open", error);
-      triggerDownload(href);
-    } finally {
-      downloadTrendBtn.style.pointerEvents = "";
-      downloadTrendBtn.textContent = previousText;
     }
   };
 }

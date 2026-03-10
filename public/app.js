@@ -219,7 +219,6 @@ function showSuccessPanel(jobId) {
   if (activeDoneJobId !== jobId) {
     preparedDownloadJobId = "";
     preparedDownloadUrl = "";
-    resetPreparedShareFile();
   }
   activeDoneJobId = jobId || "";
 
@@ -243,8 +242,6 @@ function showSuccessPanel(jobId) {
     openExternalBtn.style.display = "flex";
     copyDownloadBtn.style.display = "flex";
     fallbackHint.style.display = "block";
-    primeShareVideoFile(activeDoneJobId, safePreparedUrl)
-      ?.catch(() => {});
   } else {
     prepareBtn.style.display = "flex";
     downloadBtn.href = "#";
@@ -254,7 +251,6 @@ function showSuccessPanel(jobId) {
     openExternalBtn.style.display = "none";
     copyDownloadBtn.style.display = "none";
     fallbackHint.style.display = "none";
-    resetPreparedShareFile();
   }
 
   panel.style.display = "block";
@@ -284,7 +280,6 @@ function hideSuccessPanel() {
   preparedDownloadJobId = "";
   preparedDownloadUrl = "";
   isPreparingDownload = false;
-  resetPreparedShareFile();
 
   prepareBtn.disabled = false;
   prepareBtn.textContent = "Prepare download";
@@ -446,12 +441,6 @@ let activeDoneJobId = "";
 let preparedDownloadJobId = "";
 let preparedDownloadUrl = "";
 let isPreparingDownload = false;
-let preparedShareFile = null;
-let preparedShareJobId = "";
-let preparedShareUrl = "";
-let preparedSharePromise = null;
-let preparedShareAbortController = null;
-let preparedShareError = "";
 let currentSupportCode = "";
 let isAdminUser = false;
 let adminSelectedUid = "";
@@ -476,101 +465,26 @@ function canShareVideoFile() {
   );
 }
 
-function resetPreparedShareFile() {
-  if (preparedShareAbortController) {
-    preparedShareAbortController.abort();
-  }
-  preparedShareFile = null;
-  preparedShareJobId = "";
-  preparedShareUrl = "";
-  preparedSharePromise = null;
-  preparedShareAbortController = null;
-  preparedShareError = "";
-}
+async function tryNativeVideoShare(url, fileNameBase = "motrend") {
+  const safe = safeUrl(url);
+  if (!safe || !canShareVideoFile()) return false;
 
-function makeDownloadFileName(jobId) {
-  const safeId = typeof jobId === "string" && jobId.trim() ?
-    jobId.trim().replace(/[^\w-]/g, "") :
-    "video";
-  return `motrend-${safeId}.mp4`;
-}
-
-function isPreparedShareMatch(jobId, url) {
-  return preparedShareJobId === jobId && preparedShareUrl === url;
-}
-
-async function fetchShareVideoFile(url, jobId, signal) {
-  const response = await fetch(url, {method: "GET", signal});
+  const response = await fetch(safe, {method: "GET"});
   if (!response.ok) {
     throw new Error(`Failed to fetch video: ${response.status}`);
   }
 
   const blob = await response.blob();
-  const type = (
-    typeof blob.type === "string" &&
-    blob.type.startsWith("video/")
-  ) ? blob.type : "video/mp4";
-  const fileName = makeDownloadFileName(jobId);
-  return new File([blob], fileName, {type});
-}
+  const type = (typeof blob.type === "string" && blob.type) ?
+    blob.type :
+    "video/mp4";
+  const file = new File([blob], `${fileNameBase}.mp4`, {type});
 
-function primeShareVideoFile(jobId, url) {
-  if (!canShareVideoFile()) return null;
-  const safe = safeUrl(url);
-  if (!safe || !jobId) return null;
-
-  if (preparedShareFile && isPreparedShareMatch(jobId, safe)) {
-    return Promise.resolve(preparedShareFile);
-  }
-  if (preparedSharePromise && isPreparedShareMatch(jobId, safe)) {
-    return preparedSharePromise;
-  }
-
-  if (preparedShareAbortController) {
-    preparedShareAbortController.abort();
-  }
-
-  preparedShareJobId = jobId;
-  preparedShareUrl = safe;
-  preparedShareFile = null;
-  preparedShareError = "";
-  preparedShareAbortController = new AbortController();
-  const {signal} = preparedShareAbortController;
-
-  preparedSharePromise = fetchShareVideoFile(safe, jobId, signal)
-    .then((file) => {
-      if (isPreparedShareMatch(jobId, safe)) {
-        preparedShareFile = file;
-      }
-      return file;
-    })
-    .catch((error) => {
-      if (signal.aborted) return null;
-      if (isPreparedShareMatch(jobId, safe)) {
-        preparedShareError = error instanceof Error ?
-          error.message :
-          String(error || "Unknown error");
-      }
-      throw error;
-    })
-    .finally(() => {
-      if (isPreparedShareMatch(jobId, safe)) {
-        preparedSharePromise = null;
-        preparedShareAbortController = null;
-      }
-    });
-
-  return preparedSharePromise;
-}
-
-async function tryNativeVideoShare(file) {
-  if (!file || !canShareVideoFile()) return false;
-  if (
-    typeof navigator.canShare === "function" &&
-    !navigator.canShare({files: [file]})
-  ) {
+  if (typeof navigator.canShare === "function" &&
+    !navigator.canShare({files: [file]})) {
     return false;
   }
+
   await navigator.share({
     files: [file],
     title: "MoTrend video",
@@ -617,7 +531,6 @@ if (prepareDownloadBtn) {
 
       preparedDownloadJobId = activeDoneJobId;
       preparedDownloadUrl = downloadUrl;
-      primeShareVideoFile(activeDoneJobId, downloadUrl)?.catch(() => {});
       showSuccessPanel(activeDoneJobId);
     } catch (error) {
       showFormError(callableErrorMessage(error));
@@ -693,29 +606,14 @@ if (downloadTrendBtn) {
     downloadTrendBtn.textContent = "Preparing...";
 
     try {
-      const jobId = activeDoneJobId || preparedDownloadJobId || "";
-      let file = null;
-
-      if (preparedShareFile && isPreparedShareMatch(jobId, href)) {
-        file = preparedShareFile;
-      } else {
-        primeShareVideoFile(jobId, href)?.catch(() => {});
-      }
-
-      if (!file) {
-        if (preparedShareError) {
-          showFormError("Could not prepare video for iPhone share. Use Open in browser.");
-        } else {
-          setStatus("Preparing video for share. Tap Download again in a second.");
-        }
-        return;
-      }
-
-      const shared = await tryNativeVideoShare(file);
-      if (shared) {
-        setStatus("Choose “Save Video” in share menu.");
-      } else {
+      const fileNameBase = activeDoneJobId ?
+        `motrend-${activeDoneJobId}` :
+        "motrend";
+      const shared = await tryNativeVideoShare(href, fileNameBase);
+      if (!shared) {
         triggerDownload(href);
+      } else {
+        setStatus("Choose “Save Video” in share menu.");
       }
     } catch (error) {
       console.warn("Native share failed, fallback to regular open", error);

@@ -1533,7 +1533,16 @@ function renderJobsList() {
     item.id === activeDoneJobId && isDoneWithOutput(item)
   );
   const fallbackDone = latestJobs.find((item) => isDoneWithOutput(item));
-  const doneForPanel = activeDone || fallbackDone || null;
+  const latestDone = isDoneWithOutput(latest) ? latest : null;
+
+  if (latestDone && activeDoneJobId !== latestDone.id) {
+    // Always promote the newest completed trend in this session.
+    activeDoneJobId = latestDone.id;
+    preparedDownloadJobId = "";
+    preparedDownloadUrl = "";
+  }
+
+  const doneForPanel = latestDone || activeDone || fallbackDone || null;
 
   if (doneForPanel) {
     showSuccessPanel(doneForPanel.id);

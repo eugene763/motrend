@@ -508,6 +508,10 @@ let currentUser = null;
 let selectedTemplate = null;
 let selectedReferenceVideoFile = null;
 let selectedReferenceVideoName = "";
+const TREND_SELECTION_TEMPLATE = "template";
+const TREND_SELECTION_REFERENCE = "reference";
+let selectedTrendKind = TREND_SELECTION_TEMPLATE;
+let availableTemplates = [];
 let unsubscribeUserDoc = null;
 let unsubscribeJobs = null;
 let latestJobs = [];
@@ -535,6 +539,76 @@ const PHOTO_HINT_MESSAGE =
   "Dimensions: 300px ~ 65536px";
 const VIDEO_HINT_MESSAGE =
   "Supported formats: .mp4 / .mov, file size: ≤100MB, dimensions: 340px ~ 3850px.";
+
+function clearTrendSelectionUi() {
+  document.querySelectorAll(".tplCard").forEach((el) => {
+    el.classList.remove("isSelected");
+    el.classList.remove("isHot");
+  });
+}
+
+function selectTrendCard(cardEl) {
+  clearTrendSelectionUi();
+  if (!cardEl) return;
+  cardEl.classList.add("isSelected");
+  cardEl.classList.add("isHot");
+}
+
+function buildTemplateSelectionLabel(template) {
+  if (!template) return "";
+  const title = template.title || "Template";
+  const durationSec = template.durationSec ?? "—";
+  const mode = template.modeDefault || "std";
+  return `${title} (${durationSec}s ${mode})`;
+}
+
+function updateSelectedTrendField() {
+  const selectedTrendInput = $("selTemplate");
+  if (!selectedTrendInput) return;
+
+  if (
+    selectedTrendKind === TREND_SELECTION_REFERENCE &&
+    selectedReferenceVideoName
+  ) {
+    selectedTrendInput.value = `Your video reference (${selectedReferenceVideoName})`;
+    return;
+  }
+
+  selectedTrendInput.value = buildTemplateSelectionLabel(selectedTemplate);
+}
+
+function syncTrendSelectionUi() {
+  if (
+    selectedTrendKind === TREND_SELECTION_REFERENCE &&
+    selectedReferenceVideoFile
+  ) {
+    const referenceCard = document.querySelector(
+      ".tplCard[data-trend-role='reference']"
+    );
+    if (referenceCard) {
+      selectTrendCard(referenceCard);
+      updateSelectedTrendField();
+      return;
+    }
+  }
+
+  if (selectedTemplate?.id) {
+    const templateCards = Array.from(
+      document.querySelectorAll(".tplCard[data-template-id]")
+    );
+    const selectedCard = templateCards.find(
+      (el) => el.dataset.templateId === selectedTemplate.id
+    );
+    if (selectedCard) {
+      selectTrendCard(selectedCard);
+      updateSelectedTrendField();
+      return;
+    }
+  }
+
+  clearTrendSelectionUi();
+  updateSelectedTrendField();
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1059,6 +1133,7 @@ function renderReferenceVideoCard() {
   card.className = "card tplCard";
   card.style.margin = "0";
   card.style.cursor = "pointer";
+  card.dataset.trendRole = "reference";
 
   const media = document.createElement("div");
   media.className = "tplMedia";
@@ -1085,10 +1160,7 @@ function renderReferenceVideoCard() {
 
   const picker = $("fileReferenceVideo");
 
-  const updateSelectedUi = () => {
-    const selected = !!selectedReferenceVideoFile;
-    card.classList.toggle("isSelected", selected);
-    card.classList.toggle("isHot", selected);
+  const updateReferenceMetaUi = () => {
     meta.textContent = selectedReferenceVideoName || "No video selected";
   };
 
@@ -1099,12 +1171,23 @@ function renderReferenceVideoCard() {
     picker.click();
   };
 
+  const activateReferenceSelection = () => {
+    if (!selectedReferenceVideoFile) return;
+    selectedTrendKind = TREND_SELECTION_REFERENCE;
+    if (!selectedTemplate && availableTemplates.length > 0) {
+      selectedTemplate = availableTemplates[0];
+    }
+    syncTrendSelectionUi();
+  };
+
   card.onclick = () => {
+    activateReferenceSelection();
     openPicker();
   };
   actionBtn.onclick = (event) => {
     event.preventDefault();
     event.stopPropagation();
+    activateReferenceSelection();
     openPicker();
   };
 
@@ -1113,7 +1196,18 @@ function renderReferenceVideoCard() {
       const file = picker.files?.[0] || null;
       selectedReferenceVideoFile = file;
       selectedReferenceVideoName = file ? file.name : "";
-      updateSelectedUi();
+
+      if (file) {
+        selectedTrendKind = TREND_SELECTION_REFERENCE;
+        if (!selectedTemplate && availableTemplates.length > 0) {
+          selectedTemplate = availableTemplates[0];
+        }
+      } else if (selectedTrendKind === TREND_SELECTION_REFERENCE) {
+        selectedTrendKind = TREND_SELECTION_TEMPLATE;
+      }
+
+      updateReferenceMetaUi();
+      syncTrendSelectionUi();
     };
   }
 
@@ -1121,7 +1215,7 @@ function renderReferenceVideoCard() {
   card.appendChild(title);
   card.appendChild(meta);
   card.appendChild(actionBtn);
-  updateSelectedUi();
+  updateReferenceMetaUi();
 
   return card;
 }
@@ -1131,6 +1225,7 @@ function renderTemplateCard(template) {
   card.className = "card tplCard";
   card.style.margin = "0";
   card.style.cursor = "pointer";
+  card.dataset.templateId = template.id;
 
   const thumbUrl = safeUrl(template.preview?.thumbnailUrl || "");
   const videoUrl = safeUrl(template.preview?.previewVideoUrl || "");
@@ -1189,13 +1284,9 @@ function renderTemplateCard(template) {
     const isSameSelection = selectedTemplate?.id === template.id;
 
     selectedTemplate = template;
-    $("selTemplate").value = `${template.title} (${template.durationSec}s ${mode})`;
-    document.querySelectorAll(".tplCard").forEach((el) => {
-      el.classList.remove("isSelected");
-      el.classList.remove("isHot");
-    });
-    card.classList.add("isSelected");
-    card.classList.add("isHot");
+    selectedTrendKind = TREND_SELECTION_TEMPLATE;
+    updateSelectedTrendField();
+    selectTrendCard(card);
 
     stopAllTemplateVideos(videoEl);
     if (videoEl) {
@@ -1245,22 +1336,48 @@ async function loadTemplates() {
     );
 
     const snap = await getDocs(qy);
+    availableTemplates = snap.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...docSnap.data(),
+    }));
+
+    if (
+      selectedTemplate &&
+      !availableTemplates.some((item) => item.id === selectedTemplate.id)
+    ) {
+      selectedTemplate = null;
+      if (selectedTrendKind === TREND_SELECTION_TEMPLATE) {
+        updateSelectedTrendField();
+      }
+    }
+
+    if (
+      selectedTrendKind === TREND_SELECTION_REFERENCE &&
+      selectedReferenceVideoFile &&
+      !selectedTemplate &&
+      availableTemplates.length > 0
+    ) {
+      selectedTemplate = availableTemplates[0];
+    }
+
     container.innerHTML = "";
 
     container.appendChild(renderReferenceVideoCard());
 
     if (snap.empty) {
+      availableTemplates = [];
       const empty = document.createElement("div");
       empty.className = "templatesLoading muted";
       empty.textContent = "No templates available.";
       container.appendChild(empty);
+      syncTrendSelectionUi();
       return;
     }
 
-    snap.forEach((docSnap) => {
-      const template = {id: docSnap.id, ...docSnap.data()};
+    availableTemplates.forEach((template) => {
       container.appendChild(renderTemplateCard(template));
     });
+    syncTrendSelectionUi();
   } catch (error) {
     container.innerHTML =
       '<div class="templatesLoading muted">Failed to load templates.</div>';
@@ -1475,6 +1592,14 @@ $("btnGenerate").onclick = async () => {
     return;
   }
 
+  if (
+    selectedTrendKind === TREND_SELECTION_REFERENCE &&
+    !selectedReferenceVideoFile
+  ) {
+    showFormError("Upload your reference video first.");
+    return;
+  }
+
   const rawFile = $("filePhoto").files?.[0];
   if (!rawFile) {
     showFormError("Upload a photo.");
@@ -1497,7 +1622,11 @@ $("btnGenerate").onclick = async () => {
 
     let referenceVideoPath = "";
     let referenceVideoUrl = "";
-    if (selectedReferenceVideoFile) {
+    const useReferenceVideo = (
+      selectedTrendKind === TREND_SELECTION_REFERENCE &&
+      !!selectedReferenceVideoFile
+    );
+    if (useReferenceVideo && selectedReferenceVideoFile) {
       const preparedVideo = prepareReferenceVideoInput(selectedReferenceVideoFile);
       const uploadDir = uploadPath.replace(/\/[^/]+$/, "");
       referenceVideoPath = `${uploadDir}/reference${preparedVideo.extension}`;
@@ -1590,6 +1719,10 @@ onAuthStateChanged(auth, async (user) => {
     $("credits").textContent = "0";
     $("country").textContent = "—";
     $("lang").textContent = "—";
+    selectedTemplate = null;
+    selectedTrendKind = TREND_SELECTION_TEMPLATE;
+    availableTemplates = [];
+    updateSelectedTrendField();
     selectedReferenceVideoFile = null;
     selectedReferenceVideoName = "";
     const referencePicker = $("fileReferenceVideo");

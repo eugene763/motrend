@@ -110,8 +110,9 @@ a{color:#fff}
 .spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px;}
 @keyframes spin{to{transform:rotate(360deg)}}
 .templatesLoading{min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--muted);}
-.btnGoogle{display:inline-flex;align-items:center;gap:8px;}
-.btnGoogle svg{width:14px;height:14px;display:block;flex:0 0 auto;}
+.btnGoogle{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:8px;}
+.btnGoogle svg{position:absolute;left:12px;width:14px;height:14px;display:block;flex:0 0 auto;}
+.btnGoogle span{display:block;width:100%;text-align:center;}
 .btnExternalAuth{display:none;text-decoration:none;}
 .brandFooter{margin:16px 0 6px;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--muted);font-size:16px}
 .brandFooter a{display:inline-flex;align-items:center;text-decoration:none}

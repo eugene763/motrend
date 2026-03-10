@@ -199,6 +199,7 @@ function closeAuth() {
 function showSuccessPanel(jobId) {
   const panel = $("jobSuccessPanel");
   const prepareBtn = $("prepareDownloadBtn");
+  const openSavePageBtn = $("openSavePageBtn");
   const downloadBtn = $("downloadTrendBtn");
   const downloadOr = $("downloadOr");
   const openExternalBtn = $("openExternalBtn");
@@ -207,6 +208,7 @@ function showSuccessPanel(jobId) {
   if (
     !panel ||
     !prepareBtn ||
+    !openSavePageBtn ||
     !downloadBtn ||
     !downloadOr ||
     !openExternalBtn ||
@@ -235,6 +237,11 @@ function showSuccessPanel(jobId) {
   );
   if (safePreparedUrl) {
     prepareBtn.style.display = "none";
+    openSavePageBtn.href = buildSavePageUrl({
+      downloadUrl: safePreparedUrl,
+      jobId: activeDoneJobId,
+    });
+    openSavePageBtn.style.display = "flex";
     downloadBtn.href = safePreparedUrl;
     openExternalBtn.href = safePreparedUrl;
     downloadBtn.style.display = "flex";
@@ -244,6 +251,8 @@ function showSuccessPanel(jobId) {
     fallbackHint.style.display = "block";
   } else {
     prepareBtn.style.display = "flex";
+    openSavePageBtn.href = "#";
+    openSavePageBtn.style.display = "none";
     downloadBtn.href = "#";
     openExternalBtn.href = "#";
     downloadBtn.style.display = "none";
@@ -259,6 +268,7 @@ function showSuccessPanel(jobId) {
 function hideSuccessPanel() {
   const panel = $("jobSuccessPanel");
   const prepareBtn = $("prepareDownloadBtn");
+  const openSavePageBtn = $("openSavePageBtn");
   const downloadBtn = $("downloadTrendBtn");
   const downloadOr = $("downloadOr");
   const openExternalBtn = $("openExternalBtn");
@@ -267,6 +277,7 @@ function hideSuccessPanel() {
   if (
     !panel ||
     !prepareBtn ||
+    !openSavePageBtn ||
     !downloadBtn ||
     !downloadOr ||
     !openExternalBtn ||
@@ -285,6 +296,8 @@ function hideSuccessPanel() {
   prepareBtn.textContent = "Prepare download";
   prepareBtn.style.display = "flex";
   panel.style.display = "none";
+  openSavePageBtn.href = "#";
+  openSavePageBtn.style.display = "none";
   downloadBtn.href = "#";
   downloadBtn.style.display = "none";
   downloadOr.style.display = "none";
@@ -308,6 +321,19 @@ function safeUrl(value) {
   } catch {
     return "";
   }
+}
+
+function buildSavePageUrl(params) {
+  const safeDownloadUrl = safeUrl(params?.downloadUrl || "");
+  if (!safeDownloadUrl) return "#";
+
+  const url = new URL("/save-video.html", window.location.origin);
+  url.searchParams.set("url", safeDownloadUrl);
+
+  if (typeof params?.jobId === "string" && params.jobId.trim()) {
+    url.searchParams.set("jobId", params.jobId.trim());
+  }
+  return url.toString();
 }
 
 function callableErrorMessage(error) {

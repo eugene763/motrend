@@ -316,8 +316,16 @@ function safeUrl(value) {
 function callableErrorMessage(error) {
   const code = typeof error?.code === "string" ? error.code : "";
   const message = typeof error?.message === "string" ? error.message : "";
+  const normalized = message.toLowerCase();
 
   if (code.includes("resource-exhausted")) {
+    if (
+      normalized.includes("no available instance") ||
+      normalized.includes("temporarily unavailable") ||
+      normalized.includes("too many requests")
+    ) {
+      return "Server is temporarily busy. Please try again in a few seconds.";
+    }
     return message || "Not enough credits for this generation.";
   }
   if (code.includes("unauthenticated")) {
@@ -454,6 +462,66 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function shouldRetryCreateJob(error) {
+  const code = typeof error?.code === "string" ?
+    error.code.toLowerCase() :
+    "";
+  const message = typeof error?.message === "string" ?
+    error.message.toLowerCase() :
+    "";
+
+  if (
+    code.includes("unauthenticated") ||
+    code.includes("permission-denied") ||
+    code.includes("invalid-argument")
+  ) {
+    return false;
+  }
+  if (code.includes("failed-precondition")) {
+    return false;
+  }
+
+  if (code.includes("resource-exhausted")) {
+    if (message.includes("not enough credits")) {
+      return false;
+    }
+    return true;
+  }
+
+  if (
+    code.includes("unavailable") ||
+    code.includes("internal") ||
+    code.includes("aborted") ||
+    code.includes("deadline-exceeded")
+  ) {
+    return true;
+  }
+
+  return (
+    message.includes("no available instance") ||
+    message.includes("temporarily unavailable")
+  );
+}
+
+async function callCreateJob(payload, maxAttempts = 4) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await createJob(payload);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !shouldRetryCreateJob(error)) {
+        throw error;
+      }
+
+      const waitMs = Math.min(4000, 400 * (2 ** (attempt - 1)));
+      await sleep(waitMs);
+    }
+  }
+
+  throw lastError || new Error("createJob failed");
+}
+
 function triggerDownload(url) {
   const safe = safeUrl(url);
   if (!safe) return;
@@ -462,7 +530,7 @@ function triggerDownload(url) {
 
 async function prepareDownloadLink(jobId) {
   for (let attempt = 0; attempt < PREPARE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
-    const response = await createJob({prepareDownloadJobId: jobId});
+    const response = await callCreateJob({prepareDownloadJobId: jobId});
     const payload = response?.data || {};
     const downloadUrl = safeUrl(
       typeof payload.downloadUrl === "string" ? payload.downloadUrl : ""
@@ -520,7 +588,7 @@ async function syncSupportProfile() {
   }
 
   try {
-    const response = await createJob({supportProfile: true});
+    const response = await callCreateJob({supportProfile: true});
     const payload = response?.data || {};
     const supportCode = typeof payload?.supportCode === "string" ?
       payload.supportCode :
@@ -705,7 +773,7 @@ if (btnFindSupportUser) {
       '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Searching...';
 
     try {
-      const response = await createJob({findSupportCode: code});
+      const response = await callCreateJob({findSupportCode: code});
       const payload = response?.data || {};
       renderAdminLookupResult(payload);
       if (input) input.value = code;
@@ -745,7 +813,7 @@ if (btnGrantCredits) {
       '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Granting...';
 
     try {
-      const response = await createJob({
+      const response = await callCreateJob({
         grantCredits: true,
         uid: adminSelectedUid,
         amount,
@@ -757,7 +825,7 @@ if (btnGrantCredits) {
       setStatus("Credits granted.");
 
       if (supportCode) {
-        const lookup = await createJob({findSupportCode: supportCode});
+        const lookup = await callCreateJob({findSupportCode: supportCode});
         renderAdminLookupResult(lookup?.data || {});
       }
     } catch (error) {
@@ -1006,7 +1074,7 @@ function renderJobsList() {
         renderJobsList();
 
         try {
-          const response = await createJob({refreshJobId: item.id});
+          const response = await callCreateJob({refreshJobId: item.id});
           const payload = response?.data || {};
           const idx = latestJobs.findIndex((entry) => entry.id === item.id);
           if (idx >= 0 && payload && typeof payload === "object") {
@@ -1122,7 +1190,7 @@ $("btnGenerate").onclick = async () => {
   setStatus("Creating job…");
 
   try {
-    const response = await createJob({templateId: selectedTemplate.id});
+    const response = await callCreateJob({templateId: selectedTemplate.id});
     const jobId = response.data?.jobId;
     const uploadPath = response.data?.uploadPath;
 

@@ -2,37 +2,50 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
 
-    // Шаблоны: только чтение (список активных грузит приложение)
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function userCreateValid() {
+      return !('creditsBalance' in request.resource.data) ||
+        request.resource.data.creditsBalance == 0;
+    }
+
+    function userUpdateValid() {
+      return request.resource.data.creditsBalance ==
+        resource.data.creditsBalance;
+    }
+
+    // Public catalog: client can only read templates.
     match /templates/{templateId} {
       allow read: if true;
       allow write: if false;
     }
 
-    // Профиль пользователя: только свой документ; кредиты менять нельзя
-    match /users/{userId} {
-      allow read: if request.auth != null && request.auth.uid == userId;
-      allow create: if request.auth != null && request.auth.uid == userId
-        && (!('creditsBalance' in request.resource.data) || request.resource.data.creditsBalance == 0);
-      allow update: if request.auth != null && request.auth.uid == userId
-        && request.resource.data.creditsBalance == resource.data.creditsBalance;
+    // User profile: only owner can read/update. Credits are server-managed.
+    match /users/{uid} {
+      allow read: if isOwner(uid);
+      allow create: if isOwner(uid) && userCreateValid();
+      allow update: if isOwner(uid) && userUpdateValid();
       allow delete: if false;
     }
 
-    // Задачи: создаёт только Cloud Function (createJob); клиент может писать только URL/пути загрузок и updatedAt
+    // Jobs: owner can read and only provide upload input fields.
     match /jobs/{jobId} {
-      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
       allow create: if false;
-      allow update: if request.auth != null && resource.data.uid == request.auth.uid
-        && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['inputImageUrl', 'inputImagePath', 'referenceVideoUrl', 'referenceVideoPath', 'updatedAt']);
+      allow update: if isSignedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'inputImageUrl',
+          'inputImagePath',
+          'updatedAt',
+        ]);
       allow delete: if false;
     }
-
-    // Билеты скачивания: только Cloud Functions (getDownloadTicket / downloadResult)
-    match /downloadTickets/{ticketId} {
-      allow read, write: if false;
-    }
-
   }
 }

@@ -29,9 +29,6 @@
       "firebase.json",
       "**/.*",
       "**/node_modules/**"
-    ],
-    "rewrites": [
-      { "source": "/download", "function": "downloadResult" }
     ]
   },
   "emulators": {

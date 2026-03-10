@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>MoTrends©</title>
+  <title>MoTrend©</title>
+  <link rel="icon" href="/favicon.ico" sizes="any"/>
 
   <style>
     /* Fonts (Tilda: Coolvetica) */
@@ -23,14 +24,46 @@
 
 *{box-sizing:border-box;}
 
-body{font-family:var(--t-text-font);margin:0;background:var(--bg);color:var(--text);}
+body{font-family:var(--t-text-font);margin:0;background:var(--bg);color:var(--text);font-size:19px;}
 h1,h2,h3{font-family:var(--t-title-font);}
 
 .wrap{max-width:900px;margin:0 auto;padding:24px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;margin:12px 0}
-button{border:0;border-radius:12px;padding:12px 14px;font-weight:600;cursor:pointer}
+button{border:0;border-radius:12px;padding:12px 14px;font-weight:600;cursor:pointer;font-size:21px}
 .btn{background:#fff;color:#000}
 .btn2{background:var(--border);color:#fff}
+.btnRefresh{
+  background:var(--accent);
+  color:#0b0b0b;
+  border:1px solid #6edc97;
+  font-weight:700;
+}
+.btnRefresh:disabled{opacity:.75;}
+.btnDownloadPrimary{
+  background:var(--accent);
+  color:#0b0b0b;
+  border:1px solid #6edc97;
+  font-weight:700;
+  text-align:center;
+}
+.jobActions{display:flex;flex-direction:column;gap:8px;width:100%}
+.jobActions a,.jobActions button{
+  width:100%;
+  height:56px;
+  min-height:56px;
+  padding:0;
+  border-radius:12px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+  line-height:1.1;
+  -webkit-appearance:none;
+  appearance:none;
+  font-size:21px;
+}
+.jobActions a{text-decoration:none;}
+.jobOr{display:none;text-align:center;font-size:17px;color:var(--muted);}
 
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .grid>*{min-width:0;}
@@ -38,8 +71,10 @@ button{border:0;border-radius:12px;padding:12px 14px;font-weight:600;cursor:poin
 img{width:100%;border-radius:12px;display:block}
 input,select{width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);background:#0f0f0f;color:#fff}
 
-.muted{opacity:.7;font-size:13px}
+.muted{opacity:.7;font-size:16px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.userCardRow{align-items:flex-start;justify-content:space-between}
+.userActions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 a{color:#fff}
 
 /* Template cards */
@@ -62,9 +97,12 @@ a{color:#fff}
   .wrap{padding:16px;}
   .grid{grid-template-columns:1fr;}                 /* формы в 1 колонку */
   input,select,button{width:100%;}
-  input,select{font-size:16px;}                     /* iOS не зумит */
+  input,select{font-size:24px;}                     /* iOS не зумит */
   input[type="file"]{width:100%;max-width:100%;}
   .templatesGrid{grid-template-columns:repeat(2,minmax(0,1fr));} /* темплейты 2 в ряд */
+  .userCardRow{flex-direction:column;align-items:stretch;}
+  .userActions{width:100%;flex-direction:column;align-items:stretch;gap:10px;}
+  .userActions button{width:100%;}
 }
 
 .formError{margin-top:8px;color:#f87171;}
@@ -72,14 +110,63 @@ a{color:#fff}
 .spinner{display:inline-block;width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px;}
 @keyframes spin{to{transform:rotate(360deg)}}
 .templatesLoading{min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--muted);}
+.btnGoogle{display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;}
+.btnGoogle svg{position:static;width:14px;height:14px;display:block;flex:0 0 auto;}
+.btnGoogle span{display:inline;}
+.btnExternalAuth{
+  display:none;
+  align-items:center;
+  justify-content:center;
+  width:100%;
+  padding:12px 14px;
+  border-radius:12px;
+  border:1px solid #565656;
+  background:#000;
+  color:#9f9f9f;
+  text-decoration:none;
+}
+.btnExternalAuth:hover{border-color:#7a7a7a;color:#c6c6c6;}
+.brandFooter{margin:16px 0 6px;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--muted);font-size:16px}
+.brandFooter a{display:inline-flex;align-items:center;text-decoration:none}
+.brandFooter img{height:20px;width:auto;display:block;opacity:.95;border-radius:0}
+.topBar{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.supportBtn{
+  display:none;
+  padding:10px 16px;
+  border:1px solid #565656;
+  border-radius:10px;
+  background:#000;
+  color:#9f9f9f;
+  text-decoration:none;
+  font-size:24px;
+  line-height:1;
+}
+.supportBtn:hover{border-color:#7a7a7a;color:#c6c6c6;}
+.adminResult{
+  margin-top:10px;
+  white-space:pre-line;
+  font-size:17px;
+}
+.adminGrantWrap{margin-top:12px;}
 
   </style>
 </head>
 
 <body>
   <div class="wrap">
-    <h1 style="margin:0 0 6px">MoTrends©</h1>
-    <div class="muted">Make trends in minutes.</div>
+    <div class="topBar">
+      <div>
+        <h1 style="margin:0 0 6px">MoTrend©</h1>
+        <div class="muted">Make trends in minutes.</div>
+      </div>
+      <a
+        id="supportBtn"
+        class="supportBtn"
+        href="https://wa.me/995574413278?text=Hello%2C%20I%20am%20having%20an%20issue%20with%20the%20MoTrend%C2%A9%20app."
+        target="_blank"
+        rel="noopener noreferrer"
+      >⚙️ Support</a>
+    </div>
 
     <div id="auth" class="card" style="display:none">
   <div style="font-weight:700;margin-bottom:6px">Sign in</div>
@@ -99,8 +186,26 @@ a{color:#fff}
     <button id="btnEmailSignIn" class="btn">Sign in</button>
     <button id="btnEmailSignUp" class="btn2">Create account</button>
 
-    <!-- Google оставляем, но будем скрывать в in-app браузерах -->
-    <button id="btnLogin" class="btn2" style="margin-left:auto">Continue with Google</button>
+    <button id="btnLogin" class="btn2 btnGoogle" style="margin-left:auto">
+      <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+        <path fill="#4285F4" d="M17.64 9.205c0-.639-.057-1.253-.164-1.841H9v3.482h4.844a4.14 4.14 0 0 1-1.796 2.719v2.258h2.908c1.702-1.567 2.684-3.878 2.684-6.618z"/>
+        <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.177l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.345 0-4.33-1.583-5.038-3.71H.957v2.332A8.996 8.996 0 0 0 9 18z"/>
+        <path fill="#FBBC05" d="M3.962 10.715a5.41 5.41 0 0 1 0-3.43V4.953H.957a8.997 8.997 0 0 0 0 8.094l3.005-2.332z"/>
+        <path fill="#EA4335" d="M9 3.58c1.322 0 2.507.454 3.44 1.345l2.58-2.58C13.463.891 11.426 0 9 0A8.996 8.996 0 0 0 .957 4.953l3.005 2.332C4.67 5.158 6.655 3.58 9 3.58z"/>
+      </svg>
+      <span>Continue with Google</span>
+    </button>
+  </div>
+
+  <div class="row" style="margin-top:10px">
+    <button id="btnForgotPassword" class="btn2">Forgot password?</button>
+    <a
+      id="btnOpenExternalAuth"
+      class="btnExternalAuth"
+      href="#"
+      target="_blank"
+      rel="noopener noreferrer"
+    >Open in browser</a>
   </div>
 
   <div id="authError" class="muted" style="margin-top:10px;display:none"></div>
@@ -108,14 +213,46 @@ a{color:#fff}
 
     <div id="app">
       <div class="card" id="userCard">
-        <div class="row" style="justify-content:space-between">
+        <div class="row userCardRow" style="justify-content:space-between">
           <div>
             <div id="userLine" style="font-weight:700"></div>
             <div class="muted">Credits: <span id="credits">0</span> • Country: <span id="country">—</span> • Language: <span id="lang">—</span></div>
+            <div class="muted">Support ID: <span id="supportCode">—</span></div>
           </div>
-          <div class="row">
-            <button id="btnWallet" class="btn2">Buy credits</button>
+          <div class="row userActions">
+            <button id="btnWallet" class="btn2">🪙 Buy credits</button>
             <button id="btnLogout" class="btn2">Log out</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="adminCard" style="display:none">
+        <div style="font-weight:700;margin-bottom:8px">Admin support</div>
+        <div class="grid">
+          <div>
+            <div class="muted">Support ID</div>
+            <input id="adminSupportCode" placeholder="U-XXXXXXXXXX" />
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button id="btnFindSupportUser" class="btn">Find user</button>
+          </div>
+        </div>
+        <div id="adminLookupError" class="formError muted" style="display:none" role="alert"></div>
+        <div id="adminLookupResult" class="muted adminResult" style="display:none"></div>
+
+        <div id="adminGrantWrap" class="adminGrantWrap" style="display:none">
+          <div class="grid">
+            <div>
+              <div class="muted">Grant credits</div>
+              <input id="adminGrantAmount" type="number" min="1" max="500" step="1" value="10" />
+            </div>
+            <div>
+              <div class="muted">Reason</div>
+              <input id="adminGrantReason" maxlength="200" placeholder="Support compensation" />
+            </div>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button id="btnGrantCredits" class="btn">Grant credits</button>
           </div>
         </div>
       </div>
@@ -127,7 +264,7 @@ a{color:#fff}
             <div class="muted">Country</div>
             <select id="inpCountry">
                 <option value="US">United States</option>
-                <option value="IN">India</option>             
+                <option value="IN">India</option>
                 <option value="OTHER">Other</option>
             </select>
           </div>
@@ -153,7 +290,7 @@ a{color:#fff}
         <div style="font-weight:700;margin-bottom:8px">Generate</div>
         <div class="grid">
           <div>
-            <div class="muted">Selected template</div>
+            <div class="muted">Selected trend</div>
             <input id="selTemplate" disabled placeholder="Choose a template above"/>
           </div>
           <div>
@@ -166,33 +303,30 @@ a{color:#fff}
           <div id="status" class="muted"></div>
         </div>
         <div id="formError" class="formError muted" style="display:none" role="alert"></div>
-        <div id="result" style="display:none; margin-top:12px;">
-  <a id="downloadResult"
-     class="btn"
-     href="#"
-     target="_blank"
-     rel="noopener"
-     style="display:none;">
-     Скачать результат
-  </a>
-
-  <button id="copyResultLink"
-          class="btn"
-          type="button"
-          style="display:none; margin-left:8px;">
-    Copy link
-  </button>
-
-  <div id="resultHint" class="muted" style="margin-top:8px; display:none;">
-    The link to the video is stored for ~30 days.
-  </div>
-</div>
       </div>
 
       <div class="card" id="jobsCard">
   <div style="font-weight:700;margin-bottom:8px">Your trends</div>
-  <div id="jobs" class="muted">No jobs yet.</div>
+  <div id="jobs" class="muted">No trends yet.</div>
+  <div id="jobSuccessPanel" style="margin-top:12px;display:none">
+    <div class="jobActions">
+      <button id="prepareDownloadBtn" class="btn">Prepare download</button>
+      <a id="downloadTrendBtn" class="btnDownloadPrimary" style="display:none;text-decoration:none" target="_blank" rel="noopener noreferrer" download>Download</a>
+      <div id="downloadOr" class="jobOr">or</div>
+      <a id="openExternalBtn" class="btn" style="display:none;text-decoration:none" target="_blank" rel="noopener noreferrer">Open in browser</a>
+      <button id="copyDownloadBtn" class="btn2" style="display:none">Copy link</button>
+    </div>
+    <div id="downloadFallbackHint" class="muted" style="margin-top:10px;display:none">If download does not start, tap “Open in browser”.</div>
+    <div class="muted" style="margin-top:10px">The link to the video is stored for ~30 days.</div>
+  </div>
 </div>
+
+      <div class="brandFooter">
+        <span>by</span>
+        <a href="https://moads.agency?utm_source=motrends_web" target="_blank" rel="noopener noreferrer">
+          <img src="assets/moads-logo.png" alt="MO ADS!">
+        </a>
+      </div>
     </div>
   </div>
 

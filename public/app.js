@@ -318,6 +318,22 @@ function callableErrorMessage(error) {
   const message = typeof error?.message === "string" ? error.message : "";
   const normalized = message.toLowerCase();
 
+  if (
+    normalized.includes("image size is to large") ||
+    normalized.includes("image size is too large")
+  ) {
+    return "Image is too large. Please upload a smaller photo.";
+  }
+
+  if (
+    code.includes("storage/unauthorized") ||
+    code.includes("unauthorized")
+  ) {
+    if (normalized.includes("user does not have permission")) {
+      return "Upload blocked. Please use an image up to 40 MB and try again.";
+    }
+  }
+
   if (code.includes("resource-exhausted")) {
     if (
       normalized.includes("no available instance") ||
@@ -457,9 +473,88 @@ let isAdminUser = false;
 let adminSelectedUid = "";
 let adminSelectedSupportCode = "";
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
+const MAX_UPLOAD_IMAGE_BYTES = 40 * 1024 * 1024;
+const TARGET_UPLOAD_IMAGE_BYTES = 8 * 1024 * 1024;
+const UPLOAD_IMAGE_QUALITY_STEPS = [0.9, 0.85, 0.8, 0.75, 0.7];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+        return;
+      }
+      reject(new Error("Unable to process image."));
+    }, type, quality);
+  });
+}
+
+function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Unable to read this image file."));
+    };
+    image.src = objectUrl;
+  });
+}
+
+async function prepareUploadImage(file) {
+  if (!file || !file.type?.startsWith("image/")) {
+    throw new Error("Please upload an image file.");
+  }
+
+  if (file.size > MAX_UPLOAD_IMAGE_BYTES) {
+    throw new Error("Image is too large. Max file size is 40 MB.");
+  }
+
+  if (file.size <= TARGET_UPLOAD_IMAGE_BYTES) {
+    return {blob: file, contentType: file.type || "image/jpeg"};
+  }
+
+  const image = await loadImageFromFile(file);
+  const width = image.naturalWidth || image.width || 0;
+  const height = image.naturalHeight || image.height || 0;
+  if (!width || !height) {
+    throw new Error("Unable to process this image. Please choose another file.");
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("Unable to process this image. Please choose another file.");
+  }
+  ctx.drawImage(image, 0, 0, width, height);
+
+  let finalBlob = null;
+  for (const quality of UPLOAD_IMAGE_QUALITY_STEPS) {
+    const compressed = await canvasToBlob(canvas, "image/jpeg", quality);
+    finalBlob = compressed;
+    if (compressed.size <= TARGET_UPLOAD_IMAGE_BYTES) {
+      break;
+    }
+  }
+
+  if (!finalBlob) {
+    throw new Error("Unable to process this image. Please choose another file.");
+  }
+
+  return {
+    blob: finalBlob,
+    contentType: "image/jpeg",
+  };
 }
 
 function shouldRetryCreateJob(error) {
@@ -1178,8 +1273,8 @@ $("btnGenerate").onclick = async () => {
     return;
   }
 
-  const file = $("filePhoto").files?.[0];
-  if (!file) {
+  const rawFile = $("filePhoto").files?.[0];
+  if (!rawFile) {
     showFormError("Upload a photo.");
     return;
   }
@@ -1198,10 +1293,13 @@ $("btnGenerate").onclick = async () => {
       throw new Error("createJob returned empty payload");
     }
 
+    setStatus("Preparing photo…");
+    const uploadInput = await prepareUploadImage(rawFile);
+
     setStatus("Uploading photo…");
     const photoRef = ref(storage, uploadPath);
-    await uploadBytes(photoRef, file, {
-      contentType: file.type || "image/jpeg",
+    await uploadBytes(photoRef, uploadInput.blob, {
+      contentType: uploadInput.contentType || "image/jpeg",
     });
 
     const inputImageUrl = await getDownloadURL(photoRef);

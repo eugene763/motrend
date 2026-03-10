@@ -33,6 +33,8 @@ const KLING_BASE_URL =
 
 const corsAllowedOrigins = [
   /^https:\/\/gen-lang-client-0651837818\.(web\.app|firebaseapp\.com)$/,
+  /^https:\/\/trend\.moads\.agency$/,
+  /^https:\/\/www\.trend\.moads\.agency$/,
   /^https?:\/\/localhost(:\d+)?$/,
 ];
 
@@ -885,6 +887,14 @@ export const onUserDocCreated = onDocumentCreated(
   async (event) => {
     const userRef = event.data?.ref;
     if (!userRef) return;
+
+    const existingData = (event.data?.data() as UserDoc | undefined) || {};
+    const existingCredits = existingData.creditsBalance;
+    const hasCredits = typeof existingCredits === "number" &&
+      Number.isFinite(existingCredits);
+    if (hasCredits) {
+      return;
+    }
 
     await userRef.set({
       creditsBalance: INITIAL_CREDITS,

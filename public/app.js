@@ -44,10 +44,14 @@ import {
   httpsCallable,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 
-const runtimeHost = window.location.hostname;
-const runtimeAuthDomain = runtimeHost === "trend.moads.agency"
-  ? "trend.moads.agency"
-  : "gen-lang-client-0651837818.firebaseapp.com";
+const runtimeHost = window.location.hostname.toLowerCase();
+const sameSiteAuthDomains = new Set([
+  "trend.moads.agency",
+  "www.trend.moads.agency",
+]);
+const runtimeAuthDomain = sameSiteAuthDomains.has(runtimeHost) ?
+  runtimeHost :
+  "gen-lang-client-0651837818.firebaseapp.com";
 
 const firebaseConfig = {
   apiKey: "AIzaSyBro7c7o8kiRdAuZZpu73KdKyApX7JuflE",
@@ -800,7 +804,38 @@ function renderJobsList() {
     jobsEl.appendChild(row);
   });
 
-  updateLatestJobUI(latestJobs[0].id, latestJobs[0].data);
+  const latest = latestJobs[0];
+  const isDoneWithOutput = (item) => (
+    item?.data?.status === "done" &&
+    !!safeUrl(item?.data?.kling?.outputUrl || "")
+  );
+
+  const activeDone = latestJobs.find((item) =>
+    item.id === activeDoneJobId && isDoneWithOutput(item)
+  );
+  const fallbackDone = latestJobs.find((item) => isDoneWithOutput(item));
+  const doneForPanel = activeDone || fallbackDone || null;
+
+  if (doneForPanel) {
+    showSuccessPanel(doneForPanel.id);
+    if (latest.id === doneForPanel.id) {
+      setStatus("Done. Download is ready.");
+    } else if (latest?.data?.status === "processing") {
+      setStatus("Processing… Previous trend download is ready.");
+    } else if (latest?.data?.status === "queued") {
+      setStatus("Queued. Previous trend download is ready.");
+    } else if (latest?.data?.status === "failed") {
+      const error = latest?.data?.kling?.error || "try another photo/template";
+      setStatus(
+        `Latest trend failed: ${error}. Previous trend download is ready.`
+      );
+    } else {
+      setStatus("Download is ready.");
+    }
+    return;
+  }
+
+  updateLatestJobUI(latest.id, latest.data);
 }
 
 function watchLatestJobs(uid) {

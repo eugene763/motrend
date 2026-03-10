@@ -1224,6 +1224,16 @@ function renderJobsList() {
                 kling,
               },
             };
+
+            const refreshedOutputUrl = safeUrl(kling?.outputUrl || "");
+            if (status === "done" && refreshedOutputUrl) {
+              // Prefer the freshly completed trend in the download panel.
+              if (activeDoneJobId !== item.id) {
+                activeDoneJobId = item.id;
+                preparedDownloadJobId = "";
+                preparedDownloadUrl = "";
+              }
+            }
           }
         } catch (error) {
           showFormError(callableErrorMessage(error));

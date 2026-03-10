@@ -61,3 +61,7 @@ release-prod.sh
 
 # build outputs
 functions/lib/
+
+# macOS / editor artifacts
+.DS_Store
+*.save

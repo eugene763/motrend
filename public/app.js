@@ -251,104 +251,6 @@ function closeAuth() {
   clearAuthError();
 }
 
-function showSuccessPanel(jobId) {
-  const panel = $("jobSuccessPanel");
-  const prepareBtn = $("prepareDownloadBtn");
-  const downloadBtn = $("downloadTrendBtn");
-  const downloadOr = $("downloadOr");
-  const openExternalBtn = $("openExternalBtn");
-  const copyDownloadBtn = $("copyDownloadBtn");
-  const fallbackHint = $("downloadFallbackHint");
-  if (
-    !panel ||
-    !prepareBtn ||
-    !downloadBtn ||
-    !downloadOr ||
-    !openExternalBtn ||
-    !copyDownloadBtn ||
-    !fallbackHint
-  ) {
-    return;
-  }
-
-  if (activeDoneJobId !== jobId) {
-    preparedDownloadJobId = "";
-    preparedDownloadUrl = "";
-  }
-  activeDoneJobId = jobId || "";
-
-  prepareBtn.disabled = isPreparingDownload || !activeDoneJobId;
-  if (isPreparingDownload) {
-    prepareBtn.innerHTML =
-      '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Preparing...';
-  } else {
-    prepareBtn.textContent = "Prepare download";
-  }
-
-  const safePreparedUrl = safeUrl(
-    preparedDownloadJobId === activeDoneJobId ? preparedDownloadUrl : ""
-  );
-  if (safePreparedUrl) {
-    prepareBtn.style.display = "none";
-    downloadBtn.href = safePreparedUrl;
-    openExternalBtn.href = safePreparedUrl;
-    downloadBtn.style.display = "flex";
-    downloadOr.style.display = "block";
-    openExternalBtn.style.display = "flex";
-    copyDownloadBtn.style.display = "flex";
-    fallbackHint.style.display = "block";
-  } else {
-    prepareBtn.style.display = "flex";
-    downloadBtn.href = "#";
-    openExternalBtn.href = "#";
-    downloadBtn.style.display = "none";
-    downloadOr.style.display = "none";
-    openExternalBtn.style.display = "none";
-    copyDownloadBtn.style.display = "none";
-    fallbackHint.style.display = "none";
-  }
-
-  panel.style.display = "block";
-}
-
-function hideSuccessPanel() {
-  const panel = $("jobSuccessPanel");
-  const prepareBtn = $("prepareDownloadBtn");
-  const downloadBtn = $("downloadTrendBtn");
-  const downloadOr = $("downloadOr");
-  const openExternalBtn = $("openExternalBtn");
-  const copyDownloadBtn = $("copyDownloadBtn");
-  const fallbackHint = $("downloadFallbackHint");
-  if (
-    !panel ||
-    !prepareBtn ||
-    !downloadBtn ||
-    !downloadOr ||
-    !openExternalBtn ||
-    !copyDownloadBtn ||
-    !fallbackHint
-  ) {
-    return;
-  }
-
-  activeDoneJobId = "";
-  preparedDownloadJobId = "";
-  preparedDownloadUrl = "";
-  isPreparingDownload = false;
-
-  prepareBtn.disabled = false;
-  prepareBtn.textContent = "Prepare download";
-  prepareBtn.style.display = "flex";
-  panel.style.display = "none";
-  downloadBtn.href = "#";
-  downloadBtn.style.display = "none";
-  downloadOr.style.display = "none";
-  openExternalBtn.href = "#";
-  openExternalBtn.style.display = "none";
-  copyDownloadBtn.style.display = "none";
-  fallbackHint.style.display = "none";
-}
-
 function safeUrl(value) {
   if (typeof value !== "string") return "";
   const trimmed = value.trim();
@@ -522,11 +424,9 @@ let unsubscribeUserDoc = null;
 let unsubscribeJobs = null;
 let latestJobs = [];
 const refreshingJobIds = new Set();
-let activeDoneJobId = "";
-let preparedDownloadJobId = "";
-let preparedDownloadUrl = "";
-let isPreparingDownload = false;
-let hidePreviousReadyHintInSession = false;
+const preparingDownloadJobIds = new Set();
+const preparedDownloadByJobId = new Map();
+let showOlderJobs = false;
 let estimatedProgressActive = false;
 let estimatedProgressPercent = 0;
 let estimatedProgressTimer = null;
@@ -551,6 +451,8 @@ const PHOTO_HINT_MESSAGE =
   "Dimensions: 300px ~ 65536px";
 const VIDEO_HINT_MESSAGE =
   "Supported formats: .mp4 / .mov, file size: ≤100MB, dimensions: 340px ~ 3850px.";
+const DEFAULT_VISIBLE_JOBS = 5;
+const MAX_WATCH_JOBS = 20;
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -917,12 +819,6 @@ async function callCreateJob(payload, options = {}) {
   throw lastError || new Error("createJob failed");
 }
 
-function triggerDownload(url) {
-  const safe = safeUrl(url);
-  if (!safe) return;
-  window.open(safe, "_blank", "noopener,noreferrer");
-}
-
 async function prepareDownloadLink(jobId) {
   for (let attempt = 0; attempt < PREPARE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
     const response = await callCreateJob({prepareDownloadJobId: jobId});
@@ -946,32 +842,6 @@ async function prepareDownloadLink(jobId) {
   }
 
   throw new Error("Download is still preparing. Please tap again.");
-}
-
-const prepareDownloadBtn = $("prepareDownloadBtn");
-if (prepareDownloadBtn) {
-  prepareDownloadBtn.onclick = async () => {
-    if (!currentUser || !activeDoneJobId || isPreparingDownload) return;
-
-    clearFormError();
-    isPreparingDownload = true;
-    showSuccessPanel(activeDoneJobId);
-
-    try {
-      const downloadUrl = await prepareDownloadLink(activeDoneJobId);
-
-      preparedDownloadJobId = activeDoneJobId;
-      preparedDownloadUrl = downloadUrl;
-      showSuccessPanel(activeDoneJobId);
-    } catch (error) {
-      showFormError(callableErrorMessage(error));
-    } finally {
-      isPreparingDownload = false;
-      if (activeDoneJobId) {
-        showSuccessPanel(activeDoneJobId);
-      }
-    }
-  };
 }
 
 async function syncSupportProfile() {
@@ -1002,20 +872,6 @@ const openExternalAuthBtn = $("btnOpenExternalAuth");
 if (openExternalAuthBtn) {
   openExternalAuthBtn.onclick = () => {
     updateAuthInAppActions();
-  };
-}
-
-const copyDownloadBtn = $("copyDownloadBtn");
-if (copyDownloadBtn) {
-  copyDownloadBtn.onclick = async () => {
-    const safe = safeUrl(preparedDownloadUrl);
-    if (!safe) return;
-    try {
-      await navigator.clipboard.writeText(safe);
-      setStatus("Download link copied.");
-    } catch {
-      showFormError("Unable to copy link. Please copy it manually.");
-    }
   };
 }
 
@@ -1552,11 +1408,8 @@ function updateLatestJobUI(jobId, job) {
       setStatus("Done. Download is ready.");
       setStatusHintVisible(false);
     }
-    showSuccessPanel(jobId);
     return;
   }
-
-  hideSuccessPanel();
 
   if (status === "queued") {
     if (trackedCurrentJob) {
@@ -1578,6 +1431,12 @@ function updateLatestJobUI(jobId, job) {
     }
     setStatus(`Failed: ${error || "try another photo/template"}`);
     setStatusHintVisible(false);
+  } else {
+    if (trackedCurrentJob) {
+      stopEstimatedProgress();
+    }
+    setStatus("");
+    setStatusHintVisible(false);
   }
 }
 
@@ -1585,28 +1444,150 @@ function canRefreshJob(job) {
   return job?.status === "queued" || job?.status === "processing";
 }
 
+function isDoneWithOutput(item) {
+  return (
+    item?.data?.status === "done" &&
+    !!safeUrl(item?.data?.kling?.outputUrl || "")
+  );
+}
+
+function prunePreparedDownloadState() {
+  const currentIds = new Set(latestJobs.map((item) => item.id));
+
+  for (const jobId of preparedDownloadByJobId.keys()) {
+    if (!currentIds.has(jobId)) {
+      preparedDownloadByJobId.delete(jobId);
+    }
+  }
+
+  for (const jobId of [...preparingDownloadJobIds]) {
+    if (!currentIds.has(jobId)) {
+      preparingDownloadJobIds.delete(jobId);
+    }
+  }
+}
+
+async function handlePrepareDownload(jobId) {
+  if (!currentUser || !jobId || preparingDownloadJobIds.has(jobId)) return;
+
+  clearFormError();
+  preparingDownloadJobIds.add(jobId);
+  renderJobsList();
+
+  try {
+    const downloadUrl = await prepareDownloadLink(jobId);
+    preparedDownloadByJobId.set(jobId, downloadUrl);
+  } catch (error) {
+    showFormError(callableErrorMessage(error));
+  } finally {
+    preparingDownloadJobIds.delete(jobId);
+    renderJobsList();
+  }
+}
+
+function renderDoneJobActions(jobId) {
+  const wrapper = document.createElement("div");
+  wrapper.style.marginTop = "8px";
+
+  const actions = document.createElement("div");
+  actions.className = "jobActions";
+  wrapper.appendChild(actions);
+
+  const isPreparing = preparingDownloadJobIds.has(jobId);
+  const preparedUrl = safeUrl(preparedDownloadByJobId.get(jobId) || "");
+
+  if (!preparedUrl) {
+    const prepareBtn = document.createElement("button");
+    prepareBtn.className = "btn";
+    prepareBtn.disabled = isPreparing;
+    if (isPreparing) {
+      prepareBtn.innerHTML =
+        '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Preparing...';
+    } else {
+      prepareBtn.textContent = "Prepare download";
+    }
+    prepareBtn.onclick = () => {
+      handlePrepareDownload(jobId);
+    };
+    actions.appendChild(prepareBtn);
+    return wrapper;
+  }
+
+  const downloadBtn = document.createElement("a");
+  downloadBtn.className = "btnDownloadPrimary";
+  downloadBtn.textContent = "Download";
+  downloadBtn.href = preparedUrl;
+  downloadBtn.target = "_blank";
+  downloadBtn.rel = "noopener noreferrer";
+  downloadBtn.download = "";
+  actions.appendChild(downloadBtn);
+
+  const orEl = document.createElement("div");
+  orEl.className = "jobOr";
+  orEl.style.display = "block";
+  orEl.textContent = "or";
+  actions.appendChild(orEl);
+
+  const openExternalBtn = document.createElement("a");
+  openExternalBtn.className = "btn";
+  openExternalBtn.textContent = "Open in browser";
+  openExternalBtn.href = preparedUrl;
+  openExternalBtn.target = "_blank";
+  openExternalBtn.rel = "noopener noreferrer";
+  actions.appendChild(openExternalBtn);
+
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "btn2";
+  copyBtn.textContent = "Copy link";
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(preparedUrl);
+      setStatus("Download link copied.");
+    } catch {
+      showFormError("Unable to copy link. Please copy it manually.");
+    }
+  };
+  actions.appendChild(copyBtn);
+
+  const fallbackHint = document.createElement("div");
+  fallbackHint.className = "muted jobsHint";
+  fallbackHint.textContent =
+    "If download does not start, tap “Open in browser”.";
+  wrapper.appendChild(fallbackHint);
+
+  return wrapper;
+}
+
 function renderJobsList() {
   const jobsEl = $("jobs");
   if (!jobsEl) return;
 
   if (!latestJobs.length) {
+    jobsEl.className = "muted";
     jobsEl.textContent = "No trends yet.";
-    hideSuccessPanel();
+    showOlderJobs = false;
     return;
   }
 
+  jobsEl.className = "";
+  prunePreparedDownloadState();
   jobsEl.innerHTML = "";
+  const visibleJobs = showOlderJobs ?
+    latestJobs :
+    latestJobs.slice(0, DEFAULT_VISIBLE_JOBS);
 
-  latestJobs.forEach((item) => {
+  visibleJobs.forEach((item, index) => {
     const job = item.data || {};
-    const row = document.createElement("div");
-    row.className = "row";
-    row.style.justifyContent = "space-between";
-    row.style.marginBottom = "8px";
+    const itemWrap = document.createElement("div");
+    itemWrap.className = "jobItem";
 
+    const row = document.createElement("div");
+    row.className = "jobMeta";
     const meta = document.createElement("div");
     const outputUrl = safeUrl(job?.kling?.outputUrl || "");
-    meta.textContent = `${item.id.slice(0, 6)}… • ${statusLabel(job.status)} ${outputUrl ? "• ✅" : ""}`;
+    const latestMark = index === 0 ? " • Latest" : "";
+    meta.textContent =
+      `${item.id.slice(0, 6)}… • ${statusLabel(job.status)} ${outputUrl ? "• ✅" : ""}${latestMark}`;
     row.appendChild(meta);
 
     if (canRefreshJob(job)) {
@@ -1658,16 +1639,6 @@ function renderJobsList() {
                 kling,
               },
             };
-
-            const refreshedOutputUrl = safeUrl(kling?.outputUrl || "");
-            if (status === "done" && refreshedOutputUrl) {
-              // Prefer the freshly completed trend in the download panel.
-              if (activeDoneJobId !== item.id) {
-                activeDoneJobId = item.id;
-                preparedDownloadJobId = "";
-                preparedDownloadUrl = "";
-              }
-            }
           }
         } catch (error) {
           showFormError(callableErrorMessage(error));
@@ -1680,86 +1651,33 @@ function renderJobsList() {
       row.appendChild(refreshBtn);
     }
 
-    jobsEl.appendChild(row);
+    itemWrap.appendChild(row);
+
+    if (isDoneWithOutput(item)) {
+      itemWrap.appendChild(renderDoneJobActions(item.id));
+      const retentionHint = document.createElement("div");
+      retentionHint.className = "muted jobsHint";
+      retentionHint.textContent = "The link to the video is stored for ~30 days.";
+      itemWrap.appendChild(retentionHint);
+    }
+
+    jobsEl.appendChild(itemWrap);
   });
 
+  if (latestJobs.length > DEFAULT_VISIBLE_JOBS) {
+    const toggleBtn = document.createElement("button");
+    toggleBtn.className = "btn2 jobsToggle";
+    toggleBtn.textContent = showOlderJobs ?
+      "Show fewer trends" :
+      `Show older trends (${latestJobs.length - DEFAULT_VISIBLE_JOBS})`;
+    toggleBtn.onclick = () => {
+      showOlderJobs = !showOlderJobs;
+      renderJobsList();
+    };
+    jobsEl.appendChild(toggleBtn);
+  }
+
   const latest = latestJobs[0];
-  const latestTrackedByProgress = (
-    estimatedProgressActive &&
-    !!estimatedProgressJobId &&
-    latest?.id === estimatedProgressJobId
-  );
-  const isDoneWithOutput = (item) => (
-    item?.data?.status === "done" &&
-    !!safeUrl(item?.data?.kling?.outputUrl || "")
-  );
-
-  const activeDone = latestJobs.find((item) =>
-    item.id === activeDoneJobId && isDoneWithOutput(item)
-  );
-  const fallbackDone = latestJobs.find((item) => isDoneWithOutput(item));
-  const latestDone = isDoneWithOutput(latest) ? latest : null;
-
-  if (latestDone && activeDoneJobId !== latestDone.id) {
-    // Always promote the newest completed trend in this session.
-    activeDoneJobId = latestDone.id;
-    preparedDownloadJobId = "";
-    preparedDownloadUrl = "";
-  }
-
-  const doneForPanel = latestDone || activeDone || fallbackDone || null;
-
-  if (doneForPanel) {
-    showSuccessPanel(doneForPanel.id);
-    if (latest.id === doneForPanel.id) {
-      if (latestTrackedByProgress) {
-        completeEstimatedProgress();
-      } else {
-        setStatus("Done. Download is ready.");
-        setStatusHintVisible(false);
-      }
-    } else if (latest?.data?.status === "processing") {
-      if (latestTrackedByProgress) {
-        setEstimatedProgressLabel("Generating your trend…");
-      } else {
-        setStatus(
-          hidePreviousReadyHintInSession ?
-            "Processing…" :
-            "Processing… Previous trend download is ready."
-        );
-        setStatusHintVisible(false);
-      }
-    } else if (latest?.data?.status === "queued") {
-      if (latestTrackedByProgress) {
-        setEstimatedProgressLabel("Generating your trend…");
-      } else {
-        setStatus(
-          hidePreviousReadyHintInSession ?
-            "Queued. Waiting for processing…" :
-            "Queued. Previous trend download is ready."
-        );
-        setStatusHintVisible(false);
-      }
-    } else if (latest?.data?.status === "failed") {
-      const error = latest?.data?.kling?.error || "try another photo/template";
-      if (latestTrackedByProgress) {
-        stopEstimatedProgress();
-      }
-      if (hidePreviousReadyHintInSession || latestTrackedByProgress) {
-        setStatus(`Latest trend failed: ${error}.`);
-      } else {
-        setStatus(
-          `Latest trend failed: ${error}. Previous trend download is ready.`
-        );
-      }
-      setStatusHintVisible(false);
-    } else {
-      setStatus("Download is ready.");
-      setStatusHintVisible(false);
-    }
-    return;
-  }
-
   updateLatestJobUI(latest.id, latest.data);
 }
 
@@ -1768,12 +1686,14 @@ function watchLatestJobs(uid) {
     collection(db, "jobs"),
     where("uid", "==", uid),
     orderBy("createdAt", "desc"),
-    limit(5)
+    limit(MAX_WATCH_JOBS)
   );
 
   return onSnapshot(qy, (snap) => {
     if (snap.empty) {
       latestJobs = [];
+      preparedDownloadByJobId.clear();
+      preparingDownloadJobIds.clear();
       renderJobsList();
       return;
     }
@@ -1782,6 +1702,7 @@ function watchLatestJobs(uid) {
       id: docSnap.id,
       data: docSnap.data() || {},
     }));
+    prunePreparedDownloadState();
     renderJobsList();
   });
 }
@@ -1815,9 +1736,7 @@ $("btnGenerate").onclick = async () => {
 
   const btn = $("btnGenerate");
   btn.disabled = true;
-  hidePreviousReadyHintInSession = true;
   startEstimatedProgress("Generating your trend…");
-  hideSuccessPanel();
 
   try {
     const clientRequestId = createClientRequestId("gen");
@@ -1936,7 +1855,6 @@ onAuthStateChanged(auth, async (user) => {
     selectedTemplate = null;
     selectedTrendKind = TREND_SELECTION_TEMPLATE;
     availableTemplates = [];
-    hidePreviousReadyHintInSession = false;
     stopEstimatedProgress();
     updateSelectedTrendField();
     selectedReferenceVideoFile = null;
@@ -1955,10 +1873,12 @@ onAuthStateChanged(auth, async (user) => {
     isAdminUser = false;
     closeAuth();
     updateAuthInAppActions();
-    hideSuccessPanel();
     setStatus("");
     latestJobs = [];
     refreshingJobIds.clear();
+    preparingDownloadJobIds.clear();
+    preparedDownloadByJobId.clear();
+    showOlderJobs = false;
     renderJobsList();
 
     await loadTemplates();
@@ -1991,7 +1911,6 @@ onAuthStateChanged(auth, async (user) => {
 
   await syncSupportProfile();
 
-  hidePreviousReadyHintInSession = false;
   await loadTemplates();
   unsubscribeUserDoc = watchUserDoc(user.uid);
   unsubscribeJobs = watchLatestJobs(user.uid);

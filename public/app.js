@@ -217,6 +217,149 @@ async function maybeShowUploadHint(key, message) {
   markHintSeen(key);
 }
 
+function onboardingSeenKey(uid) {
+  return `${ONBOARDING_SEEN_PREFIX}${uid}`;
+}
+
+function hasSeenOnboarding(uid) {
+  if (!uid) return true;
+  try {
+    return localStorage.getItem(onboardingSeenKey(uid)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markOnboardingSeen(uid) {
+  if (!uid) return;
+  try {
+    localStorage.setItem(onboardingSeenKey(uid), "1");
+  } catch {
+    // no-op
+  }
+}
+
+function markPendingOnboarding(uid = "") {
+  try {
+    const payload = {ts: Date.now(), uid: uid || ""};
+    sessionStorage.setItem(ONBOARDING_PENDING_KEY, JSON.stringify(payload));
+  } catch {
+    // no-op
+  }
+}
+
+function consumePendingOnboarding(expectedUid = "") {
+  try {
+    const raw = sessionStorage.getItem(ONBOARDING_PENDING_KEY);
+    if (!raw) return false;
+    sessionStorage.removeItem(ONBOARDING_PENDING_KEY);
+    let ts = Number(raw);
+    let pendingUid = "";
+    if (!Number.isFinite(ts)) {
+      const parsed = JSON.parse(raw);
+      ts = Number(parsed?.ts);
+      pendingUid = typeof parsed?.uid === "string" ? parsed.uid : "";
+    }
+    if (!Number.isFinite(ts)) return false;
+    if (expectedUid && pendingUid && pendingUid !== expectedUid) return false;
+    return Date.now() - ts <= ONBOARDING_PENDING_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
+function isLikelyNewUser(user) {
+  const createdAt = Date.parse(user?.metadata?.creationTime || "");
+  const lastSignInAt = Date.parse(user?.metadata?.lastSignInTime || "");
+  if (!Number.isFinite(createdAt) || !Number.isFinite(lastSignInAt)) {
+    return false;
+  }
+  return Math.abs(lastSignInAt - createdAt) <= 2 * 60 * 1000;
+}
+
+function clearOnboardingFocus() {
+  if (!onboardingFocusEl) return;
+  onboardingFocusEl.classList.remove("onboardingFocus");
+  onboardingFocusEl = null;
+}
+
+function buildOnboardingDots(activeIndex) {
+  const dotsEl = $("onboardingDots");
+  if (!dotsEl) return;
+  dotsEl.innerHTML = "";
+  ONBOARDING_STEPS.forEach((_, idx) => {
+    const dot = document.createElement("span");
+    dot.className = idx === activeIndex ? "onboardingDot isActive" : "onboardingDot";
+    dotsEl.appendChild(dot);
+  });
+}
+
+function renderOnboardingStep() {
+  const titleEl = $("onboardingStepTitle");
+  const textEl = $("onboardingStepText");
+  const prevBtn = $("onboardingPrevBtn");
+  const nextBtn = $("onboardingNextBtn");
+  if (!titleEl || !textEl || !prevBtn || !nextBtn) return;
+
+  const step = ONBOARDING_STEPS[onboardingStepIndex];
+  if (!step) return;
+
+  titleEl.textContent = step.title;
+  textEl.textContent = step.text;
+  buildOnboardingDots(onboardingStepIndex);
+
+  const isFirst = onboardingStepIndex === 0;
+  const isLast = onboardingStepIndex === ONBOARDING_STEPS.length - 1;
+  prevBtn.style.visibility = isFirst ? "hidden" : "visible";
+  prevBtn.disabled = isFirst;
+  nextBtn.style.visibility = isLast ? "hidden" : "visible";
+  nextBtn.disabled = isLast;
+
+  clearOnboardingFocus();
+  const target = step.getTarget();
+  if (!(target instanceof HTMLElement)) return;
+  target.scrollIntoView({behavior: "smooth", block: "center"});
+  target.classList.add("onboardingFocus");
+  onboardingFocusEl = target;
+}
+
+function closeOnboarding(markSeen = true) {
+  const overlay = $("onboardingOverlay");
+  if (!overlay) return;
+  overlay.classList.remove("isOpen");
+  overlay.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("onboardingActive");
+  clearOnboardingFocus();
+  onboardingIsOpen = false;
+  onboardingStepIndex = 0;
+  const uid = overlay.dataset.uid || "";
+  if (markSeen && uid) {
+    markOnboardingSeen(uid);
+  }
+  overlay.dataset.uid = "";
+}
+
+function openOnboarding(uid) {
+  if (!uid || onboardingIsOpen) return;
+  const overlay = $("onboardingOverlay");
+  if (!overlay) return;
+
+  overlay.dataset.uid = uid;
+  overlay.classList.add("isOpen");
+  overlay.setAttribute("aria-hidden", "false");
+  document.body.classList.add("onboardingActive");
+  onboardingIsOpen = true;
+  onboardingStepIndex = 0;
+  renderOnboardingStep();
+}
+
+function maybeStartOnboarding(user) {
+  if (!user?.uid || onboardingIsOpen || hasSeenOnboarding(user.uid)) return;
+  const pendingFromRegistration = consumePendingOnboarding(user.uid);
+  if (!pendingFromRegistration && !isLikelyNewUser(user)) return;
+  openOnboarding(user.uid);
+}
+
 function setSupportButtonMessage(supportCode = "") {
   const btn = $("supportBtn");
   if (!btn) return;
@@ -436,6 +579,9 @@ let currentSupportCode = "";
 let isAdminUser = false;
 let adminSelectedUid = "";
 let adminSelectedSupportCode = "";
+let onboardingIsOpen = false;
+let onboardingStepIndex = 0;
+let onboardingFocusEl = null;
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
 const MAX_UPLOAD_IMAGE_BYTES = 40 * 1024 * 1024;
 const TARGET_UPLOAD_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -445,6 +591,9 @@ const UPLOAD_IMAGE_QUALITY_STEPS = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65];
 const MAX_REFERENCE_VIDEO_BYTES = 200 * 1024 * 1024;
 const PHOTO_HINT_KEY = "motrend_photo_hint_v1";
 const VIDEO_HINT_KEY = "motrend_video_hint_v1";
+const ONBOARDING_SEEN_PREFIX = "motrend_onboarding_seen_v1_";
+const ONBOARDING_PENDING_KEY = "motrend_onboarding_pending_v1";
+const ONBOARDING_PENDING_TTL_MS = 20 * 60 * 1000;
 const PHOTO_HINT_MESSAGE =
   "For best results, choose a high-quality photo with clear facial features, visible hands, and a body position that matches the selected reference. Formats: .jpg / .jpeg / .png\n" +
   "File size: ≤10MB.\n" +
@@ -453,6 +602,27 @@ const VIDEO_HINT_MESSAGE =
   "Supported formats: .mp4 / .mov, file size: ≤100MB, dimensions: 340px ~ 3850px.";
 const DEFAULT_VISIBLE_JOBS = 5;
 const MAX_WATCH_JOBS = 20;
+
+const ONBOARDING_STEPS = [
+  {
+    title: "1. Choose trend",
+    text: "Tap any trend card to select your reference.",
+    getTarget: () =>
+      document.querySelector("#templates .tplCard.isSelected") ||
+      document.querySelector("#templates .tplCard") ||
+      $("templates"),
+  },
+  {
+    title: "2. Choose your photo",
+    text: "Upload your photo from the device gallery.",
+    getTarget: () => $("filePhoto"),
+  },
+  {
+    title: "3. Generate your trend",
+    text: "Tap Generate and wait for completion.",
+    getTarget: () => $("btnGenerate"),
+  },
+];
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -875,6 +1045,32 @@ if (openExternalAuthBtn) {
   };
 }
 
+const onboardingPrevBtn = $("onboardingPrevBtn");
+if (onboardingPrevBtn) {
+  onboardingPrevBtn.onclick = () => {
+    if (!onboardingIsOpen || onboardingStepIndex <= 0) return;
+    onboardingStepIndex -= 1;
+    renderOnboardingStep();
+  };
+}
+
+const onboardingNextBtn = $("onboardingNextBtn");
+if (onboardingNextBtn) {
+  onboardingNextBtn.onclick = () => {
+    if (!onboardingIsOpen) return;
+    if (onboardingStepIndex >= ONBOARDING_STEPS.length - 1) return;
+    onboardingStepIndex += 1;
+    renderOnboardingStep();
+  };
+}
+
+const onboardingCloseBtn = $("onboardingCloseBtn");
+if (onboardingCloseBtn) {
+  onboardingCloseBtn.onclick = () => {
+    closeOnboarding(true);
+  };
+}
+
 $("btnEmailSignIn").onclick = async () => {
   clearAuthError();
   const email = $("authEmail").value.trim();
@@ -895,7 +1091,8 @@ $("btnEmailSignUp").onclick = async () => {
 
   try {
     track("signup_click", {method: "email"});
-    await createUserWithEmailAndPassword(auth, email, pass);
+    const credential = await createUserWithEmailAndPassword(auth, email, pass);
+    markPendingOnboarding(credential?.user?.uid || "");
   } catch (error) {
     showAuthError(callableErrorMessage(error));
   }
@@ -920,7 +1117,10 @@ $("btnLogin").onclick = async () => {
       await signInWithRedirect(auth, provider);
       return;
     }
-    await signInWithPopup(auth, provider);
+    const result = await signInWithPopup(auth, provider);
+    if (isLikelyNewUser(result?.user)) {
+      markPendingOnboarding(result?.user?.uid || "");
+    }
   } catch (error) {
     const code = typeof error?.code === "string" ? error.code : "";
     const popupFailed = [
@@ -1822,7 +2022,10 @@ if (fileInput) {
 }
 
 try {
-  await getRedirectResult(auth);
+  const redirectResult = await getRedirectResult(auth);
+  if (isLikelyNewUser(redirectResult?.user)) {
+    markPendingOnboarding(redirectResult?.user?.uid || "");
+  }
 } catch (error) {
   const code = typeof error?.code === "string" ? error.code : "";
   if (isTelegramInAppBrowser() && code.includes("invalid-action-code")) {
@@ -1879,6 +2082,7 @@ onAuthStateChanged(auth, async (user) => {
     preparingDownloadJobIds.clear();
     preparedDownloadByJobId.clear();
     showOlderJobs = false;
+    closeOnboarding(false);
     renderJobsList();
 
     await loadTemplates();
@@ -1912,6 +2116,9 @@ onAuthStateChanged(auth, async (user) => {
   await syncSupportProfile();
 
   await loadTemplates();
+  requestAnimationFrame(() => {
+    maybeStartOnboarding(user);
+  });
   unsubscribeUserDoc = watchUserDoc(user.uid);
   unsubscribeJobs = watchLatestJobs(user.uid);
 });

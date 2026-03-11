@@ -32,6 +32,8 @@ const MAX_DOWNLOAD_BYTES = 120 * 1024 * 1024;
 const SUPPORT_CODES_COLLECTION = "support_codes";
 const CREDIT_ADJUSTMENTS_COLLECTION = "credit_adjustments";
 const JOB_REQUESTS_COLLECTION = "job_requests";
+const USER_PRIVATE_COLLECTION = "private";
+const USER_ATTRIBUTION_DOC_ID = "attribution";
 const LEGACY_QUEUE_COLLECTION = "job_queue";
 const QUEUE_COLLECTIONS: Record<QueueTaskType, string> = {
   kling_submit: "job_queue_kling_submit",
@@ -154,6 +156,22 @@ interface JobRequestDoc {
   uploadPath?: string;
   createdAt?: admin.firestore.Timestamp;
   updatedAt?: admin.firestore.Timestamp;
+}
+
+interface AttributionPayloadInput {
+  capturedAtMs?: unknown;
+  landingUrl?: unknown;
+  referrer?: unknown;
+  utm?: unknown;
+  ids?: unknown;
+}
+
+interface SanitizedAttributionPayload {
+  capturedAtMs: number;
+  landingUrl?: string;
+  referrer?: string;
+  utm: Record<string, string>;
+  ids: Record<string, string>;
 }
 
 interface KlingSubmitInput {
@@ -304,6 +322,105 @@ function normalizeClientRequestId(value: unknown): string | null {
     throw new HttpsError("invalid-argument", "Invalid clientRequestId");
   }
   return requestId;
+}
+
+const ATTRIBUTION_MAX_VALUE_LENGTH = 500;
+const ATTRIBUTION_MAX_URL_LENGTH = 1500;
+const ATTRIBUTION_UTM_KEYS = new Set([
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_content",
+  "utm_term",
+]);
+const ATTRIBUTION_ID_KEYS = new Set([
+  "fbclid",
+  "fbc",
+  "fbp",
+  "gclid",
+  "gbraid",
+  "wbraid",
+  "ga_client_id",
+  "gcl_au",
+  "yclid",
+  "ysclid",
+  "ym_uid",
+  "ttclid",
+]);
+
+function sanitizeAttributionString(
+  value: unknown,
+  maxLength = ATTRIBUTION_MAX_VALUE_LENGTH
+): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value
+    .split("")
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return code >= 32 && code !== 127;
+    })
+    .join("")
+    .trim();
+  if (!normalized) return null;
+  return normalized.slice(0, maxLength);
+}
+
+function sanitizeAttributionMap(
+  value: unknown,
+  allowedKeys: Set<string>
+): Record<string, string> {
+  if (!value || typeof value !== "object") return {};
+  const source = value as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const key of Object.keys(source)) {
+    if (!allowedKeys.has(key)) continue;
+    const sanitized = sanitizeAttributionString(source[key]);
+    if (!sanitized) continue;
+    out[key] = sanitized;
+  }
+  return out;
+}
+
+function sanitizeCapturedAtMs(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return Date.now();
+  }
+  const normalized = Math.floor(value);
+  const now = Date.now();
+  if (normalized < 0) return now;
+  if (normalized > now + 24 * 60 * 60 * 1000) return now;
+  return normalized;
+}
+
+function hasKeys(value: Record<string, unknown>): boolean {
+  return Object.keys(value).length > 0;
+}
+
+function sanitizeAttributionPayload(
+  input: AttributionPayloadInput
+): SanitizedAttributionPayload | null {
+  const utm = sanitizeAttributionMap(input.utm, ATTRIBUTION_UTM_KEYS);
+  const ids = sanitizeAttributionMap(input.ids, ATTRIBUTION_ID_KEYS);
+  const landingUrl = sanitizeAttributionString(
+    input.landingUrl,
+    ATTRIBUTION_MAX_URL_LENGTH
+  ) || undefined;
+  const referrer = sanitizeAttributionString(
+    input.referrer,
+    ATTRIBUTION_MAX_URL_LENGTH
+  ) || undefined;
+
+  if (!hasKeys(utm) && !hasKeys(ids) && !landingUrl && !referrer) {
+    return null;
+  }
+
+  return {
+    capturedAtMs: sanitizeCapturedAtMs(input.capturedAtMs),
+    landingUrl,
+    referrer,
+    utm,
+    ids,
+  };
 }
 
 function hashForLog(value: string): string {
@@ -1214,6 +1331,102 @@ async function grantCreditsForAdmin(params: {
   };
 }
 
+function readStringMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object") return {};
+  const source = value as Record<string, unknown>;
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(source)) {
+    const normalized = sanitizeAttributionString(raw);
+    if (!normalized) continue;
+    out[key] = normalized;
+  }
+  return out;
+}
+
+function buildAttributionTouchPayload(
+  payload: SanitizedAttributionPayload
+): Record<string, unknown> {
+  const touch: Record<string, unknown> = {
+    capturedAtMs: payload.capturedAtMs,
+  };
+  if (payload.landingUrl) touch.landingUrl = payload.landingUrl;
+  if (payload.referrer) touch.referrer = payload.referrer;
+  if (hasKeys(payload.utm)) touch.utm = payload.utm;
+  if (hasKeys(payload.ids)) touch.ids = payload.ids;
+  return touch;
+}
+
+async function upsertAttributionForUser(
+  uid: string,
+  input: AttributionPayloadInput
+): Promise<Record<string, unknown>> {
+  const sanitized = sanitizeAttributionPayload(input);
+  if (!sanitized) {
+    return {
+      stored: false,
+      reason: "empty",
+    };
+  }
+
+  const attributionRef = db.collection("users")
+    .doc(uid)
+    .collection(USER_PRIVATE_COLLECTION)
+    .doc(USER_ATTRIBUTION_DOC_ID);
+  const touch = buildAttributionTouchPayload(sanitized);
+  let firstTouchSet = false;
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(attributionRef);
+    const existing = snap.exists ?
+      (snap.data() as Record<string, unknown> | undefined) || {} :
+      {};
+    const existingUtm = readStringMap(existing.utm);
+    const existingIds = readStringMap(existing.ids);
+    const mergedUtm = {...existingUtm, ...sanitized.utm};
+    const mergedIds = {...existingIds, ...sanitized.ids};
+    const existingFirstTouch = (
+      existing.firstTouch &&
+      typeof existing.firstTouch === "object"
+    ) ? existing.firstTouch : null;
+
+    const updates: Record<string, unknown> = {
+      schemaVersion: 1,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastSeenAtMs: sanitized.capturedAtMs,
+      lastTouch: touch,
+    };
+    if (hasKeys(mergedUtm)) {
+      updates.utm = mergedUtm;
+    }
+    if (hasKeys(mergedIds)) {
+      updates.ids = mergedIds;
+    }
+    if (!snap.exists) {
+      updates.createdAt = admin.firestore.FieldValue.serverTimestamp();
+    }
+    if (!existingFirstTouch) {
+      updates.firstTouch = touch;
+      updates.firstSeenAtMs = sanitized.capturedAtMs;
+      firstTouchSet = true;
+    }
+
+    tx.set(attributionRef, updates, {merge: true});
+  });
+
+  logger.info("Attribution upserted", {
+    userHash: hashForLog(uid),
+    utmKeys: Object.keys(sanitized.utm),
+    idKeys: Object.keys(sanitized.ids),
+    hasLandingUrl: !!sanitized.landingUrl,
+    hasReferrer: !!sanitized.referrer,
+  });
+
+  return {
+    stored: true,
+    firstTouchSet,
+  };
+}
+
 export const createJob = onCall(
   {
     cors: corsAllowedOrigins,
@@ -1252,6 +1465,14 @@ export const createJob = onCall(
         amountInput: req.data?.amount,
         reasonInput: req.data?.reason,
       });
+    }
+
+    const upsertAttributionInput = req.data?.upsertAttribution;
+    if (upsertAttributionInput && typeof upsertAttributionInput === "object") {
+      return await upsertAttributionForUser(
+        uid,
+        upsertAttributionInput as AttributionPayloadInput
+      );
     }
 
     const prepareDownloadJobIdRaw = req.data?.prepareDownloadJobId;

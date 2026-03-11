@@ -171,6 +171,225 @@ function setStatusHintVisible(visible) {
   hint.style.display = visible ? "block" : "none";
 }
 
+const ATTRIBUTION_STORAGE_KEY = "motrend_attribution_v1";
+const ATTRIBUTION_SYNC_PREFIX = "motrend_attribution_sync_v1_";
+const ATTRIBUTION_UTM_KEYS = [
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_content",
+  "utm_term",
+];
+const ATTRIBUTION_CLICK_ID_KEYS = [
+  "fbclid",
+  "gclid",
+  "gbraid",
+  "wbraid",
+  "yclid",
+  "ysclid",
+  "ttclid",
+];
+
+function sanitizeAttributionValue(value, maxLength = 1500) {
+  if (typeof value !== "string") return "";
+  const normalized = value
+    .replace(/[\u0000-\u001F\u007F]/g, "")
+    .trim();
+  if (!normalized) return "";
+  return normalized.slice(0, maxLength);
+}
+
+function readCookie(name) {
+  const source = document.cookie || "";
+  if (!source) return "";
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = source.match(new RegExp(`(?:^|;\\s*)${escapedName}=([^;]*)`));
+  if (!match) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+function parseGaClientId(cookieValue) {
+  const normalized = sanitizeAttributionValue(cookieValue, 200);
+  if (!normalized) return "";
+  const parts = normalized.split(".");
+  if (parts.length < 4) return "";
+  const first = parts[parts.length - 2];
+  const second = parts[parts.length - 1];
+  if (!/^\d+$/.test(first) || !/^\d+$/.test(second)) return "";
+  return `${first}.${second}`;
+}
+
+function readStoredAttribution() {
+  try {
+    const raw = localStorage.getItem(ATTRIBUTION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredAttribution(payload) {
+  try {
+    localStorage.setItem(ATTRIBUTION_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // no-op
+  }
+}
+
+function buildAttributionFromRuntime() {
+  const url = new URL(window.location.href);
+  const query = url.searchParams;
+
+  const utm = {};
+  ATTRIBUTION_UTM_KEYS.forEach((key) => {
+    const value = sanitizeAttributionValue(query.get(key) || "", 300);
+    if (value) {
+      utm[key] = value;
+    }
+  });
+
+  const ids = {};
+  ATTRIBUTION_CLICK_ID_KEYS.forEach((key) => {
+    const value = sanitizeAttributionValue(query.get(key) || "", 500);
+    if (value) {
+      ids[key] = value;
+    }
+  });
+
+  const fbp = sanitizeAttributionValue(readCookie("_fbp"), 300);
+  if (fbp) ids.fbp = fbp;
+
+  let fbc = sanitizeAttributionValue(readCookie("_fbc"), 500);
+  if (!fbc && ids.fbclid) {
+    fbc = `fb.1.${Date.now()}.${ids.fbclid}`;
+  }
+  if (fbc) ids.fbc = fbc;
+
+  const gaClientId = parseGaClientId(readCookie("_ga"));
+  if (gaClientId) ids.ga_client_id = gaClientId;
+
+  const gclAu = sanitizeAttributionValue(readCookie("_gcl_au"), 300);
+  if (gclAu) ids.gcl_au = gclAu;
+
+  const ymUid = sanitizeAttributionValue(readCookie("_ym_uid"), 300);
+  if (ymUid) ids.ym_uid = ymUid;
+
+  const landingUrl = sanitizeAttributionValue(
+    `${url.origin}${url.pathname}${url.search}`,
+    1500
+  );
+  const referrer = sanitizeAttributionValue(document.referrer || "", 1500);
+  const capturedAtMs = Date.now();
+
+  return {capturedAtMs, landingUrl, referrer, utm, ids};
+}
+
+function mergeAttributionState(prev, next) {
+  const prevUtm = prev?.utm && typeof prev.utm === "object" ? prev.utm : {};
+  const prevIds = prev?.ids && typeof prev.ids === "object" ? prev.ids : {};
+  const nextUtm = next?.utm && typeof next.utm === "object" ? next.utm : {};
+  const nextIds = next?.ids && typeof next.ids === "object" ? next.ids : {};
+
+  const merged = {
+    capturedAtMs: Number.isFinite(next?.capturedAtMs) ?
+      Math.floor(next.capturedAtMs) :
+      Date.now(),
+    firstCapturedAtMs: Number.isFinite(prev?.firstCapturedAtMs) ?
+      Math.floor(prev.firstCapturedAtMs) :
+      (Number.isFinite(next?.capturedAtMs) ? Math.floor(next.capturedAtMs) : Date.now()),
+    landingUrl: sanitizeAttributionValue(next?.landingUrl || prev?.landingUrl || "", 1500),
+    referrer: sanitizeAttributionValue(next?.referrer || prev?.referrer || "", 1500),
+    firstLandingUrl: sanitizeAttributionValue(
+      prev?.firstLandingUrl || next?.landingUrl || "",
+      1500
+    ),
+    firstReferrer: sanitizeAttributionValue(
+      prev?.firstReferrer || next?.referrer || "",
+      1500
+    ),
+    utm: {...prevUtm, ...nextUtm},
+    ids: {...prevIds, ...nextIds},
+  };
+
+  return merged;
+}
+
+function buildAttributionSyncPayload() {
+  const currentSnapshot = buildAttributionFromRuntime();
+  const previousSnapshot = readStoredAttribution();
+  const merged = mergeAttributionState(previousSnapshot, currentSnapshot);
+  writeStoredAttribution(merged);
+
+  const hasUtm = Object.keys(merged.utm || {}).length > 0;
+  const hasIds = Object.keys(merged.ids || {}).length > 0;
+  if (!hasUtm && !hasIds && !merged.landingUrl && !merged.referrer) {
+    return null;
+  }
+
+  const payload = {
+    capturedAtMs: merged.capturedAtMs,
+  };
+  if (merged.landingUrl) payload.landingUrl = merged.landingUrl;
+  if (merged.referrer) payload.referrer = merged.referrer;
+  if (hasUtm) payload.utm = merged.utm;
+  if (hasIds) payload.ids = merged.ids;
+
+  return payload;
+}
+
+function attributionSignature(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const utm = payload.utm && typeof payload.utm === "object" ? payload.utm : {};
+  const ids = payload.ids && typeof payload.ids === "object" ? payload.ids : {};
+  const parts = [];
+  for (const key of Object.keys(utm).sort()) {
+    parts.push(`u:${key}:${utm[key]}`);
+  }
+  for (const key of Object.keys(ids).sort()) {
+    parts.push(`i:${key}:${ids[key]}`);
+  }
+  if (payload.landingUrl) parts.push(`l:${payload.landingUrl}`);
+  if (payload.referrer) parts.push(`r:${payload.referrer}`);
+  return parts.join("|");
+}
+
+function lastAttributionSyncKey(uid) {
+  return `${ATTRIBUTION_SYNC_PREFIX}${uid}`;
+}
+
+async function syncAttributionForUser(uid) {
+  const payload = buildAttributionSyncPayload();
+  if (!payload) return;
+  const signature = attributionSignature(payload);
+  if (!signature) return;
+
+  const storageKey = lastAttributionSyncKey(uid);
+  try {
+    const existingSignature = localStorage.getItem(storageKey);
+    if (existingSignature === signature) return;
+  } catch {
+    // no-op
+  }
+
+  await callCreateJob(
+    {upsertAttribution: payload},
+    {retryable: false, maxAttempts: 1}
+  );
+
+  try {
+    localStorage.setItem(storageKey, signature);
+  } catch {
+    // no-op
+  }
+}
+
 function hasSeenHint(key) {
   try {
     return localStorage.getItem(key) === "1";
@@ -1228,6 +1447,9 @@ async function syncSupportProfile() {
     setAdminCardVisible(false);
   }
 }
+
+// Capture attribution from URL/cookies on every visit, even before auth.
+buildAttributionSyncPayload();
 
 const openExternalAuthBtn = $("btnOpenExternalAuth");
 if (openExternalAuthBtn) {
@@ -2363,6 +2585,10 @@ onAuthStateChanged(auth, async (user) => {
     email: user.email,
     updatedAt: serverTimestamp(),
   }, {merge: true});
+
+  void syncAttributionForUser(user.uid).catch((error) => {
+    console.warn("attribution sync failed", error);
+  });
 
   await syncSupportProfile();
 

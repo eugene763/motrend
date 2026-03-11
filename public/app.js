@@ -187,10 +187,30 @@ function markHintSeen(key) {
   }
 }
 
+function closeUploadHintIfOpen() {
+  const modal = $("uploadHintModal");
+  const okBtn = $("btnUploadHintOk");
+
+  if (okBtn && activeUploadHintOkHandler) {
+    okBtn.removeEventListener("click", activeUploadHintOkHandler);
+  }
+  activeUploadHintOkHandler = null;
+
+  if (modal) {
+    modal.style.display = "none";
+  }
+
+  if (activeUploadHintResolver) {
+    const resolve = activeUploadHintResolver;
+    activeUploadHintResolver = null;
+    resolve(false);
+  }
+}
+
 function showUploadHint(message) {
   return new Promise((resolve) => {
     if (onboardingIsOpen) {
-      resolve();
+      resolve(false);
       return;
     }
     const modal = $("uploadHintModal");
@@ -198,16 +218,26 @@ function showUploadHint(message) {
     const okBtn = $("btnUploadHintOk");
 
     if (!modal || !text || !okBtn) {
-      resolve();
+      resolve(false);
       return;
     }
 
+    if (activeUploadHintResolver) {
+      closeUploadHintIfOpen();
+    }
+
     const onOk = () => {
-      okBtn.removeEventListener("click", onOk);
       modal.style.display = "none";
-      resolve();
+      activeUploadHintOkHandler = null;
+      const done = activeUploadHintResolver;
+      activeUploadHintResolver = null;
+      if (done) {
+        done(true);
+      }
     };
 
+    activeUploadHintResolver = resolve;
+    activeUploadHintOkHandler = onOk;
     text.textContent = message;
     modal.style.display = "flex";
     okBtn.addEventListener("click", onOk, {once: true});
@@ -218,8 +248,10 @@ async function maybeShowUploadHint(key, message) {
   if (onboardingIsOpen) return;
   if (shouldUseRedirectLogin()) return;
   if (hasSeenHint(key)) return;
-  await showUploadHint(message);
-  markHintSeen(key);
+  const confirmed = await showUploadHint(message);
+  if (confirmed) {
+    markHintSeen(key);
+  }
 }
 
 function onboardingSeenKey(uid) {
@@ -300,8 +332,7 @@ function refreshOnboardingHighlight() {
     return;
   }
   const highlight = $("onboardingHighlight");
-  const overlay = $("onboardingOverlay");
-  if (!highlight || !overlay) return;
+  if (!highlight) return;
 
   const rect = onboardingTargetEl.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) {
@@ -371,13 +402,13 @@ function renderOnboardingStep() {
   clearOnboardingHighlight();
   const target = step.getTarget();
   if (!(target instanceof HTMLElement)) return;
-  target.scrollIntoView({behavior: "smooth", block: "center"});
+  target.scrollIntoView({behavior: "auto", block: "center"});
   onboardingTargetEl = target;
   scheduleOnboardingHighlightRefresh();
-  setTimeout(() => {
+  requestAnimationFrame(() => {
     if (!onboardingIsOpen || onboardingTargetEl !== target) return;
     refreshOnboardingHighlight();
-  }, 220);
+  });
 }
 
 function closeOnboarding(markSeen = true) {
@@ -401,6 +432,7 @@ function openOnboarding(uid) {
   const overlay = $("onboardingOverlay");
   if (!overlay) return;
 
+  closeUploadHintIfOpen();
   overlay.dataset.uid = uid;
   overlay.classList.add("isOpen");
   overlay.setAttribute("aria-hidden", "false");
@@ -636,6 +668,8 @@ let currentSupportCode = "";
 let isAdminUser = false;
 let adminSelectedUid = "";
 let adminSelectedSupportCode = "";
+let activeUploadHintResolver = null;
+let activeUploadHintOkHandler = null;
 let onboardingIsOpen = false;
 let onboardingStepIndex = 0;
 let onboardingTargetEl = null;
@@ -664,16 +698,20 @@ const MAX_WATCH_JOBS = 20;
 const ONBOARDING_STEPS = [
   {
     title: "1. Choose trend",
-    text: "Tap any trend card to select your reference.",
+    text: "Tap Use or Upload to select your reference.",
     getTarget: () =>
-      document.querySelector("#templates .tplCard.isSelected") ||
-      document.querySelector("#templates .tplCard") ||
+      document.querySelector("#templates .tplCard.isSelected .tplUse") ||
+      document.querySelector("#templates .tplCard .tplUse") ||
       $("templates"),
   },
   {
     title: "2. Choose your photo",
     text: "Upload your photo from the device gallery.",
-    getTarget: () => $("filePhoto"),
+    getTarget: () => {
+      const fileInput = $("filePhoto");
+      if (!fileInput) return null;
+      return fileInput.closest("div") || fileInput;
+    },
   },
   {
     title: "3. Generate your trend",
@@ -1140,6 +1178,10 @@ window.addEventListener("resize", () => {
   if (!onboardingIsOpen) return;
   scheduleOnboardingHighlightRefresh();
 });
+window.addEventListener("scroll", () => {
+  if (!onboardingIsOpen) return;
+  scheduleOnboardingHighlightRefresh();
+}, true);
 
 $("btnEmailSignIn").onclick = async () => {
   clearAuthError();
@@ -1270,7 +1312,8 @@ $("btnSaveProfile").onclick = async () => {
 };
 
 $("btnWallet").onclick = () => {
-  alert("Wallet: позже подключим оплату/кредиты.");
+  setStatus("Wallet is coming soon.");
+  setStatusHintVisible(false);
 };
 
 const btnFindSupportUser = $("btnFindSupportUser");
@@ -1402,14 +1445,16 @@ function renderReferenceVideoCard() {
   actionBtn.textContent = "Upload";
 
   const picker = $("fileReferenceVideo");
+  let scrollAfterPickerSelection = false;
 
   const updateReferenceMetaUi = () => {
     meta.textContent = selectedReferenceVideoName || "No video selected";
   };
 
-  const openPicker = async () => {
+  const openPicker = async ({enableScrollAfterPick = false} = {}) => {
     if (!picker) return;
     clearFormError();
+    scrollAfterPickerSelection = enableScrollAfterPick;
     await maybeShowUploadHint(VIDEO_HINT_KEY, VIDEO_HINT_MESSAGE);
     picker.click();
   };
@@ -1425,13 +1470,13 @@ function renderReferenceVideoCard() {
 
   card.onclick = () => {
     activateReferenceSelection();
-    openPicker();
+    openPicker({enableScrollAfterPick: false});
   };
   actionBtn.onclick = (event) => {
     event.preventDefault();
     event.stopPropagation();
     activateReferenceSelection();
-    openPicker();
+    openPicker({enableScrollAfterPick: true});
   };
 
   if (picker) {
@@ -1451,9 +1496,10 @@ function renderReferenceVideoCard() {
 
       updateReferenceMetaUi();
       syncTrendSelectionUi();
-      if (file) {
+      if (file && scrollAfterPickerSelection) {
         scrollToGenerateOnMobile();
       }
+      scrollAfterPickerSelection = false;
     };
   }
 
@@ -1526,7 +1572,10 @@ function renderTemplateCard(template) {
     }, 50);
   }
 
-  const selectTemplate = async ({toggleAudioOnSameSelection = false} = {}) => {
+  const selectTemplate = async ({
+    toggleAudioOnSameSelection = false,
+    scrollOnSelect = false,
+  } = {}) => {
     const isSameSelection = selectedTemplate?.id === template.id;
 
     selectedTemplate = template;
@@ -1553,7 +1602,7 @@ function renderTemplateCard(template) {
       templateId: template.id,
       title: template.title || "",
     });
-    const didScrollToGenerate = scrollToGenerateOnMobile();
+    const didScrollToGenerate = scrollOnSelect ? scrollToGenerateOnMobile() : false;
     if (didScrollToGenerate && videoEl) {
       try {
         videoEl.muted = true;
@@ -1564,13 +1613,16 @@ function renderTemplateCard(template) {
   };
 
   card.onclick = () => {
-    selectTemplate({toggleAudioOnSameSelection: true});
+    selectTemplate({
+      toggleAudioOnSameSelection: true,
+      scrollOnSelect: false,
+    });
   };
 
   useBtn.onclick = (event) => {
     event.preventDefault();
     event.stopPropagation();
-    selectTemplate();
+    selectTemplate({scrollOnSelect: true});
   };
 
   return card;

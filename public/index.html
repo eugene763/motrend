@@ -166,6 +166,12 @@ a{color:#fff}
   color:var(--muted);
   border:1px dashed #3a3a3a;
 }
+.refMetaName{
+  width:100%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
 .uploadHintModal{
   position:fixed;
   inset:0;
@@ -460,7 +466,7 @@ body.onboardingActive{overflow:hidden;}
           <button id="btnGenerate" class="btn">Generate</button>
           <div id="status" class="muted"></div>
         </div>
-        <div id="statusHint" class="muted" style="display:none;margin-top:6px">Usually takes 4–8 minutes</div>
+        <div id="statusHint" class="muted" style="display:none;margin-top:6px">Usually takes 5–15 minutes</div>
         <div id="formError" class="formError muted" style="display:none" role="alert"></div>
       </div>
 

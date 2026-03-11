@@ -365,6 +365,27 @@ function scheduleOnboardingHighlightRefresh() {
   });
 }
 
+function scrollOnboardingTargetIntoView(target, behavior = "smooth") {
+  if (!(target instanceof HTMLElement)) return;
+  const rect = target.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+
+  const overlayCard = document.querySelector("#onboardingOverlay .onboardingCard");
+  const bottomReserved = (overlayCard?.offsetHeight || 0) + 24;
+  const topSafe = 20;
+  const viewportHeight = Math.max(window.innerHeight || 0, 1);
+  const visibleTop = topSafe;
+  const visibleBottom = Math.max(topSafe + 60, viewportHeight - bottomReserved);
+  const isVisible = rect.top >= visibleTop && rect.bottom <= visibleBottom;
+  if (isVisible) return;
+
+  const scrollY = window.scrollY || window.pageYOffset || 0;
+  const targetCenterY = scrollY + rect.top + rect.height / 2;
+  const visibleCenterY = (visibleTop + visibleBottom) / 2;
+  const desiredTop = Math.max(0, targetCenterY - visibleCenterY);
+  window.scrollTo({top: desiredTop, behavior});
+}
+
 function buildOnboardingDots(activeIndex) {
   const dotsEl = $("onboardingDots");
   if (!dotsEl) return;
@@ -402,9 +423,14 @@ function renderOnboardingStep() {
   clearOnboardingHighlight();
   const target = step.getTarget();
   if (!(target instanceof HTMLElement)) return;
-  target.scrollIntoView({behavior: "auto", block: "center"});
+  scrollOnboardingTargetIntoView(target, "smooth");
   onboardingTargetEl = target;
   scheduleOnboardingHighlightRefresh();
+  setTimeout(() => {
+    if (!onboardingIsOpen || onboardingTargetEl !== target) return;
+    scrollOnboardingTargetIntoView(target, "auto");
+    refreshOnboardingHighlight();
+  }, 260);
   requestAnimationFrame(() => {
     if (!onboardingIsOpen || onboardingTargetEl !== target) return;
     refreshOnboardingHighlight();
@@ -423,6 +449,9 @@ function closeOnboarding(markSeen = true) {
   const uid = overlay.dataset.uid || "";
   if (markSeen && uid) {
     markOnboardingSeen(uid);
+  }
+  if (markSeen) {
+    window.scrollTo({top: 0, behavior: "smooth"});
   }
   overlay.dataset.uid = "";
 }
@@ -447,6 +476,11 @@ function maybeStartOnboarding(user) {
   const pendingFromRegistration = consumePendingOnboarding(user.uid);
   if (!pendingFromRegistration && !isLikelyNewUser(user)) return;
   openOnboarding(user.uid);
+}
+
+function refreshOnboardingStepTarget() {
+  if (!onboardingIsOpen) return;
+  renderOnboardingStep();
 }
 
 function setSupportButtonMessage(supportCode = "") {
@@ -497,6 +531,14 @@ function safeUrl(value) {
   } catch {
     return "";
   }
+}
+
+function buildSaveVideoPageUrl(videoUrl) {
+  const safeVideoUrl = safeUrl(videoUrl);
+  if (!safeVideoUrl) return "";
+  const url = new URL("/save-video.html", window.location.origin);
+  url.searchParams.set("videoUrl", safeVideoUrl);
+  return url.toString();
 }
 
 function callableErrorMessage(error) {
@@ -663,6 +705,7 @@ let estimatedProgressActive = false;
 let estimatedProgressPercent = 0;
 let estimatedProgressTimer = null;
 let estimatedProgressJobId = "";
+let estimatedProgressStartedAtMs = 0;
 let estimatedProgressLabel = "Generating your trend…";
 let currentSupportCode = "";
 let isAdminUser = false;
@@ -694,6 +737,11 @@ const VIDEO_HINT_MESSAGE =
   "Supported formats: .mp4 / .mov, file size: ≤100MB, dimensions: 340px ~ 3850px.";
 const DEFAULT_VISIBLE_JOBS = 5;
 const MAX_WATCH_JOBS = 20;
+const PROGRESS_HINT_TEXT = "Usually takes 5–15 minutes";
+const PROGRESS_STAGE_A_MS = 32000; // 0-50 quickly
+const PROGRESS_STAGE_B_MS = 40000; // 50-70 medium
+const PROGRESS_STAGE_C_MS = 160000; // 70-90 slowly
+const PROGRESS_STAGE_D_MS = 21000; // 90-97 faster
 
 const ONBOARDING_STEPS = [
   {
@@ -720,10 +768,6 @@ const ONBOARDING_STEPS = [
   },
 ];
 
-function randomInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
 function createClientRequestId(prefix = "req") {
   if (
     typeof crypto !== "undefined" &&
@@ -734,8 +778,53 @@ function createClientRequestId(prefix = "req") {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function timestampToMillis(value) {
+  if (!value) return NaN;
+  if (typeof value?.toMillis === "function") return value.toMillis();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number") return value;
+  if (typeof value === "string") return Date.parse(value);
+  if (typeof value?.seconds === "number") {
+    const nanos = typeof value?.nanoseconds === "number" ? value.nanoseconds : 0;
+    return value.seconds * 1000 + Math.floor(nanos / 1e6);
+  }
+  return NaN;
+}
+
+function computeEstimatedProgressPercent(nowMs, startedAtMs) {
+  if (!Number.isFinite(startedAtMs) || startedAtMs <= 0) return 0;
+  const elapsed = Math.max(0, nowMs - startedAtMs);
+
+  if (elapsed <= PROGRESS_STAGE_A_MS) {
+    return (elapsed / PROGRESS_STAGE_A_MS) * 50;
+  }
+
+  const afterA = elapsed - PROGRESS_STAGE_A_MS;
+  if (afterA <= PROGRESS_STAGE_B_MS) {
+    return 50 + (afterA / PROGRESS_STAGE_B_MS) * 20;
+  }
+
+  const afterB = afterA - PROGRESS_STAGE_B_MS;
+  if (afterB <= PROGRESS_STAGE_C_MS) {
+    return 70 + (afterB / PROGRESS_STAGE_C_MS) * 20;
+  }
+
+  const afterC = afterB - PROGRESS_STAGE_C_MS;
+  if (afterC <= PROGRESS_STAGE_D_MS) {
+    return 90 + (afterC / PROGRESS_STAGE_D_MS) * 7;
+  }
+
+  return 97;
+}
+
 function renderEstimatedProgressStatus() {
   if (!estimatedProgressActive) return;
+  if (estimatedProgressStartedAtMs > 0) {
+    estimatedProgressPercent = computeEstimatedProgressPercent(
+      Date.now(),
+      estimatedProgressStartedAtMs
+    );
+  }
   setStatus(`${estimatedProgressLabel} ${Math.floor(estimatedProgressPercent)}%`);
   setStatusHintVisible(true);
 }
@@ -747,34 +836,15 @@ function clearEstimatedProgressTimer() {
   }
 }
 
-function nextEstimatedProgressDelayMs() {
-  if (estimatedProgressPercent < 50) {
-    // 0 -> 50 quickly in ~25-40 sec.
-    return randomInt(500, 800);
-  }
-  if (estimatedProgressPercent < 70) {
-    // 50 -> 70 at a medium pace.
-    return randomInt(1500, 2500);
-  }
-  if (estimatedProgressPercent < 90) {
-    // 70 -> 90 slowly: 1% every 8-12 sec.
-    return randomInt(8000, 12000);
-  }
-  // Hold at 90 until a real done status arrives.
-  return null;
-}
-
 function scheduleEstimatedProgressTick() {
   if (!estimatedProgressActive) return;
-  const delay = nextEstimatedProgressDelayMs();
-  if (delay === null) return;
 
   estimatedProgressTimer = setTimeout(() => {
     if (!estimatedProgressActive) return;
-    estimatedProgressPercent = Math.min(90, estimatedProgressPercent + 1);
     renderEstimatedProgressStatus();
+    if (estimatedProgressPercent >= 97) return;
     scheduleEstimatedProgressTick();
-  }, delay);
+  }, 1000);
 }
 
 function startEstimatedProgress(label = "Generating your trend…") {
@@ -782,13 +852,32 @@ function startEstimatedProgress(label = "Generating your trend…") {
   estimatedProgressActive = true;
   estimatedProgressPercent = 0;
   estimatedProgressJobId = "";
+  estimatedProgressStartedAtMs = Date.now();
   estimatedProgressLabel = label;
+  const hint = $("statusHint");
+  if (hint) hint.textContent = PROGRESS_HINT_TEXT;
   renderEstimatedProgressStatus();
   scheduleEstimatedProgressTick();
 }
 
 function attachEstimatedProgressJob(jobId) {
   estimatedProgressJobId = jobId || "";
+}
+
+function resumeEstimatedProgress(jobId, startedAtMs, label = "Generating your trend…") {
+  clearEstimatedProgressTimer();
+  estimatedProgressActive = true;
+  estimatedProgressJobId = jobId || "";
+  estimatedProgressStartedAtMs = Number.isFinite(startedAtMs) && startedAtMs > 0 ?
+    startedAtMs :
+    Date.now();
+  estimatedProgressLabel = label;
+  const hint = $("statusHint");
+  if (hint) hint.textContent = PROGRESS_HINT_TEXT;
+  renderEstimatedProgressStatus();
+  if (estimatedProgressPercent < 97) {
+    scheduleEstimatedProgressTick();
+  }
 }
 
 function setEstimatedProgressLabel(label) {
@@ -801,7 +890,10 @@ function stopEstimatedProgress() {
   estimatedProgressActive = false;
   estimatedProgressPercent = 0;
   estimatedProgressJobId = "";
+  estimatedProgressStartedAtMs = 0;
   estimatedProgressLabel = "Generating your trend…";
+  const hint = $("statusHint");
+  if (hint) hint.textContent = PROGRESS_HINT_TEXT;
   setStatusHintVisible(false);
 }
 
@@ -809,7 +901,10 @@ function completeEstimatedProgress() {
   clearEstimatedProgressTimer();
   estimatedProgressActive = false;
   estimatedProgressPercent = 100;
+  estimatedProgressStartedAtMs = 0;
   estimatedProgressLabel = "Generating your trend…";
+  const hint = $("statusHint");
+  if (hint) hint.textContent = PROGRESS_HINT_TEXT;
   setStatus("Done. Download is ready. 100%");
   setStatusHintVisible(false);
 }
@@ -1176,6 +1271,9 @@ if (onboardingCloseBtn) {
 
 window.addEventListener("resize", () => {
   if (!onboardingIsOpen) return;
+  if (onboardingTargetEl instanceof HTMLElement) {
+    scrollOnboardingTargetIntoView(onboardingTargetEl, "auto");
+  }
   scheduleOnboardingHighlightRefresh();
 });
 window.addEventListener("scroll", () => {
@@ -1435,7 +1533,7 @@ function renderReferenceVideoCard() {
   title.textContent = "mp4 / mov,  ≤100MB";
 
   const meta = document.createElement("div");
-  meta.className = "muted";
+  meta.className = "muted refMetaName";
   meta.textContent = selectedReferenceVideoName || "No video selected";
 
   const actionBtn = document.createElement("button");
@@ -1449,6 +1547,7 @@ function renderReferenceVideoCard() {
 
   const updateReferenceMetaUi = () => {
     meta.textContent = selectedReferenceVideoName || "No video selected";
+    meta.title = selectedReferenceVideoName || "";
   };
 
   const openPicker = async ({enableScrollAfterPick = false} = {}) => {
@@ -1466,6 +1565,9 @@ function renderReferenceVideoCard() {
       selectedTemplate = availableTemplates[0];
     }
     syncTrendSelectionUi();
+    if (onboardingStepIndex === 0) {
+      refreshOnboardingStepTarget();
+    }
   };
 
   card.onclick = () => {
@@ -1496,6 +1598,9 @@ function renderReferenceVideoCard() {
 
       updateReferenceMetaUi();
       syncTrendSelectionUi();
+      if (onboardingStepIndex === 0) {
+        refreshOnboardingStepTarget();
+      }
       if (file && scrollAfterPickerSelection) {
         scrollToGenerateOnMobile();
       }
@@ -1610,6 +1715,9 @@ function renderTemplateCard(template) {
         // no-op
       }
     }
+    if (onboardingStepIndex === 0) {
+      refreshOnboardingStepTarget();
+    }
   };
 
   card.onclick = () => {
@@ -1713,6 +1821,20 @@ function statusLabel(status) {
   return "pending";
 }
 
+function getJobStartedAtMs(job) {
+  const createdAtMs = timestampToMillis(job?.createdAt);
+  if (Number.isFinite(createdAtMs) && createdAtMs > 0) return createdAtMs;
+  const updatedAtMs = timestampToMillis(job?.updatedAt);
+  if (Number.isFinite(updatedAtMs) && updatedAtMs > 0) return updatedAtMs;
+  return Date.now();
+}
+
+function resumeEstimatedProgressFromJob(jobId, job) {
+  if (!jobId) return;
+  const startedAtMs = getJobStartedAtMs(job);
+  resumeEstimatedProgress(jobId, startedAtMs, "Generating your trend…");
+}
+
 function updateLatestJobUI(jobId, job) {
   const status = job?.status || "";
   const outputUrl = safeUrl(job?.kling?.outputUrl || "");
@@ -1737,15 +1859,15 @@ function updateLatestJobUI(jobId, job) {
     if (trackedCurrentJob) {
       setEstimatedProgressLabel("Generating your trend…");
     } else {
-      setStatus("Queued. Waiting for processing…");
-      setStatusHintVisible(false);
+      resumeEstimatedProgressFromJob(jobId, job);
+      setEstimatedProgressLabel("Generating your trend…");
     }
   } else if (status === "processing") {
     if (trackedCurrentJob) {
       setEstimatedProgressLabel("Generating your trend…");
     } else {
-      setStatus("Processing…");
-      setStatusHintVisible(false);
+      resumeEstimatedProgressFromJob(jobId, job);
+      setEstimatedProgressLabel("Generating your trend…");
     }
   } else if (status === "failed") {
     if (trackedCurrentJob) {
@@ -1817,6 +1939,7 @@ function renderDoneJobActions(jobId) {
 
   const isPreparing = preparingDownloadJobIds.has(jobId);
   const preparedUrl = safeUrl(preparedDownloadByJobId.get(jobId) || "");
+  const saveVideoPageUrl = buildSaveVideoPageUrl(preparedUrl);
 
   if (!preparedUrl) {
     const prepareBtn = document.createElement("button");
@@ -1853,18 +1976,24 @@ function renderDoneJobActions(jobId) {
   const openExternalBtn = document.createElement("a");
   openExternalBtn.className = "btn";
   openExternalBtn.textContent = "Open in browser";
-  openExternalBtn.href = preparedUrl;
+  openExternalBtn.href = saveVideoPageUrl || preparedUrl;
   openExternalBtn.target = "_blank";
   openExternalBtn.rel = "noopener noreferrer";
   actions.appendChild(openExternalBtn);
 
   const copyBtn = document.createElement("button");
   copyBtn.className = "btn2";
-  copyBtn.textContent = "Copy link";
+  copyBtn.textContent = "Copy URL";
   copyBtn.onclick = async () => {
     try {
       await navigator.clipboard.writeText(preparedUrl);
-      setStatus("Download link copied.");
+      const originalText = "Copy URL";
+      copyBtn.textContent = "URL copied";
+      copyBtn.disabled = true;
+      setTimeout(() => {
+        copyBtn.textContent = originalText;
+        copyBtn.disabled = false;
+      }, 500);
     } catch {
       showFormError("Unable to copy link. Please copy it manually.");
     }

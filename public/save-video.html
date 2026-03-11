@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>MoTrend© Video</title>
+  <link rel="icon" href="/favicon.ico" sizes="any"/>
+  <style>
+    @font-face{font-family:"Coolvetica";src:url("/fonts/CoolveticaRg-Regular.woff") format("woff");font-weight:400;font-style:normal;font-display:swap;}
+    @font-face{font-family:"Coolvetica";src:url("/fonts/CoolveticaRg-Bold.woff") format("woff");font-weight:700;font-style:normal;font-display:swap;}
+    :root{
+      --bg:#0b0b0b;
+      --card:#151515;
+      --border:#2a2a2a;
+      --text:#fff;
+      --muted:rgba(255,255,255,.7);
+      --accent:#8BFFB0;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:"Coolvetica",Arial,sans-serif;font-size:20px}
+    .wrap{max-width:780px;margin:0 auto;padding:16px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px}
+    h1{margin:0 0 10px;font-size:42px}
+    .muted{opacity:.78;font-size:18px}
+    .videoWrap{margin-top:14px;border-radius:14px;overflow:hidden;background:#000;border:1px solid #202020}
+    video{display:block;width:100%;max-height:70vh;background:#000}
+    .actions{display:flex;flex-direction:column;gap:10px;margin-top:14px}
+    .btn,.btnGhost{width:100%;min-height:54px;border-radius:12px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:32px;line-height:1;font-weight:700;padding:0 12px;border:0;cursor:pointer}
+    .btn{background:var(--accent);color:#000;border:1px solid #6edc97}
+    .btnGhost{background:#2a2a2a;color:#fff}
+    .note{margin-top:10px;font-size:18px;opacity:.78}
+    .error{color:#f87171;font-size:18px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>MoTrend©</h1>
+      <div class="muted">Open your video and save it to device.</div>
+      <div id="error" class="error" style="display:none;margin-top:12px"></div>
+      <div class="videoWrap" id="videoWrap" style="display:none">
+        <video id="video" controls playsinline></video>
+      </div>
+      <div class="actions" id="actions" style="display:none">
+        <a id="btnDownload" class="btn" href="#" download target="_blank" rel="noopener noreferrer">Download</a>
+        <a id="btnOpen" class="btnGhost" href="#" target="_blank" rel="noopener noreferrer">Open direct video</a>
+        <button id="btnCopy" class="btnGhost" type="button">Copy URL</button>
+      </div>
+      <div class="note">If download does not start, tap <b>Open direct video</b>, then use browser save/share actions.</div>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      function safeUrl(value) {
+        if (typeof value !== 'string') return '';
+        var trimmed = value.trim();
+        if (!trimmed) return '';
+        try {
+          var url = new URL(trimmed, window.location.origin);
+          if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+          return url.toString();
+        } catch {
+          return '';
+        }
+      }
+
+      var params = new URLSearchParams(window.location.search);
+      var videoUrl = safeUrl(params.get('videoUrl') || '');
+      var errorEl = document.getElementById('error');
+      var videoWrap = document.getElementById('videoWrap');
+      var videoEl = document.getElementById('video');
+      var actions = document.getElementById('actions');
+      var btnDownload = document.getElementById('btnDownload');
+      var btnOpen = document.getElementById('btnOpen');
+      var btnCopy = document.getElementById('btnCopy');
+
+      if (!videoUrl) {
+        errorEl.textContent = 'Video URL is missing or invalid.';
+        errorEl.style.display = 'block';
+        return;
+      }
+
+      videoEl.src = videoUrl;
+      btnDownload.href = videoUrl;
+      btnOpen.href = videoUrl;
+
+      videoWrap.style.display = 'block';
+      actions.style.display = 'flex';
+
+      btnCopy.addEventListener('click', async function() {
+        try {
+          await navigator.clipboard.writeText(videoUrl);
+          btnCopy.textContent = 'URL copied';
+          btnCopy.disabled = true;
+          setTimeout(function() {
+            btnCopy.textContent = 'Copy URL';
+            btnCopy.disabled = false;
+          }, 500);
+        } catch {
+          btnCopy.textContent = 'Copy failed';
+          setTimeout(function() {
+            btnCopy.textContent = 'Copy URL';
+          }, 800);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

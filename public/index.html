@@ -169,7 +169,7 @@ a{color:#fff}
 .uploadHintModal{
   position:fixed;
   inset:0;
-  z-index:50;
+  z-index:2050;
   display:none;
   align-items:center;
   justify-content:center;
@@ -194,7 +194,7 @@ a{color:#fff}
 .onboardingOverlay{
   position:fixed;
   inset:0;
-  z-index:80;
+  z-index:2100;
   display:none;
   align-items:flex-end;
   justify-content:center;
@@ -202,6 +202,15 @@ a{color:#fff}
   background:rgba(0,0,0,.72);
 }
 .onboardingOverlay.isOpen{display:flex;}
+.onboardingHighlight{
+  position:fixed;
+  border-radius:12px;
+  border:3px solid rgba(139,255,176,.85);
+  box-shadow:0 0 0 1px rgba(139,255,176,.25);
+  pointer-events:none;
+  z-index:2110;
+  display:none;
+}
 .onboardingCard{
   width:100%;
   max-width:540px;
@@ -210,7 +219,7 @@ a{color:#fff}
   border-radius:16px;
   padding:14px;
   position:relative;
-  z-index:82;
+  z-index:2120;
 }
 .onboardingStepTitle{
   font-size:30px;
@@ -273,13 +282,18 @@ a{color:#fff}
   display:flex;
   align-items:center;
   justify-content:center;
-  z-index:82;
+  z-index:2130;
 }
-.onboardingFocus{
-  position:relative;
-  z-index:81 !important;
-  box-shadow:0 0 0 3px rgba(139,255,176,.6);
+.onboardingStepClose{
+  min-width:110px;
+  height:48px;
   border-radius:12px;
+  background:#fff;
+  color:#000;
+  border:0;
+  font-size:20px;
+  font-weight:700;
+  display:none;
 }
 body.onboardingActive{overflow:hidden;}
 
@@ -422,7 +436,7 @@ body.onboardingActive{overflow:hidden;}
       </div>
 
       <div class="card">
-        <div style="font-weight:700;margin-bottom:8px">Choose trend</div>
+        <div style="font-weight:700;margin-bottom:8px">Choose trend or upload yours</div>
         <div id="templates" class="grid templatesGrid"></div>
         <input id="fileReferenceVideo" type="file" accept="video/*" style="display:none"/>
       </div>
@@ -469,6 +483,7 @@ body.onboardingActive{overflow:hidden;}
   </div>
 
   <div id="onboardingOverlay" class="onboardingOverlay" aria-hidden="true">
+    <div id="onboardingHighlight" class="onboardingHighlight" aria-hidden="true"></div>
     <button id="onboardingCloseBtn" class="onboardingClose" aria-label="Close onboarding">×</button>
     <div class="onboardingCard" role="dialog" aria-modal="true" aria-labelledby="onboardingStepTitle">
       <div id="onboardingStepTitle" class="onboardingStepTitle"></div>
@@ -477,6 +492,7 @@ body.onboardingActive{overflow:hidden;}
         <button id="onboardingPrevBtn" class="onboardingArrow" aria-label="Previous step">←</button>
         <div id="onboardingDots" class="onboardingDots"></div>
         <button id="onboardingNextBtn" class="onboardingArrow" aria-label="Next step">→</button>
+        <button id="onboardingStepCloseBtn" class="onboardingStepClose" aria-label="Close onboarding">Close</button>
       </div>
     </div>
   </div>

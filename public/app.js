@@ -189,6 +189,10 @@ function markHintSeen(key) {
 
 function showUploadHint(message) {
   return new Promise((resolve) => {
+    if (onboardingIsOpen) {
+      resolve();
+      return;
+    }
     const modal = $("uploadHintModal");
     const text = $("uploadHintText");
     const okBtn = $("btnUploadHintOk");
@@ -211,6 +215,7 @@ function showUploadHint(message) {
 }
 
 async function maybeShowUploadHint(key, message) {
+  if (onboardingIsOpen) return;
   if (shouldUseRedirectLogin()) return;
   if (hasSeenHint(key)) return;
   await showUploadHint(message);
@@ -277,10 +282,56 @@ function isLikelyNewUser(user) {
   return Math.abs(lastSignInAt - createdAt) <= 2 * 60 * 1000;
 }
 
-function clearOnboardingFocus() {
-  if (!onboardingFocusEl) return;
-  onboardingFocusEl.classList.remove("onboardingFocus");
-  onboardingFocusEl = null;
+function clearOnboardingHighlight() {
+  if (onboardingHighlightRafId) {
+    cancelAnimationFrame(onboardingHighlightRafId);
+    onboardingHighlightRafId = 0;
+  }
+  const highlight = $("onboardingHighlight");
+  if (highlight) {
+    highlight.style.display = "none";
+  }
+  onboardingTargetEl = null;
+}
+
+function refreshOnboardingHighlight() {
+  if (!onboardingIsOpen || !(onboardingTargetEl instanceof HTMLElement)) {
+    clearOnboardingHighlight();
+    return;
+  }
+  const highlight = $("onboardingHighlight");
+  const overlay = $("onboardingOverlay");
+  if (!highlight || !overlay) return;
+
+  const rect = onboardingTargetEl.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    highlight.style.display = "none";
+    return;
+  }
+
+  const pad = 6;
+  const left = Math.max(8, rect.left - pad);
+  const top = Math.max(8, rect.top - pad);
+  const maxWidth = window.innerWidth - left - 8;
+  const maxHeight = window.innerHeight - top - 8;
+  const width = Math.max(24, Math.min(rect.width + pad * 2, maxWidth));
+  const height = Math.max(24, Math.min(rect.height + pad * 2, maxHeight));
+
+  highlight.style.left = `${left}px`;
+  highlight.style.top = `${top}px`;
+  highlight.style.width = `${width}px`;
+  highlight.style.height = `${height}px`;
+  highlight.style.display = "block";
+}
+
+function scheduleOnboardingHighlightRefresh() {
+  if (onboardingHighlightRafId) {
+    cancelAnimationFrame(onboardingHighlightRafId);
+  }
+  onboardingHighlightRafId = requestAnimationFrame(() => {
+    onboardingHighlightRafId = 0;
+    refreshOnboardingHighlight();
+  });
 }
 
 function buildOnboardingDots(activeIndex) {
@@ -299,7 +350,8 @@ function renderOnboardingStep() {
   const textEl = $("onboardingStepText");
   const prevBtn = $("onboardingPrevBtn");
   const nextBtn = $("onboardingNextBtn");
-  if (!titleEl || !textEl || !prevBtn || !nextBtn) return;
+  const closeStepBtn = $("onboardingStepCloseBtn");
+  if (!titleEl || !textEl || !prevBtn || !nextBtn || !closeStepBtn) return;
 
   const step = ONBOARDING_STEPS[onboardingStepIndex];
   if (!step) return;
@@ -312,15 +364,20 @@ function renderOnboardingStep() {
   const isLast = onboardingStepIndex === ONBOARDING_STEPS.length - 1;
   prevBtn.style.visibility = isFirst ? "hidden" : "visible";
   prevBtn.disabled = isFirst;
-  nextBtn.style.visibility = isLast ? "hidden" : "visible";
+  nextBtn.style.display = isLast ? "none" : "inline-flex";
   nextBtn.disabled = isLast;
+  closeStepBtn.style.display = isLast ? "inline-flex" : "none";
 
-  clearOnboardingFocus();
+  clearOnboardingHighlight();
   const target = step.getTarget();
   if (!(target instanceof HTMLElement)) return;
   target.scrollIntoView({behavior: "smooth", block: "center"});
-  target.classList.add("onboardingFocus");
-  onboardingFocusEl = target;
+  onboardingTargetEl = target;
+  scheduleOnboardingHighlightRefresh();
+  setTimeout(() => {
+    if (!onboardingIsOpen || onboardingTargetEl !== target) return;
+    refreshOnboardingHighlight();
+  }, 220);
 }
 
 function closeOnboarding(markSeen = true) {
@@ -329,7 +386,7 @@ function closeOnboarding(markSeen = true) {
   overlay.classList.remove("isOpen");
   overlay.setAttribute("aria-hidden", "true");
   document.body.classList.remove("onboardingActive");
-  clearOnboardingFocus();
+  clearOnboardingHighlight();
   onboardingIsOpen = false;
   onboardingStepIndex = 0;
   const uid = overlay.dataset.uid || "";
@@ -581,7 +638,8 @@ let adminSelectedUid = "";
 let adminSelectedSupportCode = "";
 let onboardingIsOpen = false;
 let onboardingStepIndex = 0;
-let onboardingFocusEl = null;
+let onboardingTargetEl = null;
+let onboardingHighlightRafId = 0;
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
 const MAX_UPLOAD_IMAGE_BYTES = 40 * 1024 * 1024;
 const TARGET_UPLOAD_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -1064,12 +1122,24 @@ if (onboardingNextBtn) {
   };
 }
 
+const onboardingStepCloseBtn = $("onboardingStepCloseBtn");
+if (onboardingStepCloseBtn) {
+  onboardingStepCloseBtn.onclick = () => {
+    closeOnboarding(true);
+  };
+}
+
 const onboardingCloseBtn = $("onboardingCloseBtn");
 if (onboardingCloseBtn) {
   onboardingCloseBtn.onclick = () => {
     closeOnboarding(true);
   };
 }
+
+window.addEventListener("resize", () => {
+  if (!onboardingIsOpen) return;
+  scheduleOnboardingHighlightRefresh();
+});
 
 $("btnEmailSignIn").onclick = async () => {
   clearAuthError();

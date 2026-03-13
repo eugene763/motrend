@@ -867,6 +867,71 @@ function setSupportCodeUi(supportCode = "") {
   setSupportButtonMessage(normalized);
 }
 
+function createAdminCardElement() {
+  const card = document.createElement("div");
+  card.className = "card";
+  card.id = "adminCard";
+  card.style.display = "none";
+  card.innerHTML = `
+    <div style="font-weight:700;margin-bottom:8px">Admin support</div>
+    <div class="grid">
+      <div>
+        <div class="muted">Support ID</div>
+        <input id="adminSupportCode" placeholder="U-XXXXXXXXXX" />
+      </div>
+      <div style="display:flex;align-items:flex-end">
+        <button id="btnFindSupportUser" class="btn">Find user</button>
+      </div>
+    </div>
+    <div id="adminLookupError" class="formError muted" style="display:none" role="alert"></div>
+    <div id="adminLookupResult" class="muted adminResult" style="display:none"></div>
+
+    <div id="adminGrantWrap" class="adminGrantWrap" style="display:none">
+      <div class="grid">
+        <div>
+          <div class="muted">Grant credits</div>
+          <input id="adminGrantAmount" type="number" min="1" max="500" step="1" value="10" />
+        </div>
+        <div>
+          <div class="muted">Reason</div>
+          <input id="adminGrantReason" maxlength="200" placeholder="Support compensation" />
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="btnGrantCredits" class="btn">Grant credits</button>
+      </div>
+    </div>
+  `;
+  const btnFindSupportUser = card.querySelector("#btnFindSupportUser");
+  if (btnFindSupportUser) {
+    btnFindSupportUser.onclick = handleFindSupportUser;
+  }
+  const btnGrantCredits = card.querySelector("#btnGrantCredits");
+  if (btnGrantCredits) {
+    btnGrantCredits.onclick = handleGrantCredits;
+  }
+  return card;
+}
+
+function ensureAdminCard() {
+  const existing = $("adminCard");
+  if (existing) return existing;
+
+  const userCard = $("userCard");
+  if (!userCard?.parentNode) return null;
+
+  const adminCard = createAdminCardElement();
+  userCard.insertAdjacentElement("afterend", adminCard);
+  return adminCard;
+}
+
+function removeAdminCard() {
+  const adminCard = $("adminCard");
+  if (adminCard) {
+    adminCard.remove();
+  }
+}
+
 function setAdminLookupError(message = "") {
   const errorEl = $("adminLookupError");
   if (!errorEl) return;
@@ -944,17 +1009,19 @@ function renderAdminLookupResult(payload) {
 }
 
 function setAdminCardVisible(visible) {
-  const adminCard = $("adminCard");
-  if (!adminCard) return;
-  adminCard.style.display = visible ? "block" : "none";
   if (!visible) {
-    setAdminLookupError("");
-    clearAdminLookupResult();
     const supportCodeInput = $("adminSupportCode");
     if (supportCodeInput) {
       supportCodeInput.value = "";
     }
+    setAdminLookupError("");
+    clearAdminLookupResult();
+    removeAdminCard();
+    return;
   }
+  const adminCard = ensureAdminCard();
+  if (!adminCard) return;
+  adminCard.style.display = "block";
 }
 
 let currentUser = null;
@@ -1718,89 +1785,93 @@ $("btnWallet").onclick = () => {
   setStatusHintVisible(false);
 };
 
-const btnFindSupportUser = $("btnFindSupportUser");
-if (btnFindSupportUser) {
-  btnFindSupportUser.onclick = async () => {
-    if (!currentUser || !isAdminUser) return;
-    const input = $("adminSupportCode");
-    const code = typeof input?.value === "string" ?
-      input.value.trim().toUpperCase() :
-      "";
-    if (!code) {
-      setAdminLookupError("Enter Support ID.");
-      clearAdminLookupResult();
-      return;
-    }
-
-    setAdminLookupError("");
+async function handleFindSupportUser() {
+  if (!currentUser || !isAdminUser) return;
+  const input = $("adminSupportCode");
+  const btnFindSupportUser = $("btnFindSupportUser");
+  const code = typeof input?.value === "string" ?
+    input.value.trim().toUpperCase() :
+    "";
+  if (!code) {
+    setAdminLookupError("Enter Support ID.");
     clearAdminLookupResult();
+    return;
+  }
+
+  setAdminLookupError("");
+  clearAdminLookupResult();
+  if (btnFindSupportUser) {
     btnFindSupportUser.disabled = true;
     btnFindSupportUser.innerHTML =
       '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Searching...';
+  }
 
-    try {
-      const response = await callCreateJob({findSupportCode: code});
-      const payload = response?.data || {};
-      renderAdminLookupResult(payload);
-      if (input) input.value = code;
-    } catch (error) {
-      setAdminLookupError(callableErrorMessage(error));
-      clearAdminLookupResult();
-    } finally {
+  try {
+    const response = await callCreateJob({findSupportCode: code});
+    const payload = response?.data || {};
+    renderAdminLookupResult(payload);
+    if (input) input.value = code;
+  } catch (error) {
+    setAdminLookupError(callableErrorMessage(error));
+    clearAdminLookupResult();
+  } finally {
+    if (btnFindSupportUser) {
       btnFindSupportUser.disabled = false;
       btnFindSupportUser.textContent = "Find user";
     }
-  };
+  }
 }
 
-const btnGrantCredits = $("btnGrantCredits");
-if (btnGrantCredits) {
-  btnGrantCredits.onclick = async () => {
-    if (!currentUser || !isAdminUser || !adminSelectedUid) return;
-    const amountInput = $("adminGrantAmount");
-    const reasonInput = $("adminGrantReason");
-    const amount = Number(amountInput?.value || 0);
-    const reason = typeof reasonInput?.value === "string" ?
-      reasonInput.value.trim() :
-      "";
+async function handleGrantCredits() {
+  if (!currentUser || !isAdminUser || !adminSelectedUid) return;
+  const amountInput = $("adminGrantAmount");
+  const reasonInput = $("adminGrantReason");
+  const btnGrantCredits = $("btnGrantCredits");
+  const amount = Number(amountInput?.value || 0);
+  const reason = typeof reasonInput?.value === "string" ?
+    reasonInput.value.trim() :
+    "";
 
-    if (!Number.isFinite(amount) || amount < 1 || amount > 500) {
-      setAdminLookupError("Amount must be between 1 and 500.");
-      return;
-    }
-    if (reason.length < 3) {
-      setAdminLookupError("Reason must be at least 3 characters.");
-      return;
-    }
+  if (!Number.isFinite(amount) || amount < 1 || amount > 500) {
+    setAdminLookupError("Amount must be between 1 and 500.");
+    return;
+  }
+  if (reason.length < 3) {
+    setAdminLookupError("Reason must be at least 3 characters.");
+    return;
+  }
 
-    setAdminLookupError("");
+  setAdminLookupError("");
+  if (btnGrantCredits) {
     btnGrantCredits.disabled = true;
     btnGrantCredits.innerHTML =
       '<span class="spinner" style="width:12px;height:12px;margin-right:5px;border-width:2px"></span>Granting...';
+  }
 
-    try {
-      const response = await callCreateJob({
-        grantCredits: true,
-        uid: adminSelectedUid,
-        amount,
-        reason,
-      }, {retryable: false});
-      const payload = response?.data || {};
-      const supportCode = adminSelectedSupportCode || payload?.supportCode || "";
-      setAdminLookupError("");
-      setStatus("Credits granted.");
+  try {
+    const response = await callCreateJob({
+      grantCredits: true,
+      uid: adminSelectedUid,
+      amount,
+      reason,
+    }, {retryable: false});
+    const payload = response?.data || {};
+    const supportCode = adminSelectedSupportCode || payload?.supportCode || "";
+    setAdminLookupError("");
+    setStatus("Credits granted.");
 
-      if (supportCode) {
-        const lookup = await callCreateJob({findSupportCode: supportCode});
-        renderAdminLookupResult(lookup?.data || {});
-      }
-    } catch (error) {
-      setAdminLookupError(callableErrorMessage(error));
-    } finally {
+    if (supportCode) {
+      const lookup = await callCreateJob({findSupportCode: supportCode});
+      renderAdminLookupResult(lookup?.data || {});
+    }
+  } catch (error) {
+    setAdminLookupError(callableErrorMessage(error));
+  } finally {
+    if (btnGrantCredits) {
       btnGrantCredits.disabled = false;
       btnGrantCredits.textContent = "Grant credits";
     }
-  };
+  }
 }
 
 function stopAllTemplateVideos(exceptEl = null) {

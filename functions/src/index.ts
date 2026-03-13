@@ -24,6 +24,10 @@ const INITIAL_CREDITS = 20;
 const INPUT_TTL_MS = 6 * 60 * 60 * 1000;
 const OUTPUT_TTL_MS = 60 * 60 * 1000;
 const JOB_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const AWAITING_UPLOAD_TTL_MS = 30 * 60 * 1000;
+const LEGACY_QUEUED_WITHOUT_UPLOAD_TTL_MS = 30 * 60 * 1000;
+const LEGACY_QUEUED_AUTO_REFUND_FROM_MS =
+  Date.parse("2026-03-14T00:00:00+04:00");
 const KLING_HTTP_TIMEOUT_MS = 20_000;
 const DOWNLOAD_FETCH_TIMEOUT_MS = 60_000;
 const REFRESH_COOLDOWN_MS = 7_000;
@@ -52,6 +56,7 @@ const corsAllowedOrigins = [
 ];
 
 type JobStatus =
+  | "awaiting_upload"
   | "queued"
   | "processing"
   | "done"
@@ -90,6 +95,7 @@ interface KlingState {
   taskId?: string;
   requestId?: string;
   state?: string;
+  submitQueuedAt?: admin.firestore.Timestamp;
   outputUrl?: string;
   watermarkUrl?: string;
   error?: string;
@@ -562,17 +568,7 @@ async function refundCreditsForJobKling1200(
     const uid = pickString(job.uid);
     if (!uid) return false;
 
-    let refundAmount = positiveFiniteInt(job.debitedCredits);
-    if (refundAmount === null) {
-      const templateId = pickString(job.templateId);
-      if (!templateId) return false;
-
-      const templateRef = db.doc(`templates/${templateId}`);
-      const templateSnap = await tx.get(templateRef);
-      if (!templateSnap.exists) return false;
-      const template = (templateSnap.data() as TemplateDoc | undefined) || {};
-      refundAmount = templateCostCredits(template);
-    }
+    const refundAmount = await resolveRefundAmountForJobInTransaction(tx, job);
     if (refundAmount === null) return false;
 
     const userRef = db.collection("users").doc(uid);
@@ -601,6 +597,37 @@ async function refundCreditsForJobKling1200(
 
     return true;
   });
+}
+
+async function resolveRefundAmountForJobInTransaction(
+  tx: admin.firestore.Transaction,
+  job: JobDoc
+): Promise<number | null> {
+  let refundAmount = positiveFiniteInt(job.debitedCredits);
+  if (refundAmount !== null) return refundAmount;
+
+  const templateId = pickString(job.templateId);
+  if (!templateId) return null;
+
+  const templateRef = db.doc(`templates/${templateId}`);
+  const templateSnap = await tx.get(templateRef);
+  if (!templateSnap.exists) return null;
+  const template = (templateSnap.data() as TemplateDoc | undefined) || {};
+  refundAmount = templateCostCredits(template);
+  return refundAmount;
+}
+
+async function storageObjectExists(storagePath: string): Promise<boolean> {
+  const [exists] = await admin.storage().bucket().file(storagePath).exists();
+  return exists === true;
+}
+
+function isExpectedReferenceVideoPath(
+  expectedInputPath: string,
+  referenceVideoPath: string
+): boolean {
+  const uploadDir = expectedInputPath.replace(/\/[^/]+$/, "");
+  return referenceVideoPath.startsWith(`${uploadDir}/`);
 }
 
 async function submitKlingTask(
@@ -1197,6 +1224,159 @@ async function refreshOwnedJobStatus(
   };
 }
 
+async function finalizePreparedJob(params: {
+  uid: string;
+  jobId: string;
+  inputImagePath: string;
+  inputImageUrl: string;
+  referenceVideoPath: string | null;
+  referenceVideoUrl: string | null;
+}): Promise<Record<string, unknown>> {
+  const {
+    uid,
+    jobId,
+    inputImagePath,
+    inputImageUrl,
+    referenceVideoPath,
+    referenceVideoUrl,
+  } = params;
+  const jobRef = db.collection("jobs").doc(jobId);
+
+  const jobSnap = await jobRef.get();
+  if (!jobSnap.exists) {
+    throw new HttpsError("not-found", "Trend not found.");
+  }
+  const job = (jobSnap.data() as JobDoc | undefined) || {};
+  if (pickString(job.uid) !== uid) {
+    throw new HttpsError("permission-denied", "No access to this trend.");
+  }
+
+  const expectedInputPath = pickString(job.inputImagePath);
+  if (!expectedInputPath || expectedInputPath !== inputImagePath) {
+    throw new HttpsError("invalid-argument", "Invalid inputImagePath.");
+  }
+  if (
+    referenceVideoPath &&
+    !isExpectedReferenceVideoPath(expectedInputPath, referenceVideoPath)
+  ) {
+    throw new HttpsError("invalid-argument", "Invalid referenceVideoPath.");
+  }
+
+  if (!(await storageObjectExists(inputImagePath))) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Uploaded photo was not found."
+    );
+  }
+  if (referenceVideoPath && !(await storageObjectExists(referenceVideoPath))) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Uploaded reference video was not found."
+    );
+  }
+
+  return await db.runTransaction(async (tx) => {
+    const currentSnap = await tx.get(jobRef);
+    if (!currentSnap.exists) {
+      throw new HttpsError("not-found", "Trend not found.");
+    }
+    const current = (currentSnap.data() as JobDoc | undefined) || {};
+    if (pickString(current.uid) !== uid) {
+      throw new HttpsError("permission-denied", "No access to this trend.");
+    }
+
+    if (current.status && current.status !== "awaiting_upload") {
+      if (
+        pickString(current.inputImageUrl) &&
+        positiveFiniteInt(current.debitedCredits) !== null
+      ) {
+        return {
+          jobId,
+          "status": current.status,
+          "finalized": true,
+        };
+      }
+      throw new HttpsError(
+        "failed-precondition",
+        "Trend cannot be finalized in its current state."
+      );
+    }
+
+    const templateId = pickString(current.templateId);
+    if (!templateId) {
+      throw new HttpsError("failed-precondition", "Trend template is missing.");
+    }
+    const templateRef = db.doc(`templates/${templateId}`);
+    const templateSnap = await tx.get(templateRef);
+    const template = (templateSnap.data() as TemplateDoc | undefined) || {};
+    if (!templateSnap.exists || template.isActive !== true) {
+      throw new HttpsError("failed-precondition", "Template is not active");
+    }
+
+    const effectiveReferenceVideoUrl = pickString(
+      referenceVideoUrl,
+      template.referenceVideoUrl,
+      template.kling?.referenceVideoUrl
+    );
+    if (!effectiveReferenceVideoUrl) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Reference video is not available for this trend."
+      );
+    }
+
+    const costCredits = templateCostCredits(template);
+    const userRef = db.collection("users").doc(uid);
+    const userSnap = await tx.get(userRef);
+    const userData = (userSnap.data() as UserDoc | undefined) || {};
+    const hasCreditsBalance = (
+      typeof userData.creditsBalance === "number" &&
+      Number.isFinite(userData.creditsBalance)
+    );
+    const currentCredits = hasCreditsBalance ?
+      userData.creditsBalance as number :
+      INITIAL_CREDITS;
+
+    if (currentCredits < costCredits) {
+      throw new HttpsError(
+        "resource-exhausted",
+        "Not enough credits for this generation."
+      );
+    }
+
+    tx.set(userRef, {
+      creditsBalance: currentCredits - costCredits,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+
+    const updates: Record<string, unknown> = {
+      "status": "queued" as JobStatus,
+      "debitedCredits": costCredits,
+      inputImagePath,
+      inputImageUrl,
+      "kling.state": "queued",
+      "kling.submitQueuedAt": admin.firestore.FieldValue.serverTimestamp(),
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    };
+    if (referenceVideoPath && referenceVideoUrl) {
+      updates.referenceVideoPath = referenceVideoPath;
+      updates.referenceVideoUrl = referenceVideoUrl;
+    }
+    tx.update(jobRef, updates);
+    enqueueQueueTaskInTransaction(tx, {
+      type: "kling_submit",
+      uid,
+      jobId,
+    });
+
+    return {
+      jobId,
+      status: "queued" as JobStatus,
+      finalized: true,
+    };
+  });
+}
+
 async function findUserBySupportCodeForAdmin(
   adminUid: string,
   supportCodeInput: unknown
@@ -1496,6 +1676,32 @@ export const createJob = onCall(
       return await refreshOwnedJobStatus(uid, refreshJobId);
     }
 
+    const finalizeJobIdRaw = req.data?.finalizeJobId;
+    if (typeof finalizeJobIdRaw === "string") {
+      const finalizeJobId = finalizeJobIdRaw.trim();
+      if (!finalizeJobId || !/^[\w-]+$/.test(finalizeJobId)) {
+        throw new HttpsError("invalid-argument", "Invalid jobId");
+      }
+
+      const inputImagePath = pickString(req.data?.inputImagePath);
+      const inputImageUrl = pickString(req.data?.inputImageUrl);
+      if (!inputImagePath || !inputImageUrl) {
+        throw new HttpsError(
+          "invalid-argument",
+          "inputImagePath and inputImageUrl are required"
+        );
+      }
+
+      return await finalizePreparedJob({
+        uid,
+        jobId: finalizeJobId,
+        inputImagePath,
+        inputImageUrl,
+        referenceVideoPath: pickString(req.data?.referenceVideoPath),
+        referenceVideoUrl: pickString(req.data?.referenceVideoUrl),
+      });
+    }
+
     const templateId = req.data?.templateId;
     if (!templateId || typeof templateId !== "string") {
       throw new HttpsError("invalid-argument", "templateId is required");
@@ -1511,7 +1717,6 @@ export const createJob = onCall(
       throw new HttpsError("failed-precondition", "Template is not active");
     }
 
-    const costCredits = templateCostCredits(template);
     const requestRef = clientRequestId ?
       db.collection(JOB_REQUESTS_COLLECTION)
         .doc(`${uid}_${clientRequestId}`) :
@@ -1543,37 +1748,13 @@ export const createJob = onCall(
         }
       }
 
-      const userRef = db.collection("users").doc(uid);
-      const userSnap = await tx.get(userRef);
-      const userData = (userSnap.data() as UserDoc | undefined) || {};
-      const hasCreditsBalance = (
-        typeof userData.creditsBalance === "number" &&
-        Number.isFinite(userData.creditsBalance)
-      );
-      const currentCredits = hasCreditsBalance ?
-        userData.creditsBalance as number :
-        INITIAL_CREDITS;
-
-      if (currentCredits < costCredits) {
-        throw new HttpsError(
-          "resource-exhausted",
-          "Not enough credits for this generation."
-        );
-      }
-
-      tx.set(userRef, {
-        creditsBalance: currentCredits - costCredits,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, {merge: true});
-
       const jobRef = db.collection("jobs").doc();
       const uploadPath = `user_uploads/${uid}/${jobRef.id}/photo.jpg`;
 
       tx.set(jobRef, {
         uid,
         templateId,
-        status: "queued" as JobStatus,
-        debitedCredits: costCredits,
+        status: "awaiting_upload" as JobStatus,
         inputImagePath: uploadPath,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1638,6 +1819,7 @@ export const processJobTrigger001 = onDocumentUpdated(
       const current = (snap.data() as JobDoc | undefined) || {};
       if (current.status !== "queued" || !current.inputImageUrl) return;
       if (pickString(current.kling?.taskId)) return;
+      if (timestampMs(current.kling?.submitQueuedAt) !== null) return;
 
       tx.update(jobRef, {
         "status": "processing" as JobStatus,
@@ -1690,6 +1872,7 @@ async function processKlingSubmitTask(jobId: string): Promise<void> {
       "status": "processing" as JobStatus,
       "kling.taskId": submit.taskId,
       "kling.state": "processing",
+      "kling.submitQueuedAt": admin.firestore.FieldValue.delete(),
       "kling.error": admin.firestore.FieldValue.delete(),
       "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
     };
@@ -1719,6 +1902,7 @@ async function processKlingSubmitTask(jobId: string): Promise<void> {
     await jobRef.update({
       "status": "failed" as JobStatus,
       "kling.state": "failed",
+      "kling.submitQueuedAt": admin.firestore.FieldValue.delete(),
       "kling.error": msg,
       "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
     });
@@ -1960,6 +2144,162 @@ export const cleanupInputsHourly = onSchedule(
         previousTtlMs: INPUT_TTL_MS,
       }
     );
+  }
+);
+
+export const cleanupStaleJobsQuarterHourly = onSchedule(
+  {schedule: "every 15 minutes"},
+  async () => {
+    const nowMs = Date.now();
+    const awaitingUploadCutoffMs = nowMs - AWAITING_UPLOAD_TTL_MS;
+    const legacyQueuedCutoffMs = nowMs - LEGACY_QUEUED_WITHOUT_UPLOAD_TTL_MS;
+    const scanCutoffTs = admin.firestore.Timestamp.fromMillis(
+      Math.min(awaitingUploadCutoffMs, legacyQueuedCutoffMs)
+    );
+
+    let scanned = 0;
+    let awaitingUploadFailed = 0;
+    let legacyQueuedFailed = 0;
+    let legacyQueuedRefunded = 0;
+    let lastDoc:
+      | admin.firestore.QueryDocumentSnapshot
+      | null = null;
+
+    let hasMore = true;
+    while (hasMore) {
+      let jobsQuery = db.collection("jobs")
+        .where("createdAt", "<=", scanCutoffTs)
+        .orderBy("createdAt", "asc")
+        .limit(200);
+      if (lastDoc) {
+        jobsQuery = jobsQuery.startAfter(lastDoc);
+      }
+
+      const jobsSnap = await jobsQuery.get();
+      if (jobsSnap.empty) {
+        hasMore = false;
+        continue;
+      }
+
+      scanned += jobsSnap.size;
+
+      for (const jobDoc of jobsSnap.docs) {
+        const job = (jobDoc.data() as JobDoc | undefined) || {};
+        const createdAtMs = timestampMs(job.createdAt);
+        if (createdAtMs === null) continue;
+
+        const hasInputImage = !!pickString(job.inputImageUrl);
+        const status = pickString(job.status) || "";
+
+        if (
+          status === "awaiting_upload" &&
+          !hasInputImage &&
+          createdAtMs <= awaitingUploadCutoffMs
+        ) {
+          const markedFailed = await db.runTransaction(async (tx) => {
+            const snap = await tx.get(jobDoc.ref);
+            if (!snap.exists) return false;
+            const current = (snap.data() as JobDoc | undefined) || {};
+            if (current.status !== "awaiting_upload") return false;
+            if (pickString(current.inputImageUrl)) return false;
+
+            tx.update(jobDoc.ref, {
+              "status": "failed" as JobStatus,
+              "kling.state": "failed",
+              "kling.error": "Upload timed out before finalize.",
+              "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+            });
+            return true;
+          });
+          if (markedFailed) awaitingUploadFailed += 1;
+          continue;
+        }
+
+        if (
+          status === "queued" &&
+          !hasInputImage &&
+          createdAtMs <= legacyQueuedCutoffMs
+        ) {
+          const canAutoRefund =
+            createdAtMs >= LEGACY_QUEUED_AUTO_REFUND_FROM_MS;
+          const result = await db.runTransaction(async (tx) => {
+            const snap = await tx.get(jobDoc.ref);
+            if (!snap.exists) {
+              return {failed: false, refunded: false};
+            }
+            const current = (snap.data() as JobDoc | undefined) || {};
+            if (
+              current.status !== "queued" ||
+              pickString(current.inputImageUrl)
+            ) {
+              return {failed: false, refunded: false};
+            }
+
+            let refunded = false;
+            if (canAutoRefund && current.refund?.applied !== true) {
+              const uid = pickString(current.uid);
+              const refundAmount = await resolveRefundAmountForJobInTransaction(
+                tx,
+                current
+              );
+              if (uid && refundAmount !== null) {
+                const userRef = db.collection("users").doc(uid);
+                const userSnap = await tx.get(userRef);
+                const userData = (userSnap.data() as UserDoc | undefined) || {};
+                const hasCreditsBalance = (
+                  typeof userData.creditsBalance === "number" &&
+                  Number.isFinite(userData.creditsBalance)
+                );
+                const currentCredits = hasCreditsBalance ?
+                  userData.creditsBalance as number :
+                  INITIAL_CREDITS;
+
+                tx.set(userRef, {
+                  creditsBalance: currentCredits + refundAmount,
+                  updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                }, {merge: true});
+
+                tx.update(jobDoc.ref, {
+                  "refund.applied": true,
+                  "refund.amount": refundAmount,
+                  "refund.reason": "legacy_upload_timeout",
+                  "refund.refundedAt":
+                    admin.firestore.FieldValue.serverTimestamp(),
+                });
+                refunded = true;
+              }
+            }
+
+            tx.update(jobDoc.ref, {
+              "status": "failed" as JobStatus,
+              "kling.state": "failed",
+              "kling.error": "Upload timed out before finalize.",
+              "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+            });
+            return {failed: true, refunded};
+          });
+
+          if (result.failed) {
+            legacyQueuedFailed += 1;
+            if (result.refunded) {
+              legacyQueuedRefunded += 1;
+            }
+          }
+        }
+      }
+
+      lastDoc = jobsSnap.docs[jobsSnap.docs.length - 1];
+      if (jobsSnap.size < 200) {
+        hasMore = false;
+      }
+    }
+
+    logger.info("cleanupStaleJobsQuarterHourly finished", {
+      scanned,
+      awaitingUploadFailed,
+      legacyQueuedFailed,
+      legacyQueuedRefunded,
+    });
   }
 );
 

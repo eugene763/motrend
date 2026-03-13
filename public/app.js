@@ -30,7 +30,6 @@ import {
   query,
   serverTimestamp,
   setDoc,
-  updateDoc,
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import {
@@ -632,6 +631,8 @@ function renderOnboardingStep() {
   const prevBtn = $("onboardingPrevBtn");
   const nextBtn = $("onboardingNextBtn");
   const closeStepBtn = $("onboardingStepCloseBtn");
+  const screenPrevBtn = $("onboardingScreenPrevBtn");
+  const screenNextBtn = $("onboardingScreenNextBtn");
   if (!titleEl || !textEl || !prevBtn || !nextBtn || !closeStepBtn) return;
 
   const step = ONBOARDING_STEPS[onboardingStepIndex];
@@ -648,6 +649,14 @@ function renderOnboardingStep() {
   nextBtn.style.display = isLast ? "none" : "inline-flex";
   nextBtn.disabled = isLast;
   closeStepBtn.style.display = isLast ? "inline-flex" : "none";
+  if (screenPrevBtn) {
+    screenPrevBtn.style.visibility = isFirst ? "hidden" : "visible";
+    screenPrevBtn.disabled = isFirst;
+  }
+  if (screenNextBtn) {
+    screenNextBtn.style.visibility = isLast ? "hidden" : "visible";
+    screenNextBtn.disabled = isLast;
+  }
 
   clearOnboardingHighlight();
   const target = step.getTarget();
@@ -664,6 +673,38 @@ function renderOnboardingStep() {
     if (!onboardingIsOpen || onboardingTargetEl !== target) return;
     refreshOnboardingHighlight();
   });
+}
+
+function preventOnboardingScroll(event) {
+  if (!onboardingIsOpen) return;
+  if (event.cancelable) {
+    event.preventDefault();
+  }
+}
+
+function preventOnboardingKeyboardScroll(event) {
+  if (!onboardingIsOpen) return;
+  const key = String(event.key || "");
+  if (
+    key === "ArrowUp" ||
+    key === "ArrowDown" ||
+    key === "PageUp" ||
+    key === "PageDown" ||
+    key === "Home" ||
+    key === "End" ||
+    key === " " ||
+    key === "Spacebar"
+  ) {
+    event.preventDefault();
+  }
+}
+
+function bindOnboardingScrollLock() {
+  if (onboardingScrollLockBound) return;
+  window.addEventListener("wheel", preventOnboardingScroll, {passive: false});
+  window.addEventListener("touchmove", preventOnboardingScroll, {passive: false});
+  window.addEventListener("keydown", preventOnboardingKeyboardScroll, {passive: false});
+  onboardingScrollLockBound = true;
 }
 
 function closeOnboarding(markSeen = true) {
@@ -691,6 +732,7 @@ function openOnboarding(uid) {
   if (!overlay) return;
 
   closeUploadHintIfOpen();
+  bindOnboardingScrollLock();
   overlay.dataset.uid = uid;
   overlay.classList.add("isOpen");
   overlay.setAttribute("aria-hidden", "false");
@@ -946,6 +988,7 @@ let onboardingIsOpen = false;
 let onboardingStepIndex = 0;
 let onboardingTargetEl = null;
 let onboardingHighlightRafId = 0;
+let onboardingScrollLockBound = false;
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
 const MAX_UPLOAD_IMAGE_BYTES = 40 * 1024 * 1024;
 const TARGET_UPLOAD_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -1375,10 +1418,10 @@ function shouldRetryCreateJob(error) {
   }
 
   if (code.includes("resource-exhausted")) {
-    if (message.includes("not enough credits")) {
-      return false;
-    }
-    return true;
+    return (
+      message.includes("no available instance") ||
+      message.includes("temporarily unavailable")
+    );
   }
 
   if (
@@ -1490,6 +1533,25 @@ if (onboardingPrevBtn) {
 const onboardingNextBtn = $("onboardingNextBtn");
 if (onboardingNextBtn) {
   onboardingNextBtn.onclick = () => {
+    if (!onboardingIsOpen) return;
+    if (onboardingStepIndex >= ONBOARDING_STEPS.length - 1) return;
+    onboardingStepIndex += 1;
+    renderOnboardingStep();
+  };
+}
+
+const onboardingScreenPrevBtn = $("onboardingScreenPrevBtn");
+if (onboardingScreenPrevBtn) {
+  onboardingScreenPrevBtn.onclick = () => {
+    if (!onboardingIsOpen || onboardingStepIndex <= 0) return;
+    onboardingStepIndex -= 1;
+    renderOnboardingStep();
+  };
+}
+
+const onboardingScreenNextBtn = $("onboardingScreenNextBtn");
+if (onboardingScreenNextBtn) {
+  onboardingScreenNextBtn.onclick = () => {
     if (!onboardingIsOpen) return;
     if (onboardingStepIndex >= ONBOARDING_STEPS.length - 1) return;
     onboardingStepIndex += 1;
@@ -2058,6 +2120,7 @@ function watchUserDoc(uid) {
 }
 
 function statusLabel(status) {
+  if (status === "awaiting_upload") return "uploading";
   if (status === "queued") return "queued";
   if (status === "processing") return "processing";
   if (status === "done") return "done";
@@ -2099,7 +2162,14 @@ function updateLatestJobUI(jobId, job) {
     return;
   }
 
-  if (status === "queued") {
+  if (status === "awaiting_upload") {
+    if (trackedCurrentJob) {
+      setEstimatedProgressLabel("Uploading files…");
+    } else {
+      setStatus("Uploading files…");
+      setStatusHintVisible(false);
+    }
+  } else if (status === "queued") {
     if (trackedCurrentJob) {
       setEstimatedProgressLabel("Generating your trend…");
     } else {
@@ -2452,6 +2522,7 @@ $("btnGenerate").onclick = async () => {
       throw new Error("createJob returned empty payload");
     }
     attachEstimatedProgressJob(jobId);
+    setEstimatedProgressLabel("Uploading files…");
 
     let referenceVideoPath = "";
     let referenceVideoUrl = "";
@@ -2483,17 +2554,13 @@ $("btnGenerate").onclick = async () => {
 
     const inputImageUrl = await getDownloadURL(photoRef);
 
-    const updates = {
-      inputImageUrl,
+    await callCreateJob({
+      finalizeJobId: jobId,
       inputImagePath: uploadPath,
-      updatedAt: serverTimestamp(),
-    };
-    if (referenceVideoPath && referenceVideoUrl) {
-      updates.referenceVideoPath = referenceVideoPath;
-      updates.referenceVideoUrl = referenceVideoUrl;
-    }
-
-    await updateDoc(doc(db, "jobs", jobId), updates);
+      inputImageUrl,
+      referenceVideoPath: referenceVideoPath || undefined,
+      referenceVideoUrl: referenceVideoUrl || undefined,
+    });
 
     setEstimatedProgressLabel("Generating your trend…");
   } catch (error) {

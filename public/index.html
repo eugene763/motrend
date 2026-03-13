@@ -293,6 +293,30 @@ a{color:#fff}
   z-index:2130;
   pointer-events:auto;
 }
+.onboardingScreenArrow{
+  position:fixed;
+  top:50%;
+  transform:translateY(-50%);
+  width:56px;
+  height:84px;
+  border-radius:18px;
+  background:rgba(42,42,42,.92);
+  border:1px solid rgba(255,255,255,.08);
+  color:#fff;
+  font-size:34px;
+  line-height:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  z-index:2125;
+  pointer-events:auto;
+}
+.onboardingScreenArrowLeft{left:12px;}
+.onboardingScreenArrowRight{right:12px;}
+.onboardingScreenArrow[disabled]{
+  opacity:.3;
+  cursor:not-allowed;
+}
 .onboardingStepClose{
   min-width:110px;
   height:48px;
@@ -304,12 +328,24 @@ a{color:#fff}
   font-weight:700;
   display:none;
 }
-body.onboardingActive{overflow:hidden;}
+body.onboardingActive{
+  overflow:hidden;
+  overscroll-behavior:none;
+  touch-action:none;
+}
 
 @media (max-width:640px){
   .onboardingCard{max-width:none;}
   .onboardingStepTitle{font-size:26px;}
   .onboardingStepText{font-size:17px;}
+  .onboardingScreenArrow{
+    width:52px;
+    height:76px;
+    border-radius:16px;
+    font-size:30px;
+  }
+  .onboardingScreenArrowLeft{left:8px;}
+  .onboardingScreenArrowRight{right:8px;}
 }
 
   </style>
@@ -494,6 +530,8 @@ body.onboardingActive{overflow:hidden;}
   <div id="onboardingOverlay" class="onboardingOverlay" aria-hidden="true">
     <div id="onboardingHighlight" class="onboardingHighlight" aria-hidden="true"></div>
     <button id="onboardingCloseBtn" class="onboardingClose" aria-label="Close onboarding">×</button>
+    <button id="onboardingScreenPrevBtn" class="onboardingScreenArrow onboardingScreenArrowLeft" aria-label="Previous step">←</button>
+    <button id="onboardingScreenNextBtn" class="onboardingScreenArrow onboardingScreenArrowRight" aria-label="Next step">→</button>
     <div class="onboardingCard" role="dialog" aria-modal="true" aria-labelledby="onboardingStepTitle">
       <div id="onboardingStepTitle" class="onboardingStepTitle"></div>
       <div id="onboardingStepText" class="onboardingStepText"></div>

@@ -106,14 +106,24 @@ function isAndroid() {
   return /Android/i.test(ua);
 }
 
-function buildExternalBrowserUrl() {
-  const currentUrl = window.location.href;
-  if (!isAndroid()) return currentUrl;
+function buildExternalBrowserUrlFor(rawUrl) {
+  const targetUrl = safeUrl(rawUrl) || window.location.href;
+  if (!isAndroid()) return targetUrl;
 
-  const host = window.location.host;
-  const pathAndQuery = `${window.location.pathname}${window.location.search}`;
-  const fallback = encodeURIComponent(currentUrl);
-  return `intent://${host}${pathAndQuery}#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=${fallback};end`;
+  try {
+    const parsed = new URL(targetUrl);
+    const scheme = parsed.protocol.replace(":", "") || "https";
+    const host = parsed.host;
+    const pathQueryHash = `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    const fallback = encodeURIComponent(parsed.toString());
+    return `intent://${host}${pathQueryHash}#Intent;scheme=${scheme};package=com.android.chrome;S.browser_fallback_url=${fallback};end`;
+  } catch {
+    return targetUrl;
+  }
+}
+
+function buildExternalBrowserUrl() {
+  return buildExternalBrowserUrlFor(window.location.href);
 }
 
 function updateAuthInAppActions() {
@@ -957,10 +967,11 @@ const VIDEO_HINT_MESSAGE =
 const DEFAULT_VISIBLE_JOBS = 5;
 const MAX_WATCH_JOBS = 20;
 const PROGRESS_HINT_TEXT = "Usually takes 5–15 minutes";
-const PROGRESS_STAGE_A_MS = 32000; // 0-50 quickly
-const PROGRESS_STAGE_B_MS = 40000; // 50-70 medium
-const PROGRESS_STAGE_C_MS = 160000; // 70-90 slowly
-const PROGRESS_STAGE_D_MS = 21000; // 90-97 faster
+const PROGRESS_STAGE_A_MS = 64000; // 0-50 slower
+const PROGRESS_STAGE_B_MS = 80000; // 50-70 slower
+const PROGRESS_STAGE_C_MS = 320000; // 70-90 slower
+const PROGRESS_STAGE_D_MS = 42000; // 90-97 slower
+const PROGRESS_STAGE_E_MS = 80000; // 97-99: ~1% every 40s
 
 const ONBOARDING_STEPS = [
   {
@@ -1032,8 +1043,12 @@ function computeEstimatedProgressPercent(nowMs, startedAtMs) {
   if (afterC <= PROGRESS_STAGE_D_MS) {
     return 90 + (afterC / PROGRESS_STAGE_D_MS) * 7;
   }
+  const afterD = afterC - PROGRESS_STAGE_D_MS;
+  if (afterD <= PROGRESS_STAGE_E_MS) {
+    return 97 + (afterD / PROGRESS_STAGE_E_MS) * 2;
+  }
 
-  return 97;
+  return 99;
 }
 
 function renderEstimatedProgressStatus() {
@@ -1061,7 +1076,7 @@ function scheduleEstimatedProgressTick() {
   estimatedProgressTimer = setTimeout(() => {
     if (!estimatedProgressActive) return;
     renderEstimatedProgressStatus();
-    if (estimatedProgressPercent >= 97) return;
+    if (estimatedProgressPercent >= 99) return;
     scheduleEstimatedProgressTick();
   }, 1000);
 }
@@ -1094,7 +1109,7 @@ function resumeEstimatedProgress(jobId, startedAtMs, label = "Generating your tr
   const hint = $("statusHint");
   if (hint) hint.textContent = PROGRESS_HINT_TEXT;
   renderEstimatedProgressStatus();
-  if (estimatedProgressPercent < 97) {
+  if (estimatedProgressPercent < 99) {
     scheduleEstimatedProgressTick();
   }
 }
@@ -1198,10 +1213,15 @@ function syncTrendSelectionUi() {
   updateSelectedTrendField();
 }
 
-function scrollToGenerateOnMobile() {
-  if (!window.matchMedia("(max-width: 640px)").matches) return false;
-  const generateCard = $("generateCard") || $("btnGenerate")?.closest(".card");
-  generateCard?.scrollIntoView({behavior: "smooth", block: "start"});
+function scrollToPhotoUploadField() {
+  if (onboardingIsOpen) return false;
+
+  const fileInput = $("filePhoto");
+  const fieldWrap = fileInput?.closest("div");
+  const target = fieldWrap || fileInput || $("generateCard") || $("btnGenerate");
+  if (!target) return false;
+
+  target.scrollIntoView({behavior: "smooth", block: "center"});
   return true;
 }
 
@@ -1824,7 +1844,7 @@ function renderReferenceVideoCard() {
         refreshOnboardingStepTarget();
       }
       if (file && scrollAfterPickerSelection) {
-        scrollToGenerateOnMobile();
+        scrollToPhotoUploadField();
       }
       scrollAfterPickerSelection = false;
     };
@@ -1929,7 +1949,9 @@ function renderTemplateCard(template) {
       templateId: template.id,
       title: template.title || "",
     });
-    const didScrollToGenerate = scrollOnSelect ? scrollToGenerateOnMobile() : false;
+    const didScrollToGenerate = scrollOnSelect ?
+      scrollToPhotoUploadField() :
+      false;
     if (didScrollToGenerate && videoEl) {
       try {
         videoEl.muted = true;
@@ -2198,7 +2220,10 @@ function renderDoneJobActions(jobId) {
   const openExternalBtn = document.createElement("a");
   openExternalBtn.className = "btn";
   openExternalBtn.textContent = "Open in browser";
-  openExternalBtn.href = saveVideoPageUrl || preparedUrl;
+  const openTargetUrl = saveVideoPageUrl || preparedUrl;
+  openExternalBtn.href = shouldUseRedirectLogin() ?
+    buildExternalBrowserUrlFor(openTargetUrl) :
+    openTargetUrl;
   openExternalBtn.target = "_blank";
   openExternalBtn.rel = "noopener noreferrer";
   actions.appendChild(openExternalBtn);
@@ -2224,7 +2249,10 @@ function renderDoneJobActions(jobId) {
 
   const fallbackHint = document.createElement("div");
   fallbackHint.className = "muted jobsHint";
-  fallbackHint.textContent =
+  fallbackHint.textContent = (
+    shouldUseRedirectLogin() && !isAndroid()
+  ) ?
+    "On iPhone: if download fails, tap Copy URL, paste it into Safari/Chrome, and download there." :
     "If download does not start, tap “Open in browser”.";
   wrapper.appendChild(fallbackHint);
 

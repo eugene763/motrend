@@ -134,6 +134,31 @@ a{color:#fff}
 .brandFooter{margin:16px 0 6px;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--muted);font-size:16px}
 .brandFooter a{display:inline-flex;align-items:center;text-decoration:none}
 .brandFooter img{height:20px;width:auto;display:block;opacity:.95;border-radius:0}
+.brandFooterLinks{
+  margin:4px 0 0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:12px;
+  flex-wrap:wrap;
+  font-size:14px;
+  color:rgba(255,255,255,.52);
+}
+.brandFooterLinks a{
+  color:rgba(255,255,255,.52);
+  text-decoration:none;
+}
+.brandFooterLinks a:hover{text-decoration:underline;}
+.authLegal{
+  margin-top:12px;
+  font-size:14px;
+  line-height:1.35;
+  color:rgba(255,255,255,.52);
+}
+.authLegal a{
+  color:rgba(255,255,255,.52);
+  text-decoration:underline;
+}
 .topBar{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .supportBtn{
   display:none;
@@ -408,6 +433,13 @@ body.onboardingActive{
   </div>
 
   <div id="authError" class="muted" style="margin-top:10px;display:none"></div>
+  <div class="authLegal">
+    By continuing, I acknowledge the
+    <a href="https://moads.agency/privacy#motrendprivacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+    and agree to the
+    <a href="https://moads.agency/privacy#motrendterms" target="_blank" rel="noopener noreferrer">Terms of Use</a>.
+    I also confirm that I am at least 18 years old.
+  </div>
 </div>
 
     <div id="app" style="display:none">
@@ -516,6 +548,10 @@ body.onboardingActive{
         <a href="https://moads.agency?utm_source=motrends_web" target="_blank" rel="noopener noreferrer">
           <img src="assets/moads-logo.png" alt="MO ADS!">
         </a>
+      </div>
+      <div class="brandFooterLinks">
+        <a href="https://moads.agency/privacy#motrendprivacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+        <a href="https://moads.agency/privacy#motrendterms" target="_blank" rel="noopener noreferrer">Terms of Use</a>
       </div>
     </div>
   </div>

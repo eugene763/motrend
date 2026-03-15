@@ -36,7 +36,7 @@ import {
   getDownloadURL,
   getStorage,
   ref,
-  uploadBytes,
+  uploadBytesResumable,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
 import {
   getFunctions,
@@ -568,11 +568,21 @@ function refreshOnboardingHighlight() {
     return;
   }
 
+  const viewportWidth = Math.max(
+    window.visualViewport?.width || 0,
+    window.innerWidth || 0,
+    1
+  );
+  const viewportHeight = Math.max(
+    window.visualViewport?.height || 0,
+    window.innerHeight || 0,
+    1
+  );
   const pad = 6;
   const left = Math.max(8, rect.left - pad);
   const top = Math.max(8, rect.top - pad);
-  const maxWidth = window.innerWidth - left - 8;
-  const maxHeight = window.innerHeight - top - 8;
+  const maxWidth = viewportWidth - left - 8;
+  const maxHeight = viewportHeight - top - 8;
   const width = Math.max(24, Math.min(rect.width + pad * 2, maxWidth));
   const height = Math.max(24, Math.min(rect.height + pad * 2, maxHeight));
 
@@ -593,25 +603,43 @@ function scheduleOnboardingHighlightRefresh() {
   });
 }
 
+function shouldUseInstantOnboardingScroll() {
+  return isTelegramInAppBrowser() || shouldUseRedirectLogin();
+}
+
+function shouldUsePassiveOnboarding() {
+  return isTelegramInAppBrowser();
+}
+
 function scrollOnboardingTargetIntoView(target, behavior = "smooth") {
   if (!(target instanceof HTMLElement)) return;
-  const rect = target.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return;
-
   const overlayCard = document.querySelector("#onboardingOverlay .onboardingCard");
   const bottomReserved = (overlayCard?.offsetHeight || 0) + 24;
   const topSafe = 20;
-  const viewportHeight = Math.max(window.innerHeight || 0, 1);
+  const viewportHeight = Math.max(
+    window.visualViewport?.height || 0,
+    window.innerHeight || 0,
+    1
+  );
   const visibleTop = topSafe;
   const visibleBottom = Math.max(topSafe + 60, viewportHeight - bottomReserved);
-  const isVisible = rect.top >= visibleTop && rect.bottom <= visibleBottom;
-  if (isVisible) return;
+  const requestedBehavior = shouldUseInstantOnboardingScroll() ?
+    "auto" :
+    behavior;
 
-  const scrollY = window.scrollY || window.pageYOffset || 0;
-  const targetCenterY = scrollY + rect.top + rect.height / 2;
-  const visibleCenterY = (visibleTop + visibleBottom) / 2;
-  const desiredTop = Math.max(0, targetCenterY - visibleCenterY);
-  window.scrollTo({top: desiredTop, behavior});
+  const rect = target.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+  const safePadding = 12;
+  const availableTop = visibleTop + safePadding;
+  const availableBottom = visibleBottom - safePadding;
+  const availableHeight = Math.max(80, availableBottom - availableTop);
+  const desiredTop = rect.height < availableHeight ?
+    availableTop + ((availableHeight - rect.height) / 2) :
+    availableTop;
+  const deltaY = rect.top - desiredTop;
+  if (Math.abs(deltaY) > 4) {
+    window.scrollBy({top: deltaY, behavior: requestedBehavior});
+  }
 }
 
 function buildOnboardingDots(activeIndex) {
@@ -637,6 +665,7 @@ function renderOnboardingStep() {
 
   const step = ONBOARDING_STEPS[onboardingStepIndex];
   if (!step) return;
+  clearOnboardingTimers();
 
   titleEl.textContent = step.title;
   textEl.textContent = step.text;
@@ -658,9 +687,20 @@ function renderOnboardingStep() {
     screenNextBtn.disabled = isLast;
   }
 
+  const photoInput = $("filePhoto");
+  if (photoInput) {
+    photoInput.disabled = onboardingStepIndex === 1;
+  }
+
   clearOnboardingHighlight();
   const target = step.getTarget();
-  if (!(target instanceof HTMLElement)) return;
+  if (!(target instanceof HTMLElement)) {
+    setTimeout(() => {
+      if (!onboardingIsOpen) return;
+      renderOnboardingStep();
+    }, 200);
+    return;
+  }
   scrollOnboardingTargetIntoView(target, "smooth");
   onboardingTargetEl = target;
   scheduleOnboardingHighlightRefresh();
@@ -669,10 +709,19 @@ function renderOnboardingStep() {
     scrollOnboardingTargetIntoView(target, "auto");
     refreshOnboardingHighlight();
   }, 260);
+  setTimeout(() => {
+    if (!onboardingIsOpen || onboardingTargetEl !== target) return;
+    refreshOnboardingHighlight();
+  }, 520);
+  setTimeout(() => {
+    if (!onboardingIsOpen || onboardingTargetEl !== target) return;
+    refreshOnboardingHighlight();
+  }, 860);
   requestAnimationFrame(() => {
     if (!onboardingIsOpen || onboardingTargetEl !== target) return;
     refreshOnboardingHighlight();
   });
+  scheduleOnboardingAutoAdvance();
 }
 
 function preventOnboardingScroll(event) {
@@ -711,11 +760,18 @@ function closeOnboarding(markSeen = true) {
   const overlay = $("onboardingOverlay");
   if (!overlay) return;
   overlay.classList.remove("isOpen");
+  overlay.classList.remove("isPassive");
   overlay.setAttribute("aria-hidden", "true");
   document.body.classList.remove("onboardingActive");
   clearOnboardingHighlight();
+  clearOnboardingTimers();
   onboardingIsOpen = false;
   onboardingStepIndex = 0;
+  onboardingStep1DemoIndex = 0;
+  const photoInput = $("filePhoto");
+  if (photoInput) {
+    photoInput.disabled = false;
+  }
   const uid = overlay.dataset.uid || "";
   if (markSeen && uid) {
     markOnboardingSeen(uid);
@@ -735,10 +791,12 @@ function openOnboarding(uid) {
   bindOnboardingScrollLock();
   overlay.dataset.uid = uid;
   overlay.classList.add("isOpen");
+  overlay.classList.toggle("isPassive", shouldUsePassiveOnboarding());
   overlay.setAttribute("aria-hidden", "false");
   document.body.classList.add("onboardingActive");
   onboardingIsOpen = true;
   onboardingStepIndex = 0;
+  onboardingStep1DemoIndex = 0;
   renderOnboardingStep();
 }
 
@@ -1039,6 +1097,7 @@ const refreshingJobIds = new Set();
 const preparingDownloadJobIds = new Set();
 const preparedDownloadByJobId = new Map();
 let showOlderJobs = false;
+let generateSubmissionInFlight = false;
 let estimatedProgressActive = false;
 let estimatedProgressPercent = 0;
 let estimatedProgressTimer = null;
@@ -1056,6 +1115,9 @@ let onboardingStepIndex = 0;
 let onboardingTargetEl = null;
 let onboardingHighlightRafId = 0;
 let onboardingScrollLockBound = false;
+let onboardingAutoAdvanceTimer = null;
+let onboardingStep1DemoTimer = null;
+let onboardingStep1DemoIndex = 0;
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
 const MAX_UPLOAD_IMAGE_BYTES = 40 * 1024 * 1024;
 const TARGET_UPLOAD_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -1083,14 +1145,83 @@ const PROGRESS_STAGE_C_MS = 320000; // 70-90 slower
 const PROGRESS_STAGE_D_MS = 42000; // 90-97 slower
 const PROGRESS_STAGE_E_MS = 80000; // 97-99: ~1% every 40s
 
+function findFirstVisibleElement(selectors) {
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (!(el instanceof HTMLElement)) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      return el;
+    }
+  }
+  return null;
+}
+
+function getVisibleOnboardingTrendCards() {
+  return Array.from(document.querySelectorAll("#templates .tplCard")).filter((el) => {
+    if (!(el instanceof HTMLElement)) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  });
+}
+
+function clearOnboardingTimers() {
+  if (onboardingAutoAdvanceTimer) {
+    clearTimeout(onboardingAutoAdvanceTimer);
+    onboardingAutoAdvanceTimer = null;
+  }
+  if (onboardingStep1DemoTimer) {
+    clearTimeout(onboardingStep1DemoTimer);
+    onboardingStep1DemoTimer = null;
+  }
+}
+
+function scheduleOnboardingAutoAdvance() {
+  clearOnboardingTimers();
+  if (!onboardingIsOpen) return;
+
+  if (onboardingStepIndex === 0) {
+    const cards = getVisibleOnboardingTrendCards().slice(0, 3);
+    if (!cards.length) return;
+    const maxIndex = Math.max(0, cards.length - 1);
+
+    if (onboardingStep1DemoIndex < maxIndex) {
+      onboardingStep1DemoTimer = setTimeout(() => {
+        if (!onboardingIsOpen || onboardingStepIndex !== 0) return;
+        onboardingStep1DemoIndex = Math.min(onboardingStep1DemoIndex + 1, maxIndex);
+        renderOnboardingStep();
+      }, 1200);
+      return;
+    }
+
+    onboardingAutoAdvanceTimer = setTimeout(() => {
+      if (!onboardingIsOpen || onboardingStepIndex !== 0) return;
+      onboardingStep1DemoIndex = 0;
+      onboardingStepIndex = 1;
+      renderOnboardingStep();
+    }, 1500);
+    return;
+  }
+
+  if (onboardingStepIndex === 1) {
+    onboardingAutoAdvanceTimer = setTimeout(() => {
+      if (!onboardingIsOpen || onboardingStepIndex !== 1) return;
+      onboardingStepIndex = 2;
+      renderOnboardingStep();
+    }, 1500);
+  }
+}
+
 const ONBOARDING_STEPS = [
   {
     title: "1. Choose trend",
     text: "Tap Use or Upload to select your reference.",
-    getTarget: () =>
-      document.querySelector("#templates .tplCard.isSelected .tplUse") ||
-      document.querySelector("#templates .tplCard .tplUse") ||
-      $("templates"),
+    getTarget: () => {
+      const cards = getVisibleOnboardingTrendCards().slice(0, 3);
+      if (!cards.length) return null;
+      const index = Math.max(0, Math.min(onboardingStep1DemoIndex, cards.length - 1));
+      return cards[index];
+    },
   },
   {
     title: "2. Choose your photo",
@@ -1337,6 +1468,26 @@ function scrollToPhotoUploadField() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function uploadFileWithProgress(storageRef, blob, metadata, onProgress) {
+  return new Promise((resolve, reject) => {
+    const task = uploadBytesResumable(storageRef, blob, metadata);
+    task.on(
+      "state_changed",
+      (snapshot) => {
+        if (typeof onProgress !== "function") return;
+        const total = Number(snapshot?.totalBytes || 0);
+        const transferred = Number(snapshot?.bytesTransferred || 0);
+        const percent = total > 0 ?
+          Math.max(0, Math.min(100, Math.round((transferred / total) * 100))) :
+          0;
+        onProgress(percent, snapshot);
+      },
+      reject,
+      () => resolve(task.snapshot)
+    );
+  });
 }
 
 function canvasToBlob(canvas, type, quality) {
@@ -1651,6 +1802,16 @@ window.addEventListener("scroll", () => {
   if (!onboardingIsOpen) return;
   scheduleOnboardingHighlightRefresh();
 }, true);
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", () => {
+    if (!onboardingIsOpen) return;
+    scheduleOnboardingHighlightRefresh();
+  });
+  window.visualViewport.addEventListener("scroll", () => {
+    if (!onboardingIsOpen) return;
+    scheduleOnboardingHighlightRefresh();
+  });
+}
 
 $("btnEmailSignIn").onclick = async () => {
   clearAuthError();
@@ -2552,6 +2713,12 @@ function watchLatestJobs(uid) {
 $("btnGenerate").onclick = async () => {
   clearFormError();
 
+  if (generateSubmissionInFlight) {
+    setStatus("Upload already in progress…");
+    setStatusHintVisible(false);
+    return;
+  }
+
   if (!currentUser) {
     openAuth("Sign in to upload a photo and generate.");
     return;
@@ -2577,8 +2744,11 @@ $("btnGenerate").onclick = async () => {
   }
 
   const btn = $("btnGenerate");
+  generateSubmissionInFlight = true;
   btn.disabled = true;
-  startEstimatedProgress("Generating your trend…");
+  stopEstimatedProgress();
+  setStatus("Preparing upload…");
+  setStatusHintVisible(false);
 
   try {
     const clientRequestId = createClientRequestId("gen");
@@ -2593,7 +2763,7 @@ $("btnGenerate").onclick = async () => {
       throw new Error("createJob returned empty payload");
     }
     attachEstimatedProgressJob(jobId);
-    setEstimatedProgressLabel("Uploading files…");
+    setStatus("Uploading files… 0%");
 
     let referenceVideoPath = "";
     let referenceVideoUrl = "";
@@ -2606,25 +2776,36 @@ $("btnGenerate").onclick = async () => {
       const uploadDir = uploadPath.replace(/\/[^/]+$/, "");
       referenceVideoPath = `${uploadDir}/reference${preparedVideo.extension}`;
 
-      setEstimatedProgressLabel("Video download");
+      setStatus("Uploading video… 0%");
       const referenceRef = ref(storage, referenceVideoPath);
-      await uploadBytes(referenceRef, preparedVideo.blob, {
-        contentType: preparedVideo.contentType,
-      });
+      await uploadFileWithProgress(
+        referenceRef,
+        preparedVideo.blob,
+        {contentType: preparedVideo.contentType},
+        (percent) => {
+          setStatus(`Uploading video… ${percent}%`);
+        }
+      );
       referenceVideoUrl = await getDownloadURL(referenceRef);
     }
 
-    setEstimatedProgressLabel("Preparing photo…");
+    setStatus("Preparing photo…");
     const uploadInput = await prepareUploadImage(rawFile);
 
-    setEstimatedProgressLabel("Uploading photo…");
+    setStatus("Uploading photo… 0%");
     const photoRef = ref(storage, uploadPath);
-    await uploadBytes(photoRef, uploadInput.blob, {
-      contentType: uploadInput.contentType || "image/jpeg",
-    });
+    await uploadFileWithProgress(
+      photoRef,
+      uploadInput.blob,
+      {contentType: uploadInput.contentType || "image/jpeg"},
+      (percent) => {
+        setStatus(`Uploading photo… ${percent}%`);
+      }
+    );
 
     const inputImageUrl = await getDownloadURL(photoRef);
 
+    setStatus("Finalizing upload…");
     await callCreateJob({
       finalizeJobId: jobId,
       inputImagePath: uploadPath,
@@ -2633,12 +2814,14 @@ $("btnGenerate").onclick = async () => {
       referenceVideoUrl: referenceVideoUrl || undefined,
     });
 
-    setEstimatedProgressLabel("Generating your trend…");
+    startEstimatedProgress("Generating your trend…");
+    attachEstimatedProgressJob(jobId);
   } catch (error) {
     stopEstimatedProgress();
     setStatus("");
     showFormError(callableErrorMessage(error));
   } finally {
+    generateSubmissionInFlight = false;
     btn.disabled = false;
   }
 };
@@ -2646,6 +2829,16 @@ $("btnGenerate").onclick = async () => {
 const fileInput = $("filePhoto");
 if (fileInput) {
   fileInput.addEventListener("click", async (event) => {
+    if (onboardingIsOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (onboardingStepIndex === 1) {
+        onboardingStepIndex = 2;
+        renderOnboardingStep();
+      }
+      return;
+    }
+
     if (!currentUser) {
       event.preventDefault();
       openAuth("Sign in to upload a photo.");

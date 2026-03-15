@@ -27,7 +27,7 @@
 body{font-family:var(--t-text-font);margin:0;background:var(--bg);color:var(--text);font-size:19px;}
 h1,h2,h3{font-family:var(--t-title-font);}
 
-.wrap{max-width:900px;margin:0 auto;padding:24px}
+.wrap{max-width:900px;margin:0 auto;padding:36px 24px 44px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:16px;margin:12px 0}
 button{border:0;border-radius:12px;padding:12px 14px;font-weight:600;cursor:pointer;font-size:21px}
 .btn{background:#fff;color:#000}
@@ -99,7 +99,7 @@ a{color:#fff}
 .templatesGrid{grid-template-columns:repeat(auto-fill,240px);justify-content:start;}
 
 @media (max-width: 640px){
-  .wrap{padding:16px;}
+  .wrap{padding:24px 16px 32px;}
   .grid{grid-template-columns:1fr;}                 /* формы в 1 колонку */
   input,select,button{width:100%;}
   input,select{font-size:24px;}                     /* iOS не зумит */
@@ -131,11 +131,11 @@ a{color:#fff}
   text-decoration:none;
 }
 .btnExternalAuth:hover{border-color:#7a7a7a;color:#c6c6c6;}
-.brandFooter{margin:16px 0 6px;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--muted);font-size:16px}
+.brandFooter{margin:34px 0 12px;display:flex;align-items:center;justify-content:center;gap:10px;color:var(--muted);font-size:16px}
 .brandFooter a{display:inline-flex;align-items:center;text-decoration:none}
 .brandFooter img{height:20px;width:auto;display:block;opacity:.95;border-radius:0}
 .brandFooterLinks{
-  margin:4px 0 0;
+  margin:12px 0 18px;
   display:flex;
   align-items:center;
   justify-content:center;
@@ -159,7 +159,12 @@ a{color:#fff}
   color:rgba(255,255,255,.52);
   text-decoration:underline;
 }
-.topBar{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.topBar{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:20px}
+.brandBlock{padding-top:4px}
+.brandLink{color:var(--text);text-decoration:none;display:inline-flex;align-items:center}
+.brandLink:hover{opacity:.92}
+.brandTitle{margin:0 0 12px;font-size:72px;line-height:.92}
+.brandSubtitle{max-width:480px;font-size:22px;line-height:1.18;opacity:.78}
 .supportBtn{
   display:none;
   padding:10px 16px;
@@ -234,11 +239,12 @@ a{color:#fff}
   pointer-events:none;
 }
 .onboardingOverlay.isOpen{display:flex;}
+.onboardingOverlay.isPassive{pointer-events:auto;}
 .onboardingHighlight{
   position:fixed;
   border-radius:12px;
   border:3px solid rgba(139,255,176,.85);
-  box-shadow:0 0 0 9999px rgba(0,0,0,.72),0 0 0 1px rgba(139,255,176,.25);
+  box-shadow:0 0 0 9999px rgba(0,0,0,.5),0 0 0 1px rgba(139,255,176,.25);
   pointer-events:none;
   z-index:2110;
   display:none;
@@ -356,7 +362,6 @@ a{color:#fff}
 body.onboardingActive{
   overflow:hidden;
   overscroll-behavior:none;
-  touch-action:none;
 }
 
 @media (max-width:640px){
@@ -371,6 +376,8 @@ body.onboardingActive{
   }
   .onboardingScreenArrowLeft{left:8px;}
   .onboardingScreenArrowRight{right:8px;}
+  .brandTitle{font-size:58px;}
+  .brandSubtitle{font-size:18px;line-height:1.22;}
 }
 
   </style>
@@ -379,9 +386,11 @@ body.onboardingActive{
 <body>
   <div class="wrap">
     <div class="topBar">
-      <div>
-        <h1 style="margin:0 0 6px">MoTrend©</h1>
-        <div class="muted">Make trends in minutes.</div>
+      <div class="brandBlock">
+        <a class="brandLink" href="https://trend.moads.agency/">
+          <h1 class="brandTitle">MoTrend©</h1>
+        </a>
+        <div class="muted brandSubtitle">Turn your photo into a viral trend</div>
       </div>
       <a
         id="supportBtn"
@@ -407,8 +416,8 @@ body.onboardingActive{
   </div>
 
   <div class="row" style="margin-top:12px">
-    <button id="btnEmailSignIn" class="btn">Sign in</button>
-    <button id="btnEmailSignUp" class="btn2">Create account</button>
+    <button id="btnEmailSignUp" class="btn">Create account</button>
+    <button id="btnEmailSignIn" class="btn2">Sign in</button>
 
     <button id="btnLogin" class="btn2 btnGoogle" style="margin-left:auto">
       <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
@@ -549,6 +558,6 @@ body.onboardingActive{
     </div>
   </div>
 
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="/app.js?v=20260315b"></script>
 </body>
 </html>

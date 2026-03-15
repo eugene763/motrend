@@ -12,10 +12,13 @@ service firebase.storage {
     function isAllowedUserUpload() {
       return request.resource == null || (
         (
-          request.resource.contentType.matches('image/.*') &&
+          request.resource.contentType == 'image/jpeg' &&
           request.resource.size < 40 * 1024 * 1024
         ) || (
-          request.resource.contentType.matches('video/.*') &&
+          (
+            request.resource.contentType == 'video/mp4' ||
+            request.resource.contentType == 'video/quicktime'
+          ) &&
           request.resource.size < 200 * 1024 * 1024
         )
       );

@@ -1791,11 +1791,9 @@ export const createJob = onCall(
 
     if (req.data?.supportProfile === true) {
       const supportCode = await ensureSupportCodeForUid(uid);
-      const isAdmin = req.auth?.token?.admin === true;
       return {
         uid,
         supportCode,
-        isAdmin,
       };
     }
 

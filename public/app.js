@@ -501,8 +501,22 @@ function openAuth(message = "") {
   } else {
     clearAuthError();
   }
-  authBox?.scrollIntoView({behavior: "smooth", block: "start"});
-  $("authEmail")?.focus();
+
+  if (authBox) {
+    requestAnimationFrame(() => {
+      authBox.scrollIntoView({behavior: "smooth", block: "start"});
+      setTimeout(() => {
+        authBox.scrollIntoView({behavior: "smooth", block: "start"});
+      }, 180);
+    });
+  }
+
+  const emailInput = $("authEmail");
+  try {
+    emailInput?.focus({preventScroll: true});
+  } catch {
+    emailInput?.focus();
+  }
 }
 
 function closeAuth() {

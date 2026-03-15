@@ -437,10 +437,6 @@ function closeUploadHintIfOpen() {
 
 function showUploadHint(message) {
   return new Promise((resolve) => {
-    if (onboardingIsOpen) {
-      resolve(false);
-      return;
-    }
     const modal = $("uploadHintModal");
     const text = $("uploadHintText");
     const okBtn = $("btnUploadHintOk");
@@ -473,343 +469,12 @@ function showUploadHint(message) {
 }
 
 async function maybeShowUploadHint(key, message) {
-  if (onboardingIsOpen) return;
   if (shouldUseRedirectLogin()) return;
   if (hasSeenHint(key)) return;
   const confirmed = await showUploadHint(message);
   if (confirmed) {
     markHintSeen(key);
   }
-}
-
-function onboardingSeenKey(uid) {
-  return `${ONBOARDING_SEEN_PREFIX}${uid}`;
-}
-
-function hasSeenOnboarding(uid) {
-  if (!uid) return true;
-  try {
-    return localStorage.getItem(onboardingSeenKey(uid)) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function markOnboardingSeen(uid) {
-  if (!uid) return;
-  try {
-    localStorage.setItem(onboardingSeenKey(uid), "1");
-  } catch {
-    // no-op
-  }
-}
-
-function markPendingOnboarding(uid = "") {
-  try {
-    const payload = {ts: Date.now(), uid: uid || ""};
-    sessionStorage.setItem(ONBOARDING_PENDING_KEY, JSON.stringify(payload));
-  } catch {
-    // no-op
-  }
-}
-
-function consumePendingOnboarding(expectedUid = "") {
-  try {
-    const raw = sessionStorage.getItem(ONBOARDING_PENDING_KEY);
-    if (!raw) return false;
-    sessionStorage.removeItem(ONBOARDING_PENDING_KEY);
-    let ts = Number(raw);
-    let pendingUid = "";
-    if (!Number.isFinite(ts)) {
-      const parsed = JSON.parse(raw);
-      ts = Number(parsed?.ts);
-      pendingUid = typeof parsed?.uid === "string" ? parsed.uid : "";
-    }
-    if (!Number.isFinite(ts)) return false;
-    if (expectedUid && pendingUid && pendingUid !== expectedUid) return false;
-    return Date.now() - ts <= ONBOARDING_PENDING_TTL_MS;
-  } catch {
-    return false;
-  }
-}
-
-function isLikelyNewUser(user) {
-  const createdAt = Date.parse(user?.metadata?.creationTime || "");
-  const lastSignInAt = Date.parse(user?.metadata?.lastSignInTime || "");
-  if (!Number.isFinite(createdAt) || !Number.isFinite(lastSignInAt)) {
-    return false;
-  }
-  return Math.abs(lastSignInAt - createdAt) <= 2 * 60 * 1000;
-}
-
-function clearOnboardingHighlight() {
-  if (onboardingHighlightRafId) {
-    cancelAnimationFrame(onboardingHighlightRafId);
-    onboardingHighlightRafId = 0;
-  }
-  const highlight = $("onboardingHighlight");
-  if (highlight) {
-    highlight.style.display = "none";
-  }
-  onboardingTargetEl = null;
-}
-
-function refreshOnboardingHighlight() {
-  if (!onboardingIsOpen || !(onboardingTargetEl instanceof HTMLElement)) {
-    clearOnboardingHighlight();
-    return;
-  }
-  const highlight = $("onboardingHighlight");
-  if (!highlight) return;
-
-  const rect = onboardingTargetEl.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) {
-    highlight.style.display = "none";
-    return;
-  }
-
-  const viewportWidth = Math.max(
-    window.visualViewport?.width || 0,
-    window.innerWidth || 0,
-    1
-  );
-  const viewportHeight = Math.max(
-    window.visualViewport?.height || 0,
-    window.innerHeight || 0,
-    1
-  );
-  const pad = 6;
-  const left = Math.max(8, rect.left - pad);
-  const top = Math.max(8, rect.top - pad);
-  const maxWidth = viewportWidth - left - 8;
-  const maxHeight = viewportHeight - top - 8;
-  const width = Math.max(24, Math.min(rect.width + pad * 2, maxWidth));
-  const height = Math.max(24, Math.min(rect.height + pad * 2, maxHeight));
-
-  highlight.style.left = `${left}px`;
-  highlight.style.top = `${top}px`;
-  highlight.style.width = `${width}px`;
-  highlight.style.height = `${height}px`;
-  highlight.style.display = "block";
-}
-
-function scheduleOnboardingHighlightRefresh() {
-  if (onboardingHighlightRafId) {
-    cancelAnimationFrame(onboardingHighlightRafId);
-  }
-  onboardingHighlightRafId = requestAnimationFrame(() => {
-    onboardingHighlightRafId = 0;
-    refreshOnboardingHighlight();
-  });
-}
-
-function shouldUseInstantOnboardingScroll() {
-  return isTelegramInAppBrowser() || shouldUseRedirectLogin();
-}
-
-function shouldUsePassiveOnboarding() {
-  return isTelegramInAppBrowser();
-}
-
-function scrollOnboardingTargetIntoView(target, behavior = "smooth") {
-  if (!(target instanceof HTMLElement)) return;
-  const overlayCard = document.querySelector("#onboardingOverlay .onboardingCard");
-  const bottomReserved = (overlayCard?.offsetHeight || 0) + 24;
-  const topSafe = 20;
-  const viewportHeight = Math.max(
-    window.visualViewport?.height || 0,
-    window.innerHeight || 0,
-    1
-  );
-  const visibleTop = topSafe;
-  const visibleBottom = Math.max(topSafe + 60, viewportHeight - bottomReserved);
-  const requestedBehavior = shouldUseInstantOnboardingScroll() ?
-    "auto" :
-    behavior;
-
-  const rect = target.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return;
-  const safePadding = 12;
-  const availableTop = visibleTop + safePadding;
-  const availableBottom = visibleBottom - safePadding;
-  const availableHeight = Math.max(80, availableBottom - availableTop);
-  const desiredTop = rect.height < availableHeight ?
-    availableTop + ((availableHeight - rect.height) / 2) :
-    availableTop;
-  const deltaY = rect.top - desiredTop;
-  if (Math.abs(deltaY) > 4) {
-    window.scrollBy({top: deltaY, behavior: requestedBehavior});
-  }
-}
-
-function buildOnboardingDots(activeIndex) {
-  const dotsEl = $("onboardingDots");
-  if (!dotsEl) return;
-  dotsEl.innerHTML = "";
-  ONBOARDING_STEPS.forEach((_, idx) => {
-    const dot = document.createElement("span");
-    dot.className = idx === activeIndex ? "onboardingDot isActive" : "onboardingDot";
-    dotsEl.appendChild(dot);
-  });
-}
-
-function renderOnboardingStep() {
-  const titleEl = $("onboardingStepTitle");
-  const textEl = $("onboardingStepText");
-  const prevBtn = $("onboardingPrevBtn");
-  const nextBtn = $("onboardingNextBtn");
-  const closeStepBtn = $("onboardingStepCloseBtn");
-  const screenPrevBtn = $("onboardingScreenPrevBtn");
-  const screenNextBtn = $("onboardingScreenNextBtn");
-  if (!titleEl || !textEl || !prevBtn || !nextBtn || !closeStepBtn) return;
-
-  const step = ONBOARDING_STEPS[onboardingStepIndex];
-  if (!step) return;
-  clearOnboardingTimers();
-
-  titleEl.textContent = step.title;
-  textEl.textContent = step.text;
-  buildOnboardingDots(onboardingStepIndex);
-
-  const isFirst = onboardingStepIndex === 0;
-  const isLast = onboardingStepIndex === ONBOARDING_STEPS.length - 1;
-  prevBtn.style.visibility = isFirst ? "hidden" : "visible";
-  prevBtn.disabled = isFirst;
-  nextBtn.style.display = isLast ? "none" : "inline-flex";
-  nextBtn.disabled = isLast;
-  closeStepBtn.style.display = isLast ? "inline-flex" : "none";
-  if (screenPrevBtn) {
-    screenPrevBtn.style.visibility = isFirst ? "hidden" : "visible";
-    screenPrevBtn.disabled = isFirst;
-  }
-  if (screenNextBtn) {
-    screenNextBtn.style.visibility = isLast ? "hidden" : "visible";
-    screenNextBtn.disabled = isLast;
-  }
-
-  const photoInput = $("filePhoto");
-  if (photoInput) {
-    photoInput.disabled = onboardingStepIndex === 1;
-  }
-
-  clearOnboardingHighlight();
-  const target = step.getTarget();
-  if (!(target instanceof HTMLElement)) {
-    setTimeout(() => {
-      if (!onboardingIsOpen) return;
-      renderOnboardingStep();
-    }, 200);
-    return;
-  }
-  scrollOnboardingTargetIntoView(target, "smooth");
-  onboardingTargetEl = target;
-  scheduleOnboardingHighlightRefresh();
-  setTimeout(() => {
-    if (!onboardingIsOpen || onboardingTargetEl !== target) return;
-    scrollOnboardingTargetIntoView(target, "auto");
-    refreshOnboardingHighlight();
-  }, 260);
-  setTimeout(() => {
-    if (!onboardingIsOpen || onboardingTargetEl !== target) return;
-    refreshOnboardingHighlight();
-  }, 520);
-  setTimeout(() => {
-    if (!onboardingIsOpen || onboardingTargetEl !== target) return;
-    refreshOnboardingHighlight();
-  }, 860);
-  requestAnimationFrame(() => {
-    if (!onboardingIsOpen || onboardingTargetEl !== target) return;
-    refreshOnboardingHighlight();
-  });
-  scheduleOnboardingAutoAdvance();
-}
-
-function preventOnboardingScroll(event) {
-  if (!onboardingIsOpen) return;
-  if (event.cancelable) {
-    event.preventDefault();
-  }
-}
-
-function preventOnboardingKeyboardScroll(event) {
-  if (!onboardingIsOpen) return;
-  const key = String(event.key || "");
-  if (
-    key === "ArrowUp" ||
-    key === "ArrowDown" ||
-    key === "PageUp" ||
-    key === "PageDown" ||
-    key === "Home" ||
-    key === "End" ||
-    key === " " ||
-    key === "Spacebar"
-  ) {
-    event.preventDefault();
-  }
-}
-
-function bindOnboardingScrollLock() {
-  if (onboardingScrollLockBound) return;
-  window.addEventListener("wheel", preventOnboardingScroll, {passive: false});
-  window.addEventListener("touchmove", preventOnboardingScroll, {passive: false});
-  window.addEventListener("keydown", preventOnboardingKeyboardScroll, {passive: false});
-  onboardingScrollLockBound = true;
-}
-
-function closeOnboarding(markSeen = true) {
-  const overlay = $("onboardingOverlay");
-  if (!overlay) return;
-  overlay.classList.remove("isOpen");
-  overlay.classList.remove("isPassive");
-  overlay.setAttribute("aria-hidden", "true");
-  document.body.classList.remove("onboardingActive");
-  clearOnboardingHighlight();
-  clearOnboardingTimers();
-  onboardingIsOpen = false;
-  onboardingStepIndex = 0;
-  onboardingStep1DemoIndex = 0;
-  const photoInput = $("filePhoto");
-  if (photoInput) {
-    photoInput.disabled = false;
-  }
-  const uid = overlay.dataset.uid || "";
-  if (markSeen && uid) {
-    markOnboardingSeen(uid);
-  }
-  if (markSeen) {
-    window.scrollTo({top: 0, behavior: "smooth"});
-  }
-  overlay.dataset.uid = "";
-}
-
-function openOnboarding(uid) {
-  if (!uid || onboardingIsOpen) return;
-  const overlay = $("onboardingOverlay");
-  if (!overlay) return;
-
-  closeUploadHintIfOpen();
-  bindOnboardingScrollLock();
-  overlay.dataset.uid = uid;
-  overlay.classList.add("isOpen");
-  overlay.classList.toggle("isPassive", shouldUsePassiveOnboarding());
-  overlay.setAttribute("aria-hidden", "false");
-  document.body.classList.add("onboardingActive");
-  onboardingIsOpen = true;
-  onboardingStepIndex = 0;
-  onboardingStep1DemoIndex = 0;
-  renderOnboardingStep();
-}
-
-function maybeStartOnboarding(user) {
-  if (!user?.uid || onboardingIsOpen || hasSeenOnboarding(user.uid)) return;
-  const pendingFromRegistration = consumePendingOnboarding(user.uid);
-  if (!pendingFromRegistration && !isLikelyNewUser(user)) return;
-  openOnboarding(user.uid);
-}
-
-function refreshOnboardingStepTarget() {
-  if (!onboardingIsOpen) return;
-  renderOnboardingStep();
 }
 
 function setSupportButtonMessage(supportCode = "") {
@@ -1110,14 +775,6 @@ let adminSelectedUid = "";
 let adminSelectedSupportCode = "";
 let activeUploadHintResolver = null;
 let activeUploadHintOkHandler = null;
-let onboardingIsOpen = false;
-let onboardingStepIndex = 0;
-let onboardingTargetEl = null;
-let onboardingHighlightRafId = 0;
-let onboardingScrollLockBound = false;
-let onboardingAutoAdvanceTimer = null;
-let onboardingStep1DemoTimer = null;
-let onboardingStep1DemoIndex = 0;
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
 const MAX_UPLOAD_IMAGE_BYTES = 40 * 1024 * 1024;
 const TARGET_UPLOAD_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -1127,9 +784,6 @@ const UPLOAD_IMAGE_QUALITY_STEPS = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65];
 const MAX_REFERENCE_VIDEO_BYTES = 200 * 1024 * 1024;
 const PHOTO_HINT_KEY = "motrend_photo_hint_v1";
 const VIDEO_HINT_KEY = "motrend_video_hint_v1";
-const ONBOARDING_SEEN_PREFIX = "motrend_onboarding_seen_v1_";
-const ONBOARDING_PENDING_KEY = "motrend_onboarding_pending_v1";
-const ONBOARDING_PENDING_TTL_MS = 20 * 60 * 1000;
 const PHOTO_HINT_MESSAGE =
   "For best results, choose a high-quality photo with clear facial features, visible hands, and a body position that matches the selected reference. Formats: .jpg / .jpeg / .png\n" +
   "File size: ≤10MB.\n" +
@@ -1144,100 +798,6 @@ const PROGRESS_STAGE_B_MS = 80000; // 50-70 slower
 const PROGRESS_STAGE_C_MS = 320000; // 70-90 slower
 const PROGRESS_STAGE_D_MS = 42000; // 90-97 slower
 const PROGRESS_STAGE_E_MS = 80000; // 97-99: ~1% every 40s
-
-function findFirstVisibleElement(selectors) {
-  for (const selector of selectors) {
-    const el = document.querySelector(selector);
-    if (!(el instanceof HTMLElement)) continue;
-    const rect = el.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      return el;
-    }
-  }
-  return null;
-}
-
-function getVisibleOnboardingTrendCards() {
-  return Array.from(document.querySelectorAll("#templates .tplCard")).filter((el) => {
-    if (!(el instanceof HTMLElement)) return false;
-    const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
-  });
-}
-
-function clearOnboardingTimers() {
-  if (onboardingAutoAdvanceTimer) {
-    clearTimeout(onboardingAutoAdvanceTimer);
-    onboardingAutoAdvanceTimer = null;
-  }
-  if (onboardingStep1DemoTimer) {
-    clearTimeout(onboardingStep1DemoTimer);
-    onboardingStep1DemoTimer = null;
-  }
-}
-
-function scheduleOnboardingAutoAdvance() {
-  clearOnboardingTimers();
-  if (!onboardingIsOpen) return;
-
-  if (onboardingStepIndex === 0) {
-    const cards = getVisibleOnboardingTrendCards().slice(0, 3);
-    if (!cards.length) return;
-    const maxIndex = Math.max(0, cards.length - 1);
-
-    if (onboardingStep1DemoIndex < maxIndex) {
-      onboardingStep1DemoTimer = setTimeout(() => {
-        if (!onboardingIsOpen || onboardingStepIndex !== 0) return;
-        onboardingStep1DemoIndex = Math.min(onboardingStep1DemoIndex + 1, maxIndex);
-        renderOnboardingStep();
-      }, 1200);
-      return;
-    }
-
-    onboardingAutoAdvanceTimer = setTimeout(() => {
-      if (!onboardingIsOpen || onboardingStepIndex !== 0) return;
-      onboardingStep1DemoIndex = 0;
-      onboardingStepIndex = 1;
-      renderOnboardingStep();
-    }, 1500);
-    return;
-  }
-
-  if (onboardingStepIndex === 1) {
-    onboardingAutoAdvanceTimer = setTimeout(() => {
-      if (!onboardingIsOpen || onboardingStepIndex !== 1) return;
-      onboardingStepIndex = 2;
-      renderOnboardingStep();
-    }, 1500);
-  }
-}
-
-const ONBOARDING_STEPS = [
-  {
-    title: "1. Choose trend",
-    text: "Tap Use or Upload to select your reference.",
-    getTarget: () => {
-      const cards = getVisibleOnboardingTrendCards().slice(0, 3);
-      if (!cards.length) return null;
-      const index = Math.max(0, Math.min(onboardingStep1DemoIndex, cards.length - 1));
-      return cards[index];
-    },
-  },
-  {
-    title: "2. Choose your photo",
-    text: "Upload your photo from the device gallery.",
-    getTarget: () => {
-      const fileInput = $("filePhoto");
-      if (!fileInput) return null;
-      return fileInput.closest("div") || fileInput;
-    },
-  },
-  {
-    title: "3. Generate your trend",
-    text: "Tap Generate and wait for completion.",
-    getTarget: () => $("btnGenerate"),
-  },
-];
 
 function createClientRequestId(prefix = "req") {
   if (
@@ -1455,7 +1015,6 @@ function syncTrendSelectionUi() {
 }
 
 function scrollToPhotoUploadField() {
-  if (onboardingIsOpen) return false;
 
   const fileInput = $("filePhoto");
   const fieldWrap = fileInput?.closest("div");
@@ -1739,80 +1298,6 @@ if (openExternalAuthBtn) {
   };
 }
 
-const onboardingPrevBtn = $("onboardingPrevBtn");
-if (onboardingPrevBtn) {
-  onboardingPrevBtn.onclick = () => {
-    if (!onboardingIsOpen || onboardingStepIndex <= 0) return;
-    onboardingStepIndex -= 1;
-    renderOnboardingStep();
-  };
-}
-
-const onboardingNextBtn = $("onboardingNextBtn");
-if (onboardingNextBtn) {
-  onboardingNextBtn.onclick = () => {
-    if (!onboardingIsOpen) return;
-    if (onboardingStepIndex >= ONBOARDING_STEPS.length - 1) return;
-    onboardingStepIndex += 1;
-    renderOnboardingStep();
-  };
-}
-
-const onboardingScreenPrevBtn = $("onboardingScreenPrevBtn");
-if (onboardingScreenPrevBtn) {
-  onboardingScreenPrevBtn.onclick = () => {
-    if (!onboardingIsOpen || onboardingStepIndex <= 0) return;
-    onboardingStepIndex -= 1;
-    renderOnboardingStep();
-  };
-}
-
-const onboardingScreenNextBtn = $("onboardingScreenNextBtn");
-if (onboardingScreenNextBtn) {
-  onboardingScreenNextBtn.onclick = () => {
-    if (!onboardingIsOpen) return;
-    if (onboardingStepIndex >= ONBOARDING_STEPS.length - 1) return;
-    onboardingStepIndex += 1;
-    renderOnboardingStep();
-  };
-}
-
-const onboardingStepCloseBtn = $("onboardingStepCloseBtn");
-if (onboardingStepCloseBtn) {
-  onboardingStepCloseBtn.onclick = () => {
-    closeOnboarding(true);
-  };
-}
-
-const onboardingCloseBtn = $("onboardingCloseBtn");
-if (onboardingCloseBtn) {
-  onboardingCloseBtn.onclick = () => {
-    closeOnboarding(true);
-  };
-}
-
-window.addEventListener("resize", () => {
-  if (!onboardingIsOpen) return;
-  if (onboardingTargetEl instanceof HTMLElement) {
-    scrollOnboardingTargetIntoView(onboardingTargetEl, "auto");
-  }
-  scheduleOnboardingHighlightRefresh();
-});
-window.addEventListener("scroll", () => {
-  if (!onboardingIsOpen) return;
-  scheduleOnboardingHighlightRefresh();
-}, true);
-if (window.visualViewport) {
-  window.visualViewport.addEventListener("resize", () => {
-    if (!onboardingIsOpen) return;
-    scheduleOnboardingHighlightRefresh();
-  });
-  window.visualViewport.addEventListener("scroll", () => {
-    if (!onboardingIsOpen) return;
-    scheduleOnboardingHighlightRefresh();
-  });
-}
-
 $("btnEmailSignIn").onclick = async () => {
   clearAuthError();
   const email = $("authEmail").value.trim();
@@ -1834,7 +1319,6 @@ $("btnEmailSignUp").onclick = async () => {
   try {
     track("signup_click", {method: "email"});
     const credential = await createUserWithEmailAndPassword(auth, email, pass);
-    markPendingOnboarding(credential?.user?.uid || "");
   } catch (error) {
     showAuthError(callableErrorMessage(error));
   }
@@ -1860,9 +1344,6 @@ $("btnLogin").onclick = async () => {
       return;
     }
     const result = await signInWithPopup(auth, provider);
-    if (isLikelyNewUser(result?.user)) {
-      markPendingOnboarding(result?.user?.uid || "");
-    }
   } catch (error) {
     const code = typeof error?.code === "string" ? error.code : "";
     const popupFailed = [
@@ -1931,15 +1412,6 @@ $("btnForgotPassword").onclick = async () => {
   );
 };
 
-$("btnSaveProfile").onclick = async () => {
-  if (!currentUser) return;
-  await setDoc(doc(db, "users", currentUser.uid), {
-    email: currentUser.email,
-    country: $("inpCountry").value,
-    language: $("inpLang").value,
-    updatedAt: serverTimestamp(),
-  }, {merge: true});
-};
 
 $("btnWallet").onclick = () => {
   setStatus("Wallet is coming soon.");
@@ -2087,6 +1559,10 @@ function renderReferenceVideoCard() {
   };
 
   const openPicker = async ({enableScrollAfterPick = false} = {}) => {
+    if (!currentUser) {
+      openAuth("Sign in to upload your reference video.");
+      return;
+    }
     if (!picker) return;
     clearFormError();
     scrollAfterPickerSelection = enableScrollAfterPick;
@@ -2101,9 +1577,6 @@ function renderReferenceVideoCard() {
       selectedTemplate = availableTemplates[0];
     }
     syncTrendSelectionUi();
-    if (onboardingStepIndex === 0) {
-      refreshOnboardingStepTarget();
-    }
   };
 
   card.onclick = () => {
@@ -2134,9 +1607,6 @@ function renderReferenceVideoCard() {
 
       updateReferenceMetaUi();
       syncTrendSelectionUi();
-      if (onboardingStepIndex === 0) {
-        refreshOnboardingStepTarget();
-      }
       if (file && scrollAfterPickerSelection) {
         scrollToPhotoUploadField();
       }
@@ -2253,9 +1723,6 @@ function renderTemplateCard(template) {
         // no-op
       }
     }
-    if (onboardingStepIndex === 0) {
-      refreshOnboardingStepTarget();
-    }
   };
 
   card.onclick = () => {
@@ -2346,8 +1813,6 @@ function watchUserDoc(uid) {
     if (typeof data.supportCode === "string" && data.supportCode.trim()) {
       setSupportCodeUi(data.supportCode);
     }
-    const needsOnboarding = !data.country || !data.language;
-    $("onboarding").style.display = needsOnboarding ? "block" : "none";
   });
 }
 
@@ -2829,15 +2294,6 @@ $("btnGenerate").onclick = async () => {
 const fileInput = $("filePhoto");
 if (fileInput) {
   fileInput.addEventListener("click", async (event) => {
-    if (onboardingIsOpen) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (onboardingStepIndex === 1) {
-        onboardingStepIndex = 2;
-        renderOnboardingStep();
-      }
-      return;
-    }
 
     if (!currentUser) {
       event.preventDefault();
@@ -2854,10 +2310,7 @@ if (fileInput) {
 }
 
 try {
-  const redirectResult = await getRedirectResult(auth);
-  if (isLikelyNewUser(redirectResult?.user)) {
-    markPendingOnboarding(redirectResult?.user?.uid || "");
-  }
+  await getRedirectResult(auth);
 } catch (error) {
   const code = typeof error?.code === "string" ? error.code : "";
   if (isTelegramInAppBrowser() && code.includes("invalid-action-code")) {
@@ -2914,7 +2367,6 @@ onAuthStateChanged(auth, async (user) => {
     preparingDownloadJobIds.clear();
     preparedDownloadByJobId.clear();
     showOlderJobs = false;
-    closeOnboarding(false);
     renderJobsList();
 
     await loadTemplates();
@@ -2952,9 +2404,6 @@ onAuthStateChanged(auth, async (user) => {
   await syncSupportProfile();
 
   await loadTemplates();
-  requestAnimationFrame(() => {
-    maybeStartOnboarding(user);
-  });
   unsubscribeUserDoc = watchUserDoc(user.uid);
   unsubscribeJobs = watchLatestJobs(user.uid);
 });

@@ -121,6 +121,13 @@ interface RefundState {
   refundedAt?: admin.firestore.Timestamp;
 }
 
+interface BillingState {
+  source?: "template_duration" | "reference_video_duration";
+  durationSec?: number;
+  rawDurationSec?: number;
+  costCredits?: number;
+}
+
 interface SupportCodeDoc {
   uid?: string;
   createdAt?: admin.firestore.Timestamp;
@@ -139,6 +146,7 @@ interface JobDoc {
   kling?: KlingState;
   download?: DownloadState;
   refund?: RefundState;
+  billing?: BillingState;
   createdAt?: admin.firestore.Timestamp;
   updatedAt?: admin.firestore.Timestamp;
 }
@@ -274,13 +282,14 @@ function isKling500Code1200Error(message: string): boolean {
   return /"code"\s*:\s*1200/.test(message);
 }
 
-function templateCostCredits(template?: TemplateDoc): number {
-  const durationSec = (
+function templateDurationSeconds(template?: TemplateDoc): number {
+  return (
     typeof template?.durationSec === "number" && template.durationSec > 0
   ) ? template.durationSec : 10;
-  return (
-    typeof template?.costCredits === "number" && template.costCredits > 0
-  ) ? Math.floor(template.costCredits) : Math.max(1, Math.ceil(durationSec));
+}
+
+function templateCostCredits(template?: TemplateDoc): number {
+  return Math.max(1, Math.ceil(templateDurationSeconds(template)));
 }
 
 function positiveFiniteInt(value: unknown): number | null {
@@ -620,6 +629,144 @@ async function resolveRefundAmountForJobInTransaction(
 async function storageObjectExists(storagePath: string): Promise<boolean> {
   const [exists] = await admin.storage().bucket().file(storagePath).exists();
   return exists === true;
+}
+
+function readUInt64BEAsNumber(buffer: Buffer, offset: number): number {
+  const high = buffer.readUInt32BE(offset);
+  const low = buffer.readUInt32BE(offset + 4);
+  return high * 2 ** 32 + low;
+}
+
+function readIsoBox(
+  buffer: Buffer,
+  offset: number,
+  limit = buffer.length
+): {
+  type: string;
+  size: number;
+  headerSize: number;
+  start: number;
+  end: number;
+  contentStart: number;
+} | null {
+  if (offset < 0 || offset + 8 > limit) return null;
+
+  let size = buffer.readUInt32BE(offset);
+  const type = buffer.toString("ascii", offset + 4, offset + 8);
+  let headerSize = 8;
+
+  if (size === 1) {
+    if (offset + 16 > limit) return null;
+    size = readUInt64BEAsNumber(buffer, offset + 8);
+    headerSize = 16;
+  } else if (size === 0) {
+    size = limit - offset;
+  }
+
+  if (type === "uuid") {
+    if (offset + headerSize + 16 > limit) return null;
+    headerSize += 16;
+  }
+
+  if (!Number.isFinite(size) || size < headerSize) return null;
+  const end = offset + size;
+  if (end > limit) return null;
+
+  return {
+    type,
+    size,
+    headerSize,
+    start: offset,
+    end,
+    contentStart: offset + headerSize,
+  };
+}
+
+function parseMvhdDurationSeconds(
+  buffer: Buffer,
+  boxStart: number,
+  boxEnd: number
+): number | null {
+  const box = readIsoBox(buffer, boxStart, boxEnd);
+  if (!box || box.type !== "mvhd") return null;
+
+  const versionOffset = box.contentStart;
+  if (versionOffset + 4 > box.end) return null;
+
+  const version = buffer.readUInt8(versionOffset);
+  if (version === 0) {
+    const timescaleOffset = versionOffset + 12;
+    const durationOffset = versionOffset + 16;
+    if (durationOffset + 4 > box.end) return null;
+    const timescale = buffer.readUInt32BE(timescaleOffset);
+    const duration = buffer.readUInt32BE(durationOffset);
+    if (!timescale || !Number.isFinite(duration)) return null;
+    return duration / timescale;
+  }
+
+  if (version === 1) {
+    const timescaleOffset = versionOffset + 20;
+    const durationOffset = versionOffset + 24;
+    if (durationOffset + 8 > box.end) return null;
+    const timescale = buffer.readUInt32BE(timescaleOffset);
+    const duration = readUInt64BEAsNumber(buffer, durationOffset);
+    if (!timescale || !Number.isFinite(duration)) return null;
+    return duration / timescale;
+  }
+
+  return null;
+}
+
+function parseIsoBmffDurationSeconds(buffer: Buffer): number | null {
+  for (let offset = 0; offset < buffer.length;) {
+    const box = readIsoBox(buffer, offset, buffer.length);
+    if (!box) break;
+
+    if (box.type === "moov") {
+      for (let innerOffset = box.contentStart; innerOffset < box.end;) {
+        const innerBox = readIsoBox(buffer, innerOffset, box.end);
+        if (!innerBox) break;
+        if (innerBox.type === "mvhd") {
+          return parseMvhdDurationSeconds(buffer, innerOffset, box.end);
+        }
+        innerOffset = innerBox.end;
+      }
+    }
+
+    offset = box.end;
+  }
+
+  return null;
+}
+
+async function probeReferenceVideoDurationSeconds(
+  storagePath: string
+): Promise<number> {
+  const file = admin.storage().bucket().file(storagePath);
+  const [metadata] = await file.getMetadata();
+  const size = Number(metadata.size || 0);
+  if (!Number.isFinite(size) || size <= 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Uploaded reference video is empty."
+    );
+  }
+
+  const [buffer] = await file.download();
+  const durationSec = parseIsoBmffDurationSeconds(buffer);
+  if (
+    durationSec === null ||
+    !Number.isFinite(durationSec) ||
+    durationSec <= 0
+  ) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Unable to read reference video duration. " +
+      "Please upload an MP4 or MOV video."
+    );
+  }
+
+  return durationSec;
 }
 
 function isExpectedReferenceVideoPath(
@@ -1275,6 +1422,12 @@ async function finalizePreparedJob(params: {
     );
   }
 
+  const uploadedReferenceDurationSec = (
+    referenceVideoPath && referenceVideoUrl
+  ) ?
+    await probeReferenceVideoDurationSeconds(referenceVideoPath) :
+    null;
+
   return await db.runTransaction(async (tx) => {
     const currentSnap = await tx.get(jobRef);
     if (!currentSnap.exists) {
@@ -1325,7 +1478,10 @@ async function finalizePreparedJob(params: {
       );
     }
 
-    const costCredits = templateCostCredits(template);
+    const billedDurationSec = uploadedReferenceDurationSec !== null ?
+      Math.max(1, Math.ceil(uploadedReferenceDurationSec)) :
+      templateCostCredits(template);
+    const costCredits = billedDurationSec;
     const userRef = db.collection("users").doc(uid);
     const userSnap = await tx.get(userRef);
     const userData = (userSnap.data() as UserDoc | undefined) || {};
@@ -1352,12 +1508,21 @@ async function finalizePreparedJob(params: {
     const updates: Record<string, unknown> = {
       "status": "queued" as JobStatus,
       "debitedCredits": costCredits,
+      "billing.source": uploadedReferenceDurationSec !== null ?
+        "reference_video_duration" :
+        "template_duration",
+      "billing.durationSec": billedDurationSec,
+      "billing.costCredits": costCredits,
       inputImagePath,
       inputImageUrl,
       "kling.state": "queued",
       "kling.submitQueuedAt": admin.firestore.FieldValue.serverTimestamp(),
       "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
     };
+    if (uploadedReferenceDurationSec !== null) {
+      updates["billing.rawDurationSec"] =
+        Number(uploadedReferenceDurationSec.toFixed(3));
+    }
     if (referenceVideoPath && referenceVideoUrl) {
       updates.referenceVideoPath = referenceVideoPath;
       updates.referenceVideoUrl = referenceVideoUrl;

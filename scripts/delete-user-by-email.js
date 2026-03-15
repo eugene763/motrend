@@ -20,6 +20,7 @@ function parseArgs(argv) {
     email: "",
     projectId: readDefaultProjectId(),
     dryRun: false,
+    yes: false,
   };
 
   for (let i = 0; i < args.length; i += 1) {
@@ -30,6 +31,10 @@ function parseArgs(argv) {
     }
     if (arg === "--dry-run") {
       options.dryRun = true;
+      continue;
+    }
+    if (arg === "--yes") {
+      options.yes = true;
       continue;
     }
     if (arg === "--project" || arg === "-p") {
@@ -51,11 +56,11 @@ function printHelp() {
   console.log(
     [
       "Usage:",
-      "  node scripts/delete-user-by-email.js <email> [--dry-run] [--project <projectId>]",
+      "  node scripts/delete-user-by-email.js <email> [--dry-run] [--yes] [--project <projectId>]",
       "",
       "Examples:",
       "  node scripts/delete-user-by-email.js user@example.com --dry-run",
-      "  node scripts/delete-user-by-email.js user@example.com",
+      "  node scripts/delete-user-by-email.js user@example.com --yes",
     ].join("\n")
   );
 }
@@ -113,6 +118,11 @@ async function main() {
   }
   if (!options.projectId) {
     throw new Error("Missing Firebase projectId. Pass --project <projectId>.");
+  }
+  if (!options.dryRun && !options.yes) {
+    throw new Error(
+      "Refusing to delete without confirmation. Re-run with --yes or use --dry-run first."
+    );
   }
 
   admin.initializeApp({

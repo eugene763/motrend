@@ -1496,7 +1496,12 @@ async function finalizePreparedJob(params: {
     if (currentCredits < costCredits) {
       throw new HttpsError(
         "resource-exhausted",
-        "Not enough credits for this generation."
+        "Not enough credits for this generation.",
+        {
+          currentCredits,
+          requiredCredits: costCredits,
+          shortfallCredits: costCredits - currentCredits,
+        }
       );
     }
 

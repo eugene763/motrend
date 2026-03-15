@@ -168,6 +168,26 @@ function clearFormError() {
   el.style.display = "none";
 }
 
+function getStoredFlag(key, storage = localStorage) {
+  try {
+    return storage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setStoredFlag(key, value = true, storage = localStorage) {
+  try {
+    if (value) {
+      storage.setItem(key, "1");
+    } else {
+      storage.removeItem(key);
+    }
+  } catch {
+    // no-op
+  }
+}
+
 function setStatus(message) {
   const el = $("status");
   if (!el) return;
@@ -182,6 +202,8 @@ function setStatusHintVisible(visible) {
 
 const ATTRIBUTION_STORAGE_KEY = "motrend_attribution_v1";
 const ATTRIBUTION_SYNC_PREFIX = "motrend_attribution_sync_v1_";
+const AUTH_GIFT_PROMO_SEEN_KEY = "motrend_auth_gift_prompt_seen_v1";
+const AUTH_GIFT_SUCCESS_PENDING_KEY = "motrend_auth_gift_success_pending_v1";
 const ATTRIBUTION_UTM_KEYS = [
   "utm_source",
   "utm_medium",
@@ -477,6 +499,82 @@ async function maybeShowUploadHint(key, message) {
   }
 }
 
+function closeNoticeIfOpen(runConfirmAction = false) {
+  const modal = $("noticeModal");
+  const okBtn = $("btnNoticeOk");
+
+  if (okBtn && activeNoticeOkHandler) {
+    okBtn.removeEventListener("click", activeNoticeOkHandler);
+  }
+  activeNoticeOkHandler = null;
+
+  if (modal) {
+    modal.style.display = "none";
+  }
+
+  if (runConfirmAction && typeof activeNoticeConfirmAction === "function") {
+    const action = activeNoticeConfirmAction;
+    activeNoticeConfirmAction = null;
+    action();
+  } else {
+    activeNoticeConfirmAction = null;
+  }
+
+  if (activeNoticeResolver) {
+    const resolve = activeNoticeResolver;
+    activeNoticeResolver = null;
+    resolve(false);
+  }
+}
+
+function showNoticeModal({
+  message,
+  buttonText = "OK",
+  onConfirm = null,
+}) {
+  return new Promise((resolve) => {
+    const modal = $("noticeModal");
+    const text = $("noticeText");
+    const okBtn = $("btnNoticeOk");
+
+    if (!modal || !text || !okBtn) {
+      if (typeof onConfirm === "function") onConfirm();
+      resolve(true);
+      return;
+    }
+
+    if (activeNoticeResolver) {
+      closeNoticeIfOpen(false);
+    }
+
+    const onOk = () => {
+      modal.style.display = "none";
+      if (okBtn && activeNoticeOkHandler) {
+        okBtn.removeEventListener("click", activeNoticeOkHandler);
+      }
+      activeNoticeOkHandler = null;
+      const confirmAction = activeNoticeConfirmAction;
+      activeNoticeConfirmAction = null;
+      const done = activeNoticeResolver;
+      activeNoticeResolver = null;
+      if (typeof confirmAction === "function") {
+        confirmAction();
+      }
+      if (done) {
+        done(true);
+      }
+    };
+
+    activeNoticeResolver = resolve;
+    activeNoticeConfirmAction = onConfirm;
+    activeNoticeOkHandler = onOk;
+    text.textContent = message;
+    okBtn.textContent = buttonText;
+    modal.style.display = "flex";
+    okBtn.addEventListener("click", onOk, {once: true});
+  });
+}
+
 function setSupportButtonMessage(supportCode = "") {
   const btn = $("supportBtn");
   if (!btn) return;
@@ -493,6 +591,17 @@ function setSupportButtonMessage(supportCode = "") {
 }
 
 function openAuth(message = "") {
+  if (!currentUser && !getStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY)) {
+    setStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY, true);
+    setStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, true, sessionStorage);
+    void showNoticeModal({
+      message: "🎁 Sign in now and get 5 free credits!",
+      buttonText: "OK",
+      onConfirm: () => openAuth(message),
+    });
+    return;
+  }
+
   const authBox = $("auth");
   if (authBox) authBox.style.display = "block";
   updateAuthInAppActions();
@@ -590,6 +699,44 @@ function callableErrorMessage(error) {
     return message || "You have no access to this trend.";
   }
   return message || "Something went wrong. Try again.";
+}
+
+function extractShortfallCredits(error) {
+  const details = error?.details;
+  if (!details || typeof details !== "object") return null;
+
+  const shortfall = Number(details.shortfallCredits);
+  if (Number.isFinite(shortfall) && shortfall > 0) {
+    return Math.ceil(shortfall);
+  }
+
+  const required = Number(details.requiredCredits);
+  const current = Number(details.currentCredits);
+  if (
+    Number.isFinite(required) &&
+    Number.isFinite(current) &&
+    required > current
+  ) {
+    return Math.ceil(required - current);
+  }
+
+  return null;
+}
+
+function openWallet() {
+  setStatus("Wallet is coming soon.");
+  setStatusHintVisible(false);
+}
+
+function renderCreditsBadge(balance) {
+  const creditsEl = $("credits");
+  if (!creditsEl) return;
+
+  const numericBalance = Number.isFinite(Number(balance)) ? Number(balance) : 0;
+  const normalizedBalance = numericBalance > 0 ? numericBalance : 0;
+  creditsEl.textContent = `${normalizedBalance} credits`;
+  creditsEl.classList.toggle("isPositive", normalizedBalance > 0);
+  creditsEl.classList.toggle("isZero", normalizedBalance <= 0);
 }
 
 function setSupportCodeUi(supportCode = "") {
@@ -765,6 +912,7 @@ let currentUser = null;
 let selectedTemplate = null;
 let selectedReferenceVideoFile = null;
 let selectedReferenceVideoName = "";
+let selectedReferenceVideoUploadState = "idle";
 const TREND_SELECTION_TEMPLATE = "template";
 const TREND_SELECTION_REFERENCE = "reference";
 let selectedTrendKind = TREND_SELECTION_TEMPLATE;
@@ -789,6 +937,9 @@ let adminSelectedUid = "";
 let adminSelectedSupportCode = "";
 let activeUploadHintResolver = null;
 let activeUploadHintOkHandler = null;
+let activeNoticeResolver = null;
+let activeNoticeOkHandler = null;
+let activeNoticeConfirmAction = null;
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
 const MAX_UPLOAD_IMAGE_BYTES = 40 * 1024 * 1024;
 const TARGET_UPLOAD_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -1026,6 +1177,43 @@ function syncTrendSelectionUi() {
 
   clearTrendSelectionUi();
   updateSelectedTrendField();
+}
+
+function getReferenceVideoMetaPresentation() {
+  if (selectedReferenceVideoUploadState === "uploaded") {
+    return {
+      text: "Your video is uploaded",
+      title: selectedReferenceVideoName || "Your video is uploaded",
+      state: "uploaded",
+    };
+  }
+
+  if (selectedReferenceVideoUploadState === "error") {
+    return {
+      text: "Error",
+      title: "Error",
+      state: "error",
+    };
+  }
+
+  return {
+    text: selectedReferenceVideoName || "No video selected",
+    title: selectedReferenceVideoName || "",
+    state: "idle",
+  };
+}
+
+function refreshReferenceVideoCardUi() {
+  const meta = document.querySelector(
+    ".tplCard[data-trend-role='reference'] .refMetaName"
+  );
+  if (!meta) return;
+
+  const presentation = getReferenceVideoMetaPresentation();
+  meta.textContent = presentation.text;
+  meta.title = presentation.title;
+  meta.classList.toggle("isSuccess", presentation.state === "uploaded");
+  meta.classList.toggle("isError", presentation.state === "error");
 }
 
 function scrollToPhotoUploadField() {
@@ -1428,8 +1616,7 @@ $("btnForgotPassword").onclick = async () => {
 
 
 $("btnWallet").onclick = () => {
-  setStatus("Wallet is coming soon.");
-  setStatusHintVisible(false);
+  openWallet();
 };
 
 async function handleFindSupportUser() {
@@ -1556,7 +1743,11 @@ function renderReferenceVideoCard() {
 
   const meta = document.createElement("div");
   meta.className = "muted refMetaName";
-  meta.textContent = selectedReferenceVideoName || "No video selected";
+  const initialMeta = getReferenceVideoMetaPresentation();
+  meta.textContent = initialMeta.text;
+  meta.title = initialMeta.title;
+  meta.classList.toggle("isSuccess", initialMeta.state === "uploaded");
+  meta.classList.toggle("isError", initialMeta.state === "error");
 
   const actionBtn = document.createElement("button");
   actionBtn.className = "btn tplUse";
@@ -1568,8 +1759,11 @@ function renderReferenceVideoCard() {
   let scrollAfterPickerSelection = false;
 
   const updateReferenceMetaUi = () => {
-    meta.textContent = selectedReferenceVideoName || "No video selected";
-    meta.title = selectedReferenceVideoName || "";
+    const presentation = getReferenceVideoMetaPresentation();
+    meta.textContent = presentation.text;
+    meta.title = presentation.title;
+    meta.classList.toggle("isSuccess", presentation.state === "uploaded");
+    meta.classList.toggle("isError", presentation.state === "error");
   };
 
   const openPicker = async ({enableScrollAfterPick = false} = {}) => {
@@ -1609,6 +1803,7 @@ function renderReferenceVideoCard() {
       const file = picker.files?.[0] || null;
       selectedReferenceVideoFile = file;
       selectedReferenceVideoName = file ? file.name : "";
+      selectedReferenceVideoUploadState = "idle";
 
       if (file) {
         selectedTrendKind = TREND_SELECTION_REFERENCE;
@@ -1821,7 +2016,7 @@ async function loadTemplates() {
 function watchUserDoc(uid) {
   return onSnapshot(doc(db, "users", uid), (snap) => {
     const data = snap.data() || {};
-    $("credits").textContent = data.creditsBalance ?? 0;
+    renderCreditsBadge(data.creditsBalance ?? 0);
     $("country").textContent = data.country ?? "—";
     $("lang").textContent = data.language ?? "—";
     if (typeof data.supportCode === "string" && data.supportCode.trim()) {
@@ -2257,15 +2452,23 @@ $("btnGenerate").onclick = async () => {
 
       setStatus("Uploading video… 0%");
       const referenceRef = ref(storage, referenceVideoPath);
-      await uploadFileWithProgress(
-        referenceRef,
-        preparedVideo.blob,
-        {contentType: preparedVideo.contentType},
-        (percent) => {
-          setStatus(`Uploading video… ${percent}%`);
-        }
-      );
-      referenceVideoUrl = await getDownloadURL(referenceRef);
+      try {
+        await uploadFileWithProgress(
+          referenceRef,
+          preparedVideo.blob,
+          {contentType: preparedVideo.contentType},
+          (percent) => {
+            setStatus(`Uploading video… ${percent}%`);
+          }
+        );
+        referenceVideoUrl = await getDownloadURL(referenceRef);
+        selectedReferenceVideoUploadState = "uploaded";
+        refreshReferenceVideoCardUi();
+      } catch (error) {
+        selectedReferenceVideoUploadState = "error";
+        refreshReferenceVideoCardUi();
+        throw error;
+      }
     }
 
     setStatus("Preparing photo…");
@@ -2298,6 +2501,24 @@ $("btnGenerate").onclick = async () => {
   } catch (error) {
     stopEstimatedProgress();
     setStatus("");
+    if (
+      selectedTrendKind === TREND_SELECTION_REFERENCE &&
+      selectedReferenceVideoFile
+    ) {
+      selectedReferenceVideoUploadState = "error";
+      refreshReferenceVideoCardUi();
+    }
+    const shortfallCredits = extractShortfallCredits(error);
+    if (shortfallCredits !== null) {
+      await showNoticeModal({
+        message: `You are short ${shortfallCredits} credits`,
+        buttonText: "OK",
+        onConfirm: () => {
+          openWallet();
+        },
+      });
+      return;
+    }
     showFormError(callableErrorMessage(error));
   } finally {
     generateSubmissionInFlight = false;
@@ -2351,7 +2572,7 @@ onAuthStateChanged(auth, async (user) => {
 
   if (!user) {
     $("userLine").textContent = "Guest";
-    $("credits").textContent = "0";
+    renderCreditsBadge(0);
     $("country").textContent = "—";
     $("lang").textContent = "—";
     selectedTemplate = null;
@@ -2361,6 +2582,7 @@ onAuthStateChanged(auth, async (user) => {
     updateSelectedTrendField();
     selectedReferenceVideoFile = null;
     selectedReferenceVideoName = "";
+    selectedReferenceVideoUploadState = "idle";
     const referencePicker = $("fileReferenceVideo");
     if (referencePicker) {
       referencePicker.value = "";
@@ -2420,4 +2642,12 @@ onAuthStateChanged(auth, async (user) => {
   await loadTemplates();
   unsubscribeUserDoc = watchUserDoc(user.uid);
   unsubscribeJobs = watchLatestJobs(user.uid);
+
+  if (getStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, sessionStorage)) {
+    setStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, false, sessionStorage);
+    void showNoticeModal({
+      message: "🎁 You've received 5 free credits!",
+      buttonText: "OK",
+    });
+  }
 });

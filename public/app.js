@@ -787,6 +787,7 @@ function renderCreditsBadge(balance) {
 
   const numericBalance = Number.isFinite(Number(balance)) ? Number(balance) : 0;
   const normalizedBalance = numericBalance > 0 ? numericBalance : 0;
+  currentCreditsBalance = normalizedBalance;
   creditsEl.textContent = `${normalizedBalance} credits`;
   creditsEl.classList.toggle("isPositive", normalizedBalance > 0);
   creditsEl.classList.toggle("isZero", normalizedBalance <= 0);
@@ -804,6 +805,213 @@ function setSupportCodeUi(supportCode = "") {
   setSupportButtonMessage(normalized);
 }
 
+function setAdminLookupError(message = "") {
+  const errorEl = $("adminLookupError");
+  if (!errorEl) return;
+  if (!message) {
+    errorEl.textContent = "";
+    errorEl.style.display = "none";
+    return;
+  }
+  errorEl.textContent = message;
+  errorEl.style.display = "block";
+}
+
+function clearAdminLookupResult() {
+  const resultEl = $("adminLookupResult");
+  if (resultEl) {
+    resultEl.textContent = "";
+    resultEl.style.display = "none";
+  }
+  adminSelectedUid = "";
+  adminSelectedSupportCode = "";
+  const grantWrap = $("adminGrantWrap");
+  if (grantWrap) {
+    grantWrap.style.display = "none";
+  }
+  const amountInput = $("adminGrantAmount");
+  if (amountInput && !amountInput.value) {
+    amountInput.value = "10";
+  }
+  const reasonInput = $("adminGrantReason");
+  if (reasonInput) {
+    reasonInput.value = "";
+  }
+}
+
+function renderAdminLookupResult(payload) {
+  const resultEl = $("adminLookupResult");
+  if (!resultEl) return;
+
+  const credits = Number.isFinite(payload?.user?.creditsBalance) ?
+    payload.user.creditsBalance :
+    0;
+  const lines = [
+    `UID: ${payload?.uid || "—"}`,
+    `Support ID: ${payload?.supportCode || "—"}`,
+    `Email: ${payload?.user?.email || "—"}`,
+    `Credits: ${credits}`,
+    `Country: ${payload?.user?.country || "—"}`,
+    `Language: ${payload?.user?.language || "—"}`,
+  ];
+
+  const jobs = Array.isArray(payload?.recentJobs) ? payload.recentJobs : [];
+  if (jobs.length) {
+    lines.push("Recent trends:");
+    jobs.forEach((job) => {
+      const shortId = typeof job?.id === "string" ? job.id.slice(0, 8) : "—";
+      const status = typeof job?.status === "string" ? job.status : "—";
+      const templateId = typeof job?.templateId === "string" ?
+        job.templateId :
+        "—";
+      lines.push(`- ${shortId} • ${status} • ${templateId}`);
+    });
+  } else {
+    lines.push("Recent trends: none");
+  }
+
+  resultEl.textContent = lines.join("\n");
+  resultEl.style.display = "block";
+
+  adminSelectedUid = typeof payload?.uid === "string" ? payload.uid : "";
+  adminSelectedSupportCode = typeof payload?.supportCode === "string" ?
+    payload.supportCode :
+    "";
+  const grantWrap = $("adminGrantWrap");
+  if (grantWrap) {
+    grantWrap.style.display = adminSelectedUid ? "block" : "none";
+  }
+}
+
+function removeAdminCard() {
+  const existing = $("adminCard");
+  if (existing) {
+    existing.remove();
+  }
+  setAdminLookupError("");
+  clearAdminLookupResult();
+}
+
+function ensureAdminCard() {
+  let card = $("adminCard");
+  if (card) return card;
+
+  const userCard = $("userCard");
+  const appWrap = $("app");
+  if (!userCard || !appWrap) return null;
+
+  card = document.createElement("div");
+  card.id = "adminCard";
+  card.className = "card";
+  card.innerHTML = `
+    <div style="font-weight:700;margin-bottom:8px">Admin</div>
+    <div class="row" style="margin-bottom:10px">
+      <input id="adminSupportCode" placeholder="Support ID (U-...)" style="flex:1;min-width:220px" />
+      <button id="btnAdminLookup" class="btn2">Find user</button>
+    </div>
+    <div id="adminLookupError" class="formError muted" style="display:none"></div>
+    <pre id="adminLookupResult" class="muted" style="display:none;white-space:pre-wrap;background:#0f0f0f;border:1px solid var(--border);border-radius:12px;padding:12px;margin:10px 0"></pre>
+    <div id="adminGrantWrap" style="display:none">
+      <div class="grid">
+        <div>
+          <div class="muted">Credits to add</div>
+          <input id="adminGrantAmount" type="number" min="1" step="1" value="10" />
+        </div>
+        <div>
+          <div class="muted">Reason</div>
+          <input id="adminGrantReason" type="text" placeholder="Support refund" />
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="btnAdminGrant" class="btn">Grant credits</button>
+      </div>
+    </div>
+  `;
+
+  userCard.insertAdjacentElement("afterend", card);
+
+  const lookupBtn = $("btnAdminLookup");
+  if (lookupBtn) {
+    lookupBtn.onclick = async () => {
+      setAdminLookupError("");
+      clearAdminLookupResult();
+      const supportCode = $("adminSupportCode")?.value?.trim() || "";
+      if (!supportCode) {
+        setAdminLookupError("Enter a Support ID first.");
+        return;
+      }
+
+      lookupBtn.disabled = true;
+      lookupBtn.textContent = "Finding…";
+      try {
+        const response = await callCreateJob(
+          {findSupportCode: supportCode},
+          {retryable: false}
+        );
+        renderAdminLookupResult(response?.data || {});
+      } catch (error) {
+        setAdminLookupError(callableErrorMessage(error));
+      } finally {
+        lookupBtn.disabled = false;
+        lookupBtn.textContent = "Find user";
+      }
+    };
+  }
+
+  const grantBtn = $("btnAdminGrant");
+  if (grantBtn) {
+    grantBtn.onclick = async () => {
+      setAdminLookupError("");
+      if (!adminSelectedUid) {
+        setAdminLookupError("Find a user first.");
+        return;
+      }
+      const amountValue = Number($("adminGrantAmount")?.value || 0);
+      const reasonValue = $("adminGrantReason")?.value?.trim() || "Support refund";
+      if (!Number.isFinite(amountValue) || amountValue <= 0) {
+        setAdminLookupError("Enter a valid credit amount.");
+        return;
+      }
+
+      grantBtn.disabled = true;
+      grantBtn.textContent = "Granting…";
+      try {
+        const response = await callCreateJob({
+          grantCredits: true,
+          uid: adminSelectedUid,
+          amount: Math.ceil(amountValue),
+          reason: reasonValue,
+        }, {retryable: false});
+        const balanceAfter = Number(response?.data?.balanceAfter || 0);
+        await showNoticeModal({
+          message: `Credits granted. New balance: ${balanceAfter}.`,
+          buttonText: "OK",
+        });
+        const lookupResponse = await callCreateJob(
+          {findSupportCode: adminSelectedSupportCode},
+          {retryable: false}
+        );
+        renderAdminLookupResult(lookupResponse?.data || {});
+      } catch (error) {
+        setAdminLookupError(callableErrorMessage(error));
+      } finally {
+        grantBtn.disabled = false;
+        grantBtn.textContent = "Grant credits";
+      }
+    };
+  }
+
+  return card;
+}
+
+function setAdminCardVisible(visible) {
+  if (!visible) {
+    removeAdminCard();
+    return;
+  }
+  ensureAdminCard();
+}
+
 let currentUser = null;
 let selectedTemplate = null;
 let selectedReferenceVideoFile = null;
@@ -811,11 +1019,17 @@ let selectedReferenceVideoName = "";
 let selectedReferenceVideoUploadState = "idle";
 let selectedReferenceVideoPreviewUrl = "";
 let selectedReferenceVideoPreviewToken = 0;
+let selectedReferenceVideoDurationSec = null;
+let selectedReferenceVideoMetadataToken = 0;
 let pendingResumeUpload = null;
 let referenceVideoScrollAfterPick = false;
 const TREND_SELECTION_TEMPLATE = "template";
 const TREND_SELECTION_REFERENCE = "reference";
 let selectedTrendKind = TREND_SELECTION_TEMPLATE;
+let currentCreditsBalance = Number.NaN;
+let isAdminUser = false;
+let adminSelectedUid = "";
+let adminSelectedSupportCode = "";
 let availableTemplates = [];
 let unsubscribeUserDoc = null;
 let unsubscribeJobs = null;
@@ -1177,6 +1391,65 @@ function resetReferenceVideoPreview() {
   refreshReferenceVideoCardMediaUi();
 }
 
+function readVideoFileDurationSeconds(file) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    let settled = false;
+
+    const cleanup = () => {
+      URL.revokeObjectURL(objectUrl);
+      try {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      } catch {
+        // no-op
+      }
+    };
+
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+
+    video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
+    video.setAttribute("playsinline", "");
+    video.setAttribute("webkit-playsinline", "");
+    video.addEventListener("error", () => {
+      finish(() => reject(new Error("Unable to read video duration.")));
+    }, {once: true});
+    video.addEventListener("loadedmetadata", () => {
+      const duration = Number(video.duration);
+      if (!Number.isFinite(duration) || duration <= 0) {
+        finish(() => reject(new Error("Unable to read video duration.")));
+        return;
+      }
+      finish(() => resolve(duration));
+    }, {once: true});
+    video.src = objectUrl;
+  });
+}
+
+async function updateSelectedReferenceVideoDuration(file) {
+  const token = ++selectedReferenceVideoMetadataToken;
+  selectedReferenceVideoDurationSec = null;
+  if (!file) return;
+
+  try {
+    const duration = await readVideoFileDurationSeconds(file);
+    if (token !== selectedReferenceVideoMetadataToken) return;
+    selectedReferenceVideoDurationSec = duration;
+  } catch {
+    if (token !== selectedReferenceVideoMetadataToken) return;
+    selectedReferenceVideoDurationSec = null;
+  }
+}
+
 function createReferenceVideoPreviewDataUrl(file) {
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);
@@ -1335,6 +1608,35 @@ function scrollToPhotoUploadField() {
 
   target.scrollIntoView({behavior: "smooth", block: "center"});
   return true;
+}
+
+function getTemplateCostCredits(template) {
+  if (!template) return null;
+  const configuredCost = Number(template.costCredits);
+  if (Number.isFinite(configuredCost) && configuredCost > 0) {
+    return Math.ceil(configuredCost);
+  }
+  const duration = Number(template.durationSec);
+  if (Number.isFinite(duration) && duration > 0) {
+    return Math.max(1, Math.ceil(duration));
+  }
+  return null;
+}
+
+async function getSelectedTrendCostCredits() {
+  if (
+    selectedTrendKind === TREND_SELECTION_REFERENCE &&
+    selectedReferenceVideoFile
+  ) {
+    let duration = selectedReferenceVideoDurationSec;
+    if (!Number.isFinite(duration) || duration <= 0) {
+      duration = await readVideoFileDurationSeconds(selectedReferenceVideoFile);
+      selectedReferenceVideoDurationSec = duration;
+    }
+    return Math.max(1, Math.ceil(duration));
+  }
+
+  return getTemplateCostCredits(selectedTemplate);
 }
 
 function sleep(ms) {
@@ -1584,6 +1886,8 @@ async function prepareDownloadLink(jobId) {
 async function syncSupportProfile() {
   if (!currentUser) {
     setSupportCodeUi("");
+    isAdminUser = false;
+    setAdminCardVisible(false);
     return;
   }
 
@@ -1593,8 +1897,12 @@ async function syncSupportProfile() {
     const supportCode = typeof payload?.supportCode === "string" ?
       payload.supportCode :
       "";
+    isAdminUser = payload?.isAdmin === true;
     setSupportCodeUi(supportCode);
+    setAdminCardVisible(isAdminUser);
   } catch (error) {
+    isAdminUser = false;
+    setAdminCardVisible(false);
     console.warn("getSupportProfile failed", error);
   }
 }
@@ -1817,6 +2125,7 @@ function renderReferenceVideoCard() {
       selectedReferenceVideoFile = file;
       selectedReferenceVideoName = file ? file.name : "";
       selectedReferenceVideoUploadState = "idle";
+      selectedReferenceVideoDurationSec = null;
       resetReferenceVideoPreview();
 
       if (file) {
@@ -1824,6 +2133,7 @@ function renderReferenceVideoCard() {
         if (!selectedTemplate && availableTemplates.length > 0) {
           selectedTemplate = availableTemplates[0];
         }
+        void updateSelectedReferenceVideoDuration(file);
         generateReferenceVideoPreview(file);
       } else if (selectedTrendKind === TREND_SELECTION_REFERENCE) {
         selectedTrendKind = TREND_SELECTION_TEMPLATE;
@@ -2595,6 +2905,28 @@ $("btnGenerate").onclick = async () => {
     return;
   }
 
+  let expectedCostCredits = null;
+  try {
+    expectedCostCredits = await getSelectedTrendCostCredits();
+  } catch {
+    expectedCostCredits = null;
+  }
+  if (
+    Number.isFinite(expectedCostCredits) &&
+    expectedCostCredits > 0 &&
+    currentCreditsBalance < expectedCostCredits
+  ) {
+    const shortfallCredits = Math.ceil(expectedCostCredits - currentCreditsBalance);
+    await showNoticeModal({
+      message: `You are short ${shortfallCredits} credits`,
+      buttonText: "OK",
+      onConfirm: () => {
+        openWallet();
+      },
+    });
+    return;
+  }
+
   const btn = $("btnGenerate");
   generateSubmissionInFlight = true;
   btn.disabled = true;
@@ -2835,6 +3167,7 @@ onAuthStateChanged(auth, async (user) => {
     selectedReferenceVideoFile = null;
     selectedReferenceVideoName = "";
     selectedReferenceVideoUploadState = "idle";
+    selectedReferenceVideoDurationSec = null;
     resetReferenceVideoPreview();
     clearPendingResumeUpload();
     const referencePicker = $("fileReferenceVideo");
@@ -2842,6 +3175,8 @@ onAuthStateChanged(auth, async (user) => {
       referencePicker.value = "";
     }
     setSupportCodeUi("");
+    isAdminUser = false;
+    setAdminCardVisible(false);
     $("userCard").style.display = "none";
     $("jobsCard").style.display = "none";
     $("btnWallet").style.display = "none";
@@ -2864,6 +3199,7 @@ onAuthStateChanged(auth, async (user) => {
 
   closeAuth();
   stopEstimatedProgress();
+  currentCreditsBalance = Number.NaN;
   $("userCard").style.display = "block";
   $("jobsCard").style.display = "block";
   $("btnWallet").style.display = "inline-block";

@@ -2028,6 +2028,7 @@ export const createJob = onCall(
       return {
         uid,
         supportCode,
+        isAdmin: req.auth?.token?.admin === true,
       };
     }
 

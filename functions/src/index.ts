@@ -130,6 +130,11 @@ interface BillingState {
   durationSec?: number;
   rawDurationSec?: number;
   costCredits?: number;
+  outputDurationSec?: number;
+  outputRawDurationSec?: number;
+  finalCostCredits?: number;
+  reconciledAt?: admin.firestore.Timestamp;
+  reconciliationError?: string;
 }
 
 interface SupportCodeDoc {
@@ -805,6 +810,141 @@ async function probeReferenceVideoDurationSeconds(
   return durationSec;
 }
 
+async function fetchRemoteVideoBuffer(sourceUrl: string): Promise<Buffer> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, DOWNLOAD_FETCH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(sourceUrl, {
+      method: "GET",
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Remote video fetch failed: ${response.status}`);
+    }
+
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (
+      Number.isFinite(contentLength) &&
+      contentLength > MAX_DOWNLOAD_BYTES
+    ) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Generated video is too large to inspect."
+      );
+    }
+
+    const body = response.body;
+    if (!body) {
+      throw new Error("Remote video fetch returned empty stream.");
+    }
+
+    const stream = Readable.fromWeb(body as unknown as WebReadableStream);
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    for await (const chunk of stream) {
+      const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += bufferChunk.length;
+      if (totalBytes > MAX_DOWNLOAD_BYTES) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Generated video is too large to inspect."
+        );
+      }
+      chunks.push(bufferChunk);
+    }
+
+    return Buffer.concat(chunks, totalBytes);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function probeRemoteVideoDurationSeconds(
+  sourceUrl: string
+): Promise<number> {
+  const buffer = await fetchRemoteVideoBuffer(sourceUrl);
+  const durationSec = parseIsoBmffDurationSeconds(buffer);
+  if (
+    durationSec === null ||
+    !Number.isFinite(durationSec) ||
+    durationSec <= 0
+  ) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Unable to read generated video duration."
+    );
+  }
+  return durationSec;
+}
+
+async function reconcileReferenceJobBilling(
+  jobRef: admin.firestore.DocumentReference,
+  outputUrl: string
+): Promise<boolean> {
+  const outputRawDurationSec = await probeRemoteVideoDurationSeconds(outputUrl);
+  const outputDurationSec = Math.max(1, Math.ceil(outputRawDurationSec));
+
+  return await db.runTransaction(async (tx) => {
+    const snap = await tx.get(jobRef);
+    if (!snap.exists) return false;
+
+    const job = (snap.data() as JobDoc | undefined) || {};
+    if (job.status !== "done") return false;
+    if (job.selectionKind !== "reference") return false;
+    if (pickString(job.kling?.outputUrl) !== outputUrl) return false;
+
+    const debitedCredits = positiveFiniteInt(job.debitedCredits);
+    if (debitedCredits === null) return false;
+
+    const finalCostCredits = Math.min(debitedCredits, outputDurationSec);
+    const updates: Record<string, unknown> = {
+      "billing.outputRawDurationSec": Number(outputRawDurationSec.toFixed(3)),
+      "billing.outputDurationSec": outputDurationSec,
+      "billing.finalCostCredits": finalCostCredits,
+      "billing.reconciledAt": admin.firestore.FieldValue.serverTimestamp(),
+      "billing.reconciliationError": admin.firestore.FieldValue.delete(),
+      "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    const refundAmount = debitedCredits > finalCostCredits ?
+      debitedCredits - finalCostCredits :
+      0;
+    if (refundAmount > 0 && job.refund?.applied !== true) {
+      const uid = pickString(job.uid);
+      if (!uid) return false;
+
+      const userRef = db.collection("users").doc(uid);
+      const userSnap = await tx.get(userRef);
+      const userData = (userSnap.data() as UserDoc | undefined) || {};
+      const hasCreditsBalance = (
+        typeof userData.creditsBalance === "number" &&
+        Number.isFinite(userData.creditsBalance)
+      );
+      const currentCredits = hasCreditsBalance ?
+        userData.creditsBalance as number :
+        INITIAL_CREDITS;
+
+      tx.set(userRef, {
+        creditsBalance: currentCredits + refundAmount,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+
+      updates["refund.applied"] = true;
+      updates["refund.amount"] = refundAmount;
+      updates["refund.reason"] = "output_duration_reconciliation";
+      updates["refund.refundedAt"] =
+        admin.firestore.FieldValue.serverTimestamp();
+    }
+
+    tx.update(jobRef, updates);
+    return true;
+  });
+}
+
 function isExpectedReferenceVideoPath(
   expectedInputPath: string,
   referenceVideoPath: string
@@ -1234,6 +1374,37 @@ async function prepareOwnedJobDownload(params: {
   const {uid, jobId} = params;
   const jobRef = db.collection("jobs").doc(jobId);
 
+  const snapBeforeDecision = await jobRef.get();
+  const jobBeforeDecision =
+    (snapBeforeDecision.data() as JobDoc | undefined) || {};
+  const outputUrlBeforeDecision =
+    pickString(jobBeforeDecision.kling?.outputUrl);
+  const needsReferenceReconciliation =
+    jobBeforeDecision.status === "done" &&
+    jobBeforeDecision.selectionKind === "reference" &&
+    !!outputUrlBeforeDecision &&
+    positiveFiniteInt(jobBeforeDecision.billing?.finalCostCredits) === null;
+
+  if (needsReferenceReconciliation && outputUrlBeforeDecision) {
+    try {
+      await reconcileReferenceJobBilling(jobRef, outputUrlBeforeDecision);
+    } catch (error) {
+      logger.warn(
+        "Reference billing reconciliation during download prep failed",
+        {
+          jobId,
+          error: errorMessage(error),
+        }
+      );
+      await jobRef.set({
+        billing: {
+          reconciliationError: errorMessage(error),
+        },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+  }
+
   const decision = await db.runTransaction(async (tx) => {
     const snap = await tx.get(jobRef);
     if (!snap.exists) {
@@ -1341,6 +1512,32 @@ async function refreshOwnedJobStatus(
   retryAfterMs?: number;
 }> {
   const jobRef = db.collection("jobs").doc(jobId);
+
+  const existingSnap = await jobRef.get();
+  const existingJob = (existingSnap.data() as JobDoc | undefined) || {};
+  const existingOutputUrl = pickString(existingJob.kling?.outputUrl);
+  const needsReferenceReconciliation =
+    existingJob.status === "done" &&
+    existingJob.selectionKind === "reference" &&
+    !!existingOutputUrl &&
+    positiveFiniteInt(existingJob.billing?.finalCostCredits) === null;
+
+  if (needsReferenceReconciliation && existingOutputUrl) {
+    try {
+      await reconcileReferenceJobBilling(jobRef, existingOutputUrl);
+    } catch (error) {
+      logger.warn("Reference billing reconciliation during refresh failed", {
+        jobId,
+        error: errorMessage(error),
+      });
+      await jobRef.set({
+        billing: {
+          reconciliationError: errorMessage(error),
+        },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+  }
 
   const refreshDecision = await db.runTransaction(async (tx) => {
     const snap = await tx.get(jobRef);
@@ -1951,6 +2148,24 @@ export const createJob = onCall(
         }
       }
 
+      const activeJobsQuery = db.collection("jobs")
+        .where("uid", "==", uid)
+        .where("status", "in", ["awaiting_upload", "queued", "processing"])
+        .limit(1);
+      const activeJobsSnap = await tx.get(activeJobsQuery);
+      if (!activeJobsSnap.empty) {
+        const activeJob = activeJobsSnap.docs[0];
+        const activeData = (activeJob.data() as JobDoc | undefined) || {};
+        throw new HttpsError(
+          "failed-precondition",
+          "Finish your current upload or generation before starting a new one.",
+          {
+            activeJobId: activeJob.id,
+            activeStatus: pickString(activeData.status) || "queued",
+          }
+        );
+      }
+
       const jobRef = db.collection("jobs").doc();
       const uploadPath = `user_uploads/${uid}/${jobRef.id}/photo.jpg`;
 
@@ -2129,6 +2344,26 @@ async function processKlingPollTask(jobId: string): Promise<void> {
   const result = await pollKlingTask(taskId);
   const updates = buildKlingPollUpdates(result);
   await jobRef.update(updates);
+
+  if (result.state === "succeed" && result.outputUrl) {
+    try {
+      await reconcileReferenceJobBilling(jobRef, result.outputUrl);
+    } catch (error) {
+      logger.warn(
+        "Reference billing reconciliation after Kling success failed",
+        {
+          jobId,
+          error: errorMessage(error),
+        }
+      );
+      await jobRef.set({
+        billing: {
+          reconciliationError: errorMessage(error),
+        },
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, {merge: true});
+    }
+  }
 }
 
 async function processDownloadPrepareTask(jobId: string): Promise<void> {

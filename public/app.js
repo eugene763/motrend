@@ -755,6 +755,27 @@ function extractShortfallCredits(error) {
   return null;
 }
 
+function extractActiveJobConflict(error) {
+  const code = typeof error?.code === "string" ? error.code.toLowerCase() : "";
+  if (!code.includes("failed-precondition")) return null;
+
+  const details = error?.details;
+  if (!details || typeof details !== "object") return null;
+
+  const activeJobId = typeof details.activeJobId === "string" ?
+    details.activeJobId :
+    "";
+  const activeStatus = typeof details.activeStatus === "string" ?
+    details.activeStatus :
+    "";
+
+  if (!activeJobId || !activeStatus) return null;
+  return {
+    activeJobId,
+    activeStatus,
+  };
+}
+
 function openWallet() {
   setStatus("Wallet is coming soon.");
   setStatusHintVisible(false);
@@ -2712,6 +2733,32 @@ $("btnGenerate").onclick = async () => {
     ) {
       selectedReferenceVideoUploadState = "error";
       refreshReferenceVideoCardUi();
+    }
+    const activeJobConflict = extractActiveJobConflict(error);
+    if (activeJobConflict) {
+      const statusLabel = activeJobConflict.activeStatus === "awaiting_upload" ?
+        "upload" :
+        "generation";
+      await showNoticeModal({
+        message: `Please finish your current ${statusLabel} before starting a new trend.`,
+        buttonText: activeJobConflict.activeStatus === "awaiting_upload" ?
+          "Resume upload" :
+          "OK",
+        onConfirm: () => {
+          const awaitingJob = latestJobs.find(
+            (entry) => entry.id === activeJobConflict.activeJobId
+          );
+          if (awaitingJob?.data?.status === "awaiting_upload") {
+            setPendingResumeUpload(activeJobConflict.activeJobId, {
+              templateId: awaitingJob.data?.templateId || "",
+              inputImagePath: awaitingJob.data?.inputImagePath || "",
+              selectionKind: awaitingJob.data?.selectionKind || "unknown",
+            });
+            renderJobsList();
+          }
+        },
+      });
+      return;
     }
     const shortfallCredits = extractShortfallCredits(error);
     if (shortfallCredits !== null) {

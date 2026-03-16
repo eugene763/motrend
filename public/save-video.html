@@ -37,14 +37,14 @@
   <div class="wrap">
     <div class="card">
       <h1>MoTrend©</h1>
-      <div class="muted">Open your video and save it to device.</div>
+      <div class="muted">Watch your video and save it to device.</div>
       <div id="error" class="error" style="display:none;margin-top:12px"></div>
       <div class="videoWrap" id="videoWrap" style="display:none">
         <video id="video" controls playsinline></video>
       </div>
       <div class="actions" id="actions" style="display:none">
         <a id="btnDownload" class="btn" href="#" download target="_blank" rel="noopener noreferrer">Download</a>
-        <a id="btnOpen" class="btnGhost" href="#" target="_blank" rel="noopener noreferrer">Open direct video</a>
+        <button id="btnShare" class="btnGhost" type="button">Share</button>
         <button id="btnCopy" class="btnGhost" type="button">Copy URL</button>
       </div>
       <div class="note">On iPhone in Instagram/Telegram: tap <b>Copy URL</b>, open Safari/Chrome, paste the link, then download.</div>
@@ -73,7 +73,7 @@
       var videoEl = document.getElementById('video');
       var actions = document.getElementById('actions');
       var btnDownload = document.getElementById('btnDownload');
-      var btnOpen = document.getElementById('btnOpen');
+      var btnShare = document.getElementById('btnShare');
       var btnCopy = document.getElementById('btnCopy');
 
       if (!videoUrl) {
@@ -84,10 +84,27 @@
 
       videoEl.src = videoUrl;
       btnDownload.href = videoUrl;
-      btnOpen.href = videoUrl;
 
       videoWrap.style.display = 'block';
       actions.style.display = 'flex';
+
+      if (navigator.share) {
+        btnShare.addEventListener('click', async function() {
+          try {
+            await navigator.share({
+              title: 'MoTrend© video',
+              url: videoUrl,
+            });
+          } catch {
+            btnShare.textContent = 'Share failed';
+            setTimeout(function() {
+              btnShare.textContent = 'Share';
+            }, 900);
+          }
+        });
+      } else {
+        btnShare.style.display = 'none';
+      }
 
       btnCopy.addEventListener('click', async function() {
         try {

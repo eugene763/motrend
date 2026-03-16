@@ -73,6 +73,10 @@ function isQueueTaskType(value: string | null): value is QueueTaskType {
     value === "download_prepare";
 }
 
+function normalizeSelectionKind(value: unknown): "template" | "reference" {
+  return value === "reference" ? "reference" : "template";
+}
+
 interface UserDoc {
   creditsBalance?: number;
   supportCode?: string;
@@ -137,6 +141,7 @@ interface SupportCodeDoc {
 interface JobDoc {
   uid?: string;
   templateId?: string;
+  selectionKind?: "template" | "reference";
   status?: JobStatus;
   debitedCredits?: number;
   inputImagePath?: string;
@@ -166,6 +171,7 @@ interface QueueTaskDoc {
 interface JobRequestDoc {
   uid?: string;
   templateId?: string;
+  selectionKind?: "template" | "reference";
   jobId?: string;
   uploadPath?: string;
   createdAt?: admin.firestore.Timestamp;
@@ -1877,6 +1883,7 @@ export const createJob = onCall(
     if (!/^[\w-]+$/.test(templateId)) {
       throw new HttpsError("invalid-argument", "Invalid templateId");
     }
+    const selectionKind = normalizeSelectionKind(req.data?.selectionKind);
     const clientRequestId = normalizeClientRequestId(req.data?.clientRequestId);
 
     const templateSnap = await db.doc(`templates/${templateId}`).get();
@@ -1922,6 +1929,7 @@ export const createJob = onCall(
       tx.set(jobRef, {
         uid,
         templateId,
+        selectionKind,
         status: "awaiting_upload" as JobStatus,
         inputImagePath: uploadPath,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1932,6 +1940,7 @@ export const createJob = onCall(
         tx.set(requestRef, {
           uid,
           templateId,
+          selectionKind,
           jobId: jobRef.id,
           uploadPath,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),

@@ -200,10 +200,25 @@ function setStatusHintVisible(visible) {
   hint.style.display = visible ? "block" : "none";
 }
 
+function setStatusHintText(text) {
+  const hint = $("statusHint");
+  if (!hint) return;
+  hint.textContent = text || PROGRESS_HINT_TEXT;
+}
+
+function setUploadSafetyHint(message = "", visible = false) {
+  const hint = $("uploadSafetyHint");
+  if (!hint) return;
+  hint.textContent = message;
+  hint.style.display = visible && message ? "block" : "none";
+}
+
 const ATTRIBUTION_STORAGE_KEY = "motrend_attribution_v1";
 const ATTRIBUTION_SYNC_PREFIX = "motrend_attribution_sync_v1_";
 const AUTH_GIFT_PROMO_SEEN_KEY = "motrend_auth_gift_prompt_seen_v1";
 const AUTH_GIFT_SUCCESS_PENDING_KEY = "motrend_auth_gift_success_pending_v1";
+const BACKGROUND_GENERATION_NOTICE_SEEN_KEY =
+  "motrend_background_generation_notice_seen_v1";
 const ATTRIBUTION_UTM_KEYS = [
   "utm_source",
   "utm_medium",
@@ -499,6 +514,24 @@ async function maybeShowUploadHint(key, message) {
   }
 }
 
+function wasJobNoticeShown(jobId) {
+  if (!jobId) return false;
+  try {
+    return localStorage.getItem(`${JOB_NOTICE_SEEN_PREFIX}${jobId}`) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markJobNoticeShown(jobId) {
+  if (!jobId) return;
+  try {
+    localStorage.setItem(`${JOB_NOTICE_SEEN_PREFIX}${jobId}`, "1");
+  } catch {
+    // no-op
+  }
+}
+
 function closeNoticeIfOpen(runConfirmAction = false) {
   const modal = $("noticeModal");
   const okBtn = $("btnNoticeOk");
@@ -756,6 +789,10 @@ let selectedTemplate = null;
 let selectedReferenceVideoFile = null;
 let selectedReferenceVideoName = "";
 let selectedReferenceVideoUploadState = "idle";
+let selectedReferenceVideoPreviewUrl = "";
+let selectedReferenceVideoPreviewToken = 0;
+let pendingResumeUpload = null;
+let referenceVideoScrollAfterPick = false;
 const TREND_SELECTION_TEMPLATE = "template";
 const TREND_SELECTION_REFERENCE = "reference";
 let selectedTrendKind = TREND_SELECTION_TEMPLATE;
@@ -780,6 +817,7 @@ let activeUploadHintOkHandler = null;
 let activeNoticeResolver = null;
 let activeNoticeOkHandler = null;
 let activeNoticeConfirmAction = null;
+const JOB_NOTICE_SEEN_PREFIX = "motrend_job_notice_";
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
 const MAX_UPLOAD_IMAGE_BYTES = 40 * 1024 * 1024;
 const TARGET_UPLOAD_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -797,12 +835,16 @@ const VIDEO_HINT_MESSAGE =
   "Supported formats: .mp4 / .mov, file size: ≤100MB, dimensions: 340px ~ 3850px.";
 const DEFAULT_VISIBLE_JOBS = 5;
 const MAX_WATCH_JOBS = 20;
-const PROGRESS_HINT_TEXT = "Usually takes 5–15 minutes";
-const PROGRESS_STAGE_A_MS = 64000; // 0-50 slower
-const PROGRESS_STAGE_B_MS = 80000; // 50-70 slower
-const PROGRESS_STAGE_C_MS = 320000; // 70-90 slower
-const PROGRESS_STAGE_D_MS = 42000; // 90-97 slower
-const PROGRESS_STAGE_E_MS = 80000; // 97-99: ~1% every 40s
+const PROGRESS_HINT_TEXT = "Usually takes 10–20 minutes";
+const LARGE_UPLOAD_HINT_TEXT =
+  "Large video uploads can take 5–10 minutes in Telegram/iPhone. Please keep this page open.";
+const PROGRESS_STAGE_A_MS = 120000; // 0-50
+const PROGRESS_STAGE_B_MS = 150000; // 50-70
+const PROGRESS_STAGE_C_MS = 420000; // 70-90
+const PROGRESS_STAGE_D_MS = 120000; // 90-97
+const PROGRESS_STAGE_E_MS = 240000; // 97-99
+const RESUME_UPLOAD_DELAY_MS = 5 * 60 * 1000;
+const LARGE_REFERENCE_VIDEO_HINT_BYTES = 20 * 1024 * 1024;
 
 function createClientRequestId(prefix = "req") {
   if (
@@ -825,6 +867,12 @@ function timestampToMillis(value) {
     return value.seconds * 1000 + Math.floor(nanos / 1e6);
   }
   return NaN;
+}
+
+function formatUploadMegabytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "0.0 MB";
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function computeEstimatedProgressPercent(nowMs, startedAtMs) {
@@ -894,8 +942,7 @@ function startEstimatedProgress(label = "Generating your trend…") {
   estimatedProgressJobId = "";
   estimatedProgressStartedAtMs = Date.now();
   estimatedProgressLabel = label;
-  const hint = $("statusHint");
-  if (hint) hint.textContent = PROGRESS_HINT_TEXT;
+  setStatusHintText(PROGRESS_HINT_TEXT);
   renderEstimatedProgressStatus();
   scheduleEstimatedProgressTick();
 }
@@ -912,8 +959,7 @@ function resumeEstimatedProgress(jobId, startedAtMs, label = "Generating your tr
     startedAtMs :
     Date.now();
   estimatedProgressLabel = label;
-  const hint = $("statusHint");
-  if (hint) hint.textContent = PROGRESS_HINT_TEXT;
+  setStatusHintText(PROGRESS_HINT_TEXT);
   renderEstimatedProgressStatus();
   if (estimatedProgressPercent < 99) {
     scheduleEstimatedProgressTick();
@@ -932,9 +978,9 @@ function stopEstimatedProgress() {
   estimatedProgressJobId = "";
   estimatedProgressStartedAtMs = 0;
   estimatedProgressLabel = "Generating your trend…";
-  const hint = $("statusHint");
-  if (hint) hint.textContent = PROGRESS_HINT_TEXT;
+  setStatusHintText(PROGRESS_HINT_TEXT);
   setStatusHintVisible(false);
+  setUploadSafetyHint("", false);
 }
 
 function completeEstimatedProgress() {
@@ -943,10 +989,10 @@ function completeEstimatedProgress() {
   estimatedProgressPercent = 100;
   estimatedProgressStartedAtMs = 0;
   estimatedProgressLabel = "Generating your trend…";
-  const hint = $("statusHint");
-  if (hint) hint.textContent = PROGRESS_HINT_TEXT;
+  setStatusHintText(PROGRESS_HINT_TEXT);
   setStatus("Done. Download is ready. 100%");
   setStatusHintVisible(false);
+  setUploadSafetyHint("", false);
 }
 
 function clearTrendSelectionUi() {
@@ -1043,10 +1089,29 @@ function getReferenceVideoMetaPresentation() {
   };
 }
 
+function refreshReferenceVideoCardMediaUi() {
+  const card = document.querySelector(".tplCard[data-trend-role='reference']");
+  if (!card) return;
+
+  const placeholder = card.querySelector(".refPlaceholder");
+  const previewImg = card.querySelector(".refPreviewImage");
+  const hasPreview = !!selectedReferenceVideoPreviewUrl;
+
+  if (previewImg) {
+    previewImg.src = hasPreview ? selectedReferenceVideoPreviewUrl : "";
+    previewImg.style.display = hasPreview ? "block" : "none";
+  }
+
+  if (placeholder) {
+    placeholder.style.display = hasPreview ? "none" : "flex";
+  }
+}
+
 function refreshReferenceVideoCardUi() {
   const meta = document.querySelector(
     ".tplCard[data-trend-role='reference'] .refMetaName"
   );
+  refreshReferenceVideoCardMediaUi();
   if (!meta) return;
 
   const presentation = getReferenceVideoMetaPresentation();
@@ -1054,6 +1119,191 @@ function refreshReferenceVideoCardUi() {
   meta.title = presentation.title;
   meta.classList.toggle("isSuccess", presentation.state === "uploaded");
   meta.classList.toggle("isError", presentation.state === "error");
+}
+
+async function openReferenceVideoPicker({enableScrollAfterPick = false} = {}) {
+  if (!currentUser) {
+    openAuth("Sign in to upload your reference video.");
+    return;
+  }
+
+  const picker = $("fileReferenceVideo");
+  if (!picker) return;
+  clearFormError();
+  referenceVideoScrollAfterPick = enableScrollAfterPick;
+  await maybeShowUploadHint(VIDEO_HINT_KEY, VIDEO_HINT_MESSAGE);
+  picker.click();
+}
+
+async function openPhotoPicker() {
+  if (!currentUser) {
+    openAuth("Sign in to upload a photo.");
+    return;
+  }
+
+  const fileInput = $("filePhoto");
+  if (!fileInput) return;
+  clearFormError();
+
+  if (!shouldUseRedirectLogin() && !hasSeenHint(PHOTO_HINT_KEY)) {
+    await maybeShowUploadHint(PHOTO_HINT_KEY, PHOTO_HINT_MESSAGE);
+  }
+  fileInput.click();
+}
+
+function resetReferenceVideoPreview() {
+  selectedReferenceVideoPreviewToken += 1;
+  selectedReferenceVideoPreviewUrl = "";
+  refreshReferenceVideoCardMediaUi();
+}
+
+function createReferenceVideoPreviewDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    let cleaned = false;
+    let settled = false;
+    let drawFallbackTimer = null;
+
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      if (drawFallbackTimer) {
+        clearTimeout(drawFallbackTimer);
+        drawFallbackTimer = null;
+      }
+      URL.revokeObjectURL(objectUrl);
+      try {
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      } catch {
+        // no-op
+      }
+    };
+
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error("Unable to create video preview."));
+    };
+
+    const drawFrame = () => {
+      if (settled) return;
+      const width = video.videoWidth || 0;
+      const height = video.videoHeight || 0;
+      if (!width || !height) {
+        fail();
+        return;
+      }
+
+      const maxHeight = 1280;
+      const scale = Math.min(1, maxHeight / height);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        fail();
+        return;
+      }
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      settled = true;
+      cleanup();
+      resolve(canvas.toDataURL("image/jpeg", 0.82));
+    };
+
+    const drawSoon = () => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(drawFrame);
+      });
+    };
+
+    const tryPlaybackFallback = () => {
+      if (settled) return;
+      Promise.resolve(video.play())
+        .then(() => {
+          setTimeout(() => {
+            try {
+              video.pause();
+            } catch {
+              // no-op
+            }
+            drawSoon();
+          }, 140);
+        })
+        .catch(() => {
+          drawSoon();
+        });
+    };
+
+    const seekToPreviewFrame = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const targetTime = duration > 0.5 ? Math.min(0.35, duration / 3) : 0;
+      if (targetTime <= 0) {
+        drawSoon();
+        return;
+      }
+
+      const onSeeked = () => {
+        video.removeEventListener("seeked", onSeeked);
+        drawSoon();
+      };
+      video.addEventListener("seeked", onSeeked, {once: true});
+      try {
+        video.currentTime = targetTime;
+      } catch {
+        video.removeEventListener("seeked", onSeeked);
+        drawSoon();
+      }
+    };
+
+    video.preload = "auto";
+    video.muted = true;
+    video.defaultMuted = true;
+    video.playsInline = true;
+    video.setAttribute("muted", "");
+    video.setAttribute("playsinline", "");
+    video.setAttribute("webkit-playsinline", "");
+    video.addEventListener("error", fail, {once: true});
+    video.addEventListener("loadedmetadata", () => {
+      if (settled) return;
+      drawFallbackTimer = setTimeout(tryPlaybackFallback, 900);
+      seekToPreviewFrame();
+    }, {once: true});
+    video.addEventListener("loadeddata", () => {
+      if (settled) return;
+      drawSoon();
+    }, {once: true});
+    video.addEventListener("canplay", () => {
+      if (settled) return;
+      drawSoon();
+    }, {once: true});
+    video.src = objectUrl;
+  });
+}
+
+async function generateReferenceVideoPreview(file) {
+  const token = ++selectedReferenceVideoPreviewToken;
+  selectedReferenceVideoPreviewUrl = "";
+  refreshReferenceVideoCardMediaUi();
+
+  if (!file) return;
+
+  try {
+    const dataUrl = await createReferenceVideoPreviewDataUrl(file);
+    if (token !== selectedReferenceVideoPreviewToken) return;
+    selectedReferenceVideoPreviewUrl = dataUrl || "";
+  } catch {
+    if (token !== selectedReferenceVideoPreviewToken) return;
+    selectedReferenceVideoPreviewUrl = "";
+  }
+
+  if (token === selectedReferenceVideoPreviewToken) {
+    refreshReferenceVideoCardMediaUi();
+  }
 }
 
 function scrollToPhotoUploadField() {
@@ -1196,8 +1446,9 @@ async function prepareUploadImage(file) {
 }
 
 function guessVideoExtension(file) {
+  const type = typeof file?.type === "string" ? file.type.toLowerCase() : "";
   const name = typeof file?.name === "string" ? file.name.toLowerCase() : "";
-  if (name.endsWith(".mov")) return ".mov";
+  if (name.endsWith(".mov") || type === "video/quicktime") return ".mov";
   return ".mp4";
 }
 
@@ -1213,9 +1464,10 @@ function prepareReferenceVideoInput(file) {
   if (file.size > MAX_REFERENCE_VIDEO_BYTES) {
     throw new Error("Reference video is too large. Max file size is 200 MB.");
   }
+  const normalizedContentType = isMov ? "video/quicktime" : "video/mp4";
   return {
     blob: file,
-    contentType: file.type || "video/mp4",
+    contentType: normalizedContentType,
     extension: guessVideoExtension(file),
   };
 }
@@ -1484,6 +1736,12 @@ function renderReferenceVideoCard() {
   placeholder.textContent = "Your video reference";
   media.appendChild(placeholder);
 
+  const previewImg = document.createElement("img");
+  previewImg.className = "refPreviewImage";
+  previewImg.alt = "Your video reference preview";
+  previewImg.style.display = "none";
+  media.appendChild(previewImg);
+
   const title = document.createElement("div");
   title.style.fontWeight = "700";
   title.style.marginTop = "8px";
@@ -1504,7 +1762,6 @@ function renderReferenceVideoCard() {
   actionBtn.textContent = "Upload";
 
   const picker = $("fileReferenceVideo");
-  let scrollAfterPickerSelection = false;
 
   const updateReferenceMetaUi = () => {
     const presentation = getReferenceVideoMetaPresentation();
@@ -1512,18 +1769,6 @@ function renderReferenceVideoCard() {
     meta.title = presentation.title;
     meta.classList.toggle("isSuccess", presentation.state === "uploaded");
     meta.classList.toggle("isError", presentation.state === "error");
-  };
-
-  const openPicker = async ({enableScrollAfterPick = false} = {}) => {
-    if (!currentUser) {
-      openAuth("Sign in to upload your reference video.");
-      return;
-    }
-    if (!picker) return;
-    clearFormError();
-    scrollAfterPickerSelection = enableScrollAfterPick;
-    await maybeShowUploadHint(VIDEO_HINT_KEY, VIDEO_HINT_MESSAGE);
-    picker.click();
   };
 
   const activateReferenceSelection = () => {
@@ -1537,13 +1782,13 @@ function renderReferenceVideoCard() {
 
   card.onclick = () => {
     activateReferenceSelection();
-    openPicker({enableScrollAfterPick: false});
+    openReferenceVideoPicker({enableScrollAfterPick: false});
   };
   actionBtn.onclick = (event) => {
     event.preventDefault();
     event.stopPropagation();
     activateReferenceSelection();
-    openPicker({enableScrollAfterPick: true});
+    openReferenceVideoPicker({enableScrollAfterPick: true});
   };
 
   if (picker) {
@@ -1552,22 +1797,24 @@ function renderReferenceVideoCard() {
       selectedReferenceVideoFile = file;
       selectedReferenceVideoName = file ? file.name : "";
       selectedReferenceVideoUploadState = "idle";
+      resetReferenceVideoPreview();
 
       if (file) {
         selectedTrendKind = TREND_SELECTION_REFERENCE;
         if (!selectedTemplate && availableTemplates.length > 0) {
           selectedTemplate = availableTemplates[0];
         }
+        generateReferenceVideoPreview(file);
       } else if (selectedTrendKind === TREND_SELECTION_REFERENCE) {
         selectedTrendKind = TREND_SELECTION_TEMPLATE;
       }
 
       updateReferenceMetaUi();
       syncTrendSelectionUi();
-      if (file && scrollAfterPickerSelection) {
+      if (file && referenceVideoScrollAfterPick) {
         scrollToPhotoUploadField();
       }
-      scrollAfterPickerSelection = false;
+      referenceVideoScrollAfterPick = false;
     };
   }
 
@@ -1774,7 +2021,7 @@ function watchUserDoc(uid) {
 }
 
 function statusLabel(status) {
-  if (status === "awaiting_upload") return "uploading";
+  if (status === "awaiting_upload") return "awaiting upload";
   if (status === "queued") return "queued";
   if (status === "processing") return "processing";
   if (status === "done") return "done";
@@ -1790,10 +2037,77 @@ function getJobStartedAtMs(job) {
   return Date.now();
 }
 
+function getResumeUploadDelayMs(job) {
+  const elapsed = Math.max(0, Date.now() - getJobStartedAtMs(job));
+  return Math.max(0, RESUME_UPLOAD_DELAY_MS - elapsed);
+}
+
+function formatRemainingMinutes(ms) {
+  const minutes = Math.max(1, Math.ceil(Math.max(0, Number(ms) || 0) / 60000));
+  return `${minutes} min`;
+}
+
 function resumeEstimatedProgressFromJob(jobId, job) {
   if (!jobId) return;
   const startedAtMs = getJobStartedAtMs(job);
   resumeEstimatedProgress(jobId, startedAtMs, "Generating your trend…");
+}
+
+function setPendingResumeUpload(jobId, job) {
+  const uploadPath = typeof job?.inputImagePath === "string" ?
+    job.inputImagePath :
+    "";
+  const templateId = typeof job?.templateId === "string" ? job.templateId : "";
+  if (!jobId || !uploadPath || !templateId) {
+    pendingResumeUpload = null;
+    return;
+  }
+
+  const selectionKind = job?.selectionKind === TREND_SELECTION_REFERENCE ?
+    TREND_SELECTION_REFERENCE :
+    job?.selectionKind === TREND_SELECTION_TEMPLATE ?
+      TREND_SELECTION_TEMPLATE :
+      "unknown";
+
+  pendingResumeUpload = {
+    jobId,
+    uploadPath,
+    templateId,
+    selectionKind,
+  };
+}
+
+function clearPendingResumeUpload(jobId = "") {
+  if (!pendingResumeUpload) return;
+  if (!jobId || pendingResumeUpload.jobId === jobId) {
+    pendingResumeUpload = null;
+  }
+}
+
+async function maybeShowJobFailureNotice(jobId, job) {
+  if (!jobId || !job || job.status !== "failed" || wasJobNoticeShown(jobId)) {
+    return;
+  }
+
+  const errorText = String(job?.kling?.error || "");
+  const refundAmount = Number(job?.refund?.amount || 0);
+  const refunded = job?.refund?.applied === true && refundAmount > 0;
+  const uploadTimedOut = errorText.includes("Upload timed out before finalize.");
+
+  let message = "";
+  if (refunded) {
+    message = `An error occurred. ${refundAmount} credits were returned.`;
+  } else if (uploadTimedOut && !(Number(job?.debitedCredits || 0) > 0)) {
+    message = "An error occurred during upload. Credits were not charged.";
+  }
+
+  if (!message) return;
+
+  markJobNoticeShown(jobId);
+  await showNoticeModal({
+    message,
+    buttonText: "OK",
+  });
 }
 
 function updateLatestJobUI(jobId, job) {
@@ -1820,7 +2134,14 @@ function updateLatestJobUI(jobId, job) {
     if (trackedCurrentJob) {
       setEstimatedProgressLabel("Uploading files…");
     } else {
-      setStatus("Uploading files…");
+      const resumeDelayMs = getResumeUploadDelayMs(job);
+      if (resumeDelayMs > 0) {
+        setStatus(
+          `Upload not completed yet. Resume will be available in ~${formatRemainingMinutes(resumeDelayMs)}.`
+        );
+      } else {
+        setStatus("Upload paused. Tap Resume upload to continue.");
+      }
       setStatusHintVisible(false);
     }
   } else if (status === "queued") {
@@ -1854,6 +2175,82 @@ function updateLatestJobUI(jobId, job) {
 
 function canRefreshJob(job) {
   return job?.status === "queued" || job?.status === "processing";
+}
+
+async function handleResumeUpload(jobId) {
+  if (!currentUser || !jobId) return;
+
+  const item = latestJobs.find((entry) => entry.id === jobId);
+  const job = item?.data || null;
+  if (!job || job.status !== "awaiting_upload") return;
+
+  const templateId = typeof job.templateId === "string" ? job.templateId : "";
+  const template = availableTemplates.find((entry) => entry.id === templateId) || null;
+  if (!template) {
+    showFormError("This upload can no longer be resumed. Please start a new one.");
+    return;
+  }
+
+  const resumeSelectionKind = job.selectionKind === TREND_SELECTION_REFERENCE ?
+    TREND_SELECTION_REFERENCE :
+    job.selectionKind === TREND_SELECTION_TEMPLATE ?
+      TREND_SELECTION_TEMPLATE :
+      "unknown";
+
+  selectedTemplate = template;
+  if (resumeSelectionKind !== "unknown") {
+    selectedTrendKind = resumeSelectionKind;
+  }
+  setPendingResumeUpload(jobId, job);
+  syncTrendSelectionUi();
+  scrollToPhotoUploadField();
+
+  const message = resumeSelectionKind === TREND_SELECTION_REFERENCE ?
+    "Please upload your reference video and photo again, then tap Generate. Credits have not been charged yet." :
+    resumeSelectionKind === TREND_SELECTION_TEMPLATE ?
+      "Please upload your photo again, then tap Generate. Credits have not been charged yet." :
+      "Please continue your upload. If you were using your own video, upload it again first with the Upload button, then choose your photo and tap Generate. Credits have not been charged yet.";
+
+  await showNoticeModal({
+    message,
+    buttonText: "OK",
+  });
+
+  if (resumeSelectionKind === TREND_SELECTION_REFERENCE) {
+    await openReferenceVideoPicker({enableScrollAfterPick: true});
+  } else if (resumeSelectionKind === TREND_SELECTION_TEMPLATE) {
+    await openPhotoPicker();
+  }
+}
+
+function renderAwaitingUploadActions(jobId) {
+  const wrapper = document.createElement("div");
+  wrapper.style.marginTop = "8px";
+  const item = latestJobs.find((entry) => entry.id === jobId);
+  const job = item?.data || null;
+  const resumeDelayMs = getResumeUploadDelayMs(job);
+
+  if (resumeDelayMs <= 0) {
+    const resumeBtn = document.createElement("button");
+    resumeBtn.className = "btn2";
+    resumeBtn.textContent = "Resume upload";
+    resumeBtn.style.width = "100%";
+    resumeBtn.style.fontSize = "18px";
+    resumeBtn.style.opacity = "0.84";
+    resumeBtn.onclick = () => {
+      handleResumeUpload(jobId);
+    };
+    wrapper.appendChild(resumeBtn);
+  }
+
+  const hint = document.createElement("div");
+  hint.className = "muted jobsHint";
+  hint.textContent = resumeDelayMs > 0 ?
+    `Upload can take a few minutes. Resume will appear in ~${formatRemainingMinutes(resumeDelayMs)} if needed.` :
+    "Upload was interrupted. Resume to continue without charging credits.";
+  wrapper.appendChild(hint);
+
+  return wrapper;
 }
 
 function isDoneWithOutput(item) {
@@ -1943,7 +2340,7 @@ function renderDoneJobActions(jobId) {
 
   const openExternalBtn = document.createElement("a");
   openExternalBtn.className = "btn";
-  openExternalBtn.textContent = "Open in browser";
+  openExternalBtn.textContent = "Watch video";
   const openTargetUrl = saveVideoPageUrl || preparedUrl;
   openExternalBtn.href = shouldUseRedirectLogin() ?
     buildExternalBrowserUrlFor(openTargetUrl) :
@@ -1977,7 +2374,7 @@ function renderDoneJobActions(jobId) {
     shouldUseRedirectLogin() && !isAndroid()
   ) ?
     "On iPhone: if download fails, tap Copy URL, paste it into Safari/Chrome, and download there." :
-    "If download does not start, tap “Open in browser”.";
+    "If download does not start, tap “Watch video”.";
   wrapper.appendChild(fallbackHint);
 
   return wrapper;
@@ -2078,7 +2475,9 @@ function renderJobsList() {
 
     itemWrap.appendChild(row);
 
-    if (isDoneWithOutput(item)) {
+    if (job?.status === "awaiting_upload") {
+      itemWrap.appendChild(renderAwaitingUploadActions(item.id));
+    } else if (isDoneWithOutput(item)) {
       itemWrap.appendChild(renderDoneJobActions(item.id));
       const retentionHint = document.createElement("div");
       retentionHint.className = "muted jobsHint";
@@ -2119,6 +2518,7 @@ function watchLatestJobs(uid) {
       latestJobs = [];
       preparedDownloadByJobId.clear();
       preparingDownloadJobIds.clear();
+      clearPendingResumeUpload();
       renderJobsList();
       return;
     }
@@ -2127,8 +2527,18 @@ function watchLatestJobs(uid) {
       id: docSnap.id,
       data: docSnap.data() || {},
     }));
+    if (pendingResumeUpload) {
+      const pendingJob = latestJobs.find((entry) => entry.id === pendingResumeUpload.jobId);
+      if (!pendingJob || pendingJob.data?.status !== "awaiting_upload") {
+        clearPendingResumeUpload();
+      }
+    }
     prunePreparedDownloadState();
     renderJobsList();
+    const latestFailed = latestJobs.find((item) => item.data?.status === "failed");
+    if (latestFailed) {
+      maybeShowJobFailureNotice(latestFailed.id, latestFailed.data);
+    }
   });
 }
 
@@ -2171,15 +2581,36 @@ $("btnGenerate").onclick = async () => {
   stopEstimatedProgress();
   setStatus("Preparing upload…");
   setStatusHintVisible(false);
+  setUploadSafetyHint("", false);
 
   try {
-    const clientRequestId = createClientRequestId("gen");
-    const response = await callCreateJob({
-      templateId: selectedTemplate.id,
-      clientRequestId,
-    });
-    const jobId = response.data?.jobId;
-    const uploadPath = response.data?.uploadPath;
+    let jobId = "";
+    let uploadPath = "";
+    const shouldReusePendingUpload = !!pendingResumeUpload &&
+      pendingResumeUpload.templateId === selectedTemplate.id &&
+      (
+        pendingResumeUpload.selectionKind === "unknown" ||
+        pendingResumeUpload.selectionKind === selectedTrendKind
+      );
+
+    if (shouldReusePendingUpload) {
+      jobId = pendingResumeUpload.jobId;
+      uploadPath = pendingResumeUpload.uploadPath;
+    } else {
+      const clientRequestId = createClientRequestId("gen");
+      const response = await callCreateJob({
+        templateId: selectedTemplate.id,
+        selectionKind: selectedTrendKind,
+        clientRequestId,
+      });
+      jobId = response.data?.jobId || "";
+      uploadPath = response.data?.uploadPath || "";
+      setPendingResumeUpload(jobId, {
+        templateId: selectedTemplate.id,
+        inputImagePath: uploadPath,
+        selectionKind: selectedTrendKind,
+      });
+    }
 
     if (!jobId || !uploadPath) {
       throw new Error("createJob returned empty payload");
@@ -2199,14 +2630,26 @@ $("btnGenerate").onclick = async () => {
       referenceVideoPath = `${uploadDir}/reference${preparedVideo.extension}`;
 
       setStatus("Uploading video… 0%");
+      setUploadSafetyHint("Do not close this page while your files are uploading.", true);
+      if (
+        selectedReferenceVideoFile.size >= LARGE_REFERENCE_VIDEO_HINT_BYTES ||
+        shouldUseRedirectLogin()
+      ) {
+        setStatusHintText(LARGE_UPLOAD_HINT_TEXT);
+        setStatusHintVisible(true);
+      }
       const referenceRef = ref(storage, referenceVideoPath);
       try {
         await uploadFileWithProgress(
           referenceRef,
           preparedVideo.blob,
           {contentType: preparedVideo.contentType},
-          (percent) => {
-            setStatus(`Uploading video… ${percent}%`);
+          (percent, snapshot) => {
+            const transferredLabel = formatUploadMegabytes(snapshot?.bytesTransferred);
+            const totalLabel = formatUploadMegabytes(snapshot?.totalBytes);
+            setStatus(
+              `Uploading video… ${percent}% (${transferredLabel} / ${totalLabel})`
+            );
           }
         );
         referenceVideoUrl = await getDownloadURL(referenceRef);
@@ -2220,16 +2663,23 @@ $("btnGenerate").onclick = async () => {
     }
 
     setStatus("Preparing photo…");
+    setStatusHintVisible(false);
+    setStatusHintText(PROGRESS_HINT_TEXT);
     const uploadInput = await prepareUploadImage(rawFile);
 
     setStatus("Uploading photo… 0%");
+    setUploadSafetyHint("Do not close this page while your files are uploading.", true);
     const photoRef = ref(storage, uploadPath);
     await uploadFileWithProgress(
       photoRef,
       uploadInput.blob,
       {contentType: uploadInput.contentType || "image/jpeg"},
-      (percent) => {
-        setStatus(`Uploading photo… ${percent}%`);
+      (percent, snapshot) => {
+        const transferredLabel = formatUploadMegabytes(snapshot?.bytesTransferred);
+        const totalLabel = formatUploadMegabytes(snapshot?.totalBytes);
+        setStatus(
+          `Uploading photo… ${percent}% (${transferredLabel} / ${totalLabel})`
+        );
       }
     );
 
@@ -2243,12 +2693,26 @@ $("btnGenerate").onclick = async () => {
       referenceVideoPath: referenceVideoPath || undefined,
       referenceVideoUrl: referenceVideoUrl || undefined,
     });
+    clearPendingResumeUpload(jobId);
+    setUploadSafetyHint(
+      "You can close this page now. Your trend will keep generating in the background.",
+      true
+    );
 
     startEstimatedProgress("Generating your trend…");
     attachEstimatedProgressJob(jobId);
+    if (!getStoredFlag(BACKGROUND_GENERATION_NOTICE_SEEN_KEY)) {
+      setStoredFlag(BACKGROUND_GENERATION_NOTICE_SEEN_KEY, true);
+      await showNoticeModal({
+        message:
+          "Upload is complete. You can now close this window — your trend will keep generating in the background.",
+        buttonText: "OK",
+      });
+    }
   } catch (error) {
     stopEstimatedProgress();
     setStatus("");
+    setUploadSafetyHint("", false);
     if (
       selectedTrendKind === TREND_SELECTION_REFERENCE &&
       selectedReferenceVideoFile
@@ -2331,6 +2795,8 @@ onAuthStateChanged(auth, async (user) => {
     selectedReferenceVideoFile = null;
     selectedReferenceVideoName = "";
     selectedReferenceVideoUploadState = "idle";
+    resetReferenceVideoPreview();
+    clearPendingResumeUpload();
     const referencePicker = $("fileReferenceVideo");
     if (referencePicker) {
       referencePicker.value = "";

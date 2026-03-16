@@ -193,6 +193,37 @@ a{color:#fff}
   color:var(--muted);
   border:1px dashed #3a3a3a;
 }
+.refPlaceholder.isBusy{
+  background:#111614;
+  border-color:rgba(134, 239, 172, .22);
+}
+.refPlaceholder.isSuccess{
+  background:#101a12;
+  border-color:rgba(134, 239, 172, .34);
+  color:var(--accent);
+}
+.refPlaceholder.isError{
+  background:#1a1010;
+  border-color:rgba(248, 113, 113, .3);
+  color:#f87171;
+}
+.refPlaceholderContent{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+}
+.refPlaceholderTitle{
+  font-size:18px;
+  font-weight:700;
+  line-height:1.15;
+}
+.refPlaceholderSub{
+  font-size:14px;
+  line-height:1.25;
+  opacity:.92;
+}
 .refMetaName{
   width:100%;
   overflow:hidden;

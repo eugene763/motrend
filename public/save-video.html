@@ -37,17 +37,17 @@
   <div class="wrap">
     <div class="card">
       <h1>MoTrend©</h1>
-      <div class="muted">Watch your video and save it to device.</div>
+      <div class="muted">Open your video and save it to your device.</div>
       <div id="error" class="error" style="display:none;margin-top:12px"></div>
       <div class="videoWrap" id="videoWrap" style="display:none">
         <video id="video" controls playsinline></video>
       </div>
       <div class="actions" id="actions" style="display:none">
-        <a id="btnDownload" class="btn" href="#" download target="_blank" rel="noopener noreferrer">Download</a>
-        <button id="btnShare" class="btnGhost" type="button">Share</button>
+        <button id="btnDownload" class="btn" type="button">Save video</button>
+        <button id="btnShare" class="btnGhost" type="button">Watch inline</button>
         <button id="btnCopy" class="btnGhost" type="button">Copy URL</button>
       </div>
-      <div class="note">On iPhone in Instagram/Telegram: tap <b>Copy URL</b>, open Safari/Chrome, paste the link, then download.</div>
+      <div class="note">On iPhone: tap <b>Save video</b>. If the system does not offer <b>Save Video</b>, use <b>Copy URL</b> and open the link in Safari/Chrome.</div>
     </div>
   </div>
 
@@ -87,38 +87,60 @@
       }
 
       videoEl.src = videoUrl;
-      btnDownload.href = videoUrl;
 
       videoWrap.style.display = 'block';
       actions.style.display = 'flex';
 
-      if (navigator.share) {
-        btnShare.addEventListener('click', async function() {
+      btnShare.addEventListener('click', function() {
+        window.open(videoUrl, '_blank', 'noopener,noreferrer');
+      });
+
+      async function buildShareableFile() {
+        var response = await fetch(videoUrl, { credentials: 'omit' });
+        if (!response.ok) {
+          throw new Error('Unable to fetch video.');
+        }
+        var blob = await response.blob();
+        var mimeType = blob.type || 'video/mp4';
+        var extension = mimeType === 'video/quicktime' ? '.mov' : '.mp4';
+        var file = new File([blob], 'motrend-video' + extension, { type: mimeType });
+        return file;
+      }
+
+      function showTemporaryButtonState(button, label, resetLabel, delay) {
+        button.textContent = label;
+        button.disabled = true;
+        setTimeout(function() {
+          button.textContent = resetLabel;
+          button.disabled = false;
+        }, delay);
+      }
+
+      if (navigator.share && navigator.canShare) {
+        btnDownload.addEventListener('click', async function() {
           try {
+            var file = await buildShareableFile();
+            if (!navigator.canShare({ files: [file] })) {
+              throw new Error('File sharing is unavailable.');
+            }
             await navigator.share({
               title: 'MoTrend© video',
-              url: videoUrl,
+              files: [file],
             });
           } catch {
-            btnShare.textContent = 'Share failed';
-            setTimeout(function() {
-              btnShare.textContent = 'Share';
-            }, 900);
+            window.open(videoUrl, '_blank', 'noopener,noreferrer');
           }
         });
       } else {
-        btnShare.style.display = 'none';
+        btnDownload.addEventListener('click', function() {
+          window.open(videoUrl, '_blank', 'noopener,noreferrer');
+        });
       }
 
       btnCopy.addEventListener('click', async function() {
         try {
           await navigator.clipboard.writeText(videoUrl);
-          btnCopy.textContent = 'URL copied';
-          btnCopy.disabled = true;
-          setTimeout(function() {
-            btnCopy.textContent = 'Copy URL';
-            btnCopy.disabled = false;
-          }, 500);
+          showTemporaryButtonState(btnCopy, 'URL copied', 'Copy URL', 500);
         } catch {
           btnCopy.textContent = 'Copy failed';
           setTimeout(function() {

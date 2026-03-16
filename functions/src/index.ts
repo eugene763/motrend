@@ -1316,7 +1316,8 @@ async function fetchVideoToStorage(params: {
       resumable: false,
       metadata: {
         contentType,
-        contentDisposition: `attachment; filename="${params.fileName}"`,
+        contentDisposition: `inline; filename="${params.fileName}"`,
+        cacheControl: "private, max-age=3600",
         metadata: {
           firebaseStorageDownloadTokens: params.downloadToken,
         },

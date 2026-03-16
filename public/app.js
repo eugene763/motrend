@@ -1017,10 +1017,16 @@ let selectedTemplate = null;
 let selectedReferenceVideoFile = null;
 let selectedReferenceVideoName = "";
 let selectedReferenceVideoUploadState = "idle";
+let selectedReferenceVideoUploadProgress = 0;
 let selectedReferenceVideoPreviewUrl = "";
 let selectedReferenceVideoPreviewToken = 0;
 let selectedReferenceVideoDurationSec = null;
 let selectedReferenceVideoMetadataToken = 0;
+let selectedReferenceVideoFileToken = 0;
+let selectedReferenceVideoUploadPromise = null;
+let selectedReferenceVideoUploadedJobId = "";
+let selectedReferenceVideoUploadedInputPath = "";
+let selectedReferenceVideoUploadedReferencePath = "";
 let pendingResumeUpload = null;
 let referenceVideoScrollAfterPick = false;
 const TREND_SELECTION_TEMPLATE = "template";
@@ -1300,6 +1306,14 @@ function syncTrendSelectionUi() {
 }
 
 function getReferenceVideoMetaPresentation() {
+  if (selectedReferenceVideoUploadState === "uploading") {
+    return {
+      text: `Uploading video… ${selectedReferenceVideoUploadProgress}%`,
+      title: selectedReferenceVideoName || "Uploading video",
+      state: "uploading",
+    };
+  }
+
   if (selectedReferenceVideoUploadState === "uploaded") {
     return {
       text: "Your video is uploaded",
@@ -1313,6 +1327,14 @@ function getReferenceVideoMetaPresentation() {
       text: "Error",
       title: "Error",
       state: "error",
+    };
+  }
+
+  if (selectedReferenceVideoUploadState === "selected") {
+    return {
+      text: "Video selected",
+      title: selectedReferenceVideoName || "Video selected",
+      state: "selected",
     };
   }
 
@@ -1356,8 +1378,32 @@ function refreshReferenceVideoCardMediaUi() {
   if (!card) return;
 
   const placeholder = card.querySelector(".refPlaceholder");
+  const placeholderTitle = card.querySelector(".refPlaceholderTitle");
+  const placeholderSub = card.querySelector(".refPlaceholderSub");
   const previewImg = card.querySelector(".refPreviewImage");
   const hasPreview = !!selectedReferenceVideoPreviewUrl;
+
+  let placeholderState = "idle";
+  let placeholderPrimary = "Your video reference";
+  let placeholderSecondary = "Choose mp4 or mov";
+
+  if (selectedReferenceVideoUploadState === "uploading") {
+    placeholderState = "busy";
+    placeholderPrimary = "Uploading video…";
+    placeholderSecondary = `${selectedReferenceVideoUploadProgress}%`;
+  } else if (selectedReferenceVideoUploadState === "uploaded") {
+    placeholderState = "success";
+    placeholderPrimary = "Your video is uploaded";
+    placeholderSecondary = "Preview is preparing…";
+  } else if (selectedReferenceVideoUploadState === "error") {
+    placeholderState = "error";
+    placeholderPrimary = "Upload failed";
+    placeholderSecondary = "Please try again";
+  } else if (selectedReferenceVideoFile) {
+    placeholderState = "busy";
+    placeholderPrimary = "Preparing preview…";
+    placeholderSecondary = selectedReferenceVideoName || "Video selected";
+  }
 
   if (previewImg) {
     previewImg.src = hasPreview ? selectedReferenceVideoPreviewUrl : "";
@@ -1366,6 +1412,17 @@ function refreshReferenceVideoCardMediaUi() {
 
   if (placeholder) {
     placeholder.style.display = hasPreview ? "none" : "flex";
+    placeholder.classList.toggle("isBusy", !hasPreview && placeholderState === "busy");
+    placeholder.classList.toggle("isSuccess", !hasPreview && placeholderState === "success");
+    placeholder.classList.toggle("isError", !hasPreview && placeholderState === "error");
+  }
+
+  if (placeholderTitle) {
+    placeholderTitle.textContent = placeholderPrimary;
+  }
+
+  if (placeholderSub) {
+    placeholderSub.textContent = placeholderSecondary;
   }
 }
 
@@ -1429,6 +1486,14 @@ function resetReferenceVideoPreview() {
   refreshReferenceVideoCardMediaUi();
 }
 
+function resetReferenceVideoUploadTracking() {
+  selectedReferenceVideoUploadProgress = 0;
+  selectedReferenceVideoUploadPromise = null;
+  selectedReferenceVideoUploadedJobId = "";
+  selectedReferenceVideoUploadedInputPath = "";
+  selectedReferenceVideoUploadedReferencePath = "";
+}
+
 function readVideoFileDurationSeconds(file) {
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);
@@ -1488,6 +1553,229 @@ async function updateSelectedReferenceVideoDuration(file) {
     selectedReferenceVideoDurationSec = null;
   }
   refreshReferenceVideoCardUi();
+}
+
+function getReusableReferenceUploadContext() {
+  if (
+    pendingResumeUpload &&
+    pendingResumeUpload.templateId === selectedTemplate?.id &&
+    pendingResumeUpload.selectionKind === TREND_SELECTION_REFERENCE
+  ) {
+    return pendingResumeUpload;
+  }
+
+  const existingAwaiting = latestJobs.find((entry) => (
+    entry?.data?.status === "awaiting_upload" &&
+    entry?.data?.templateId === selectedTemplate?.id &&
+    entry?.data?.selectionKind === TREND_SELECTION_REFERENCE
+  ));
+
+  if (!existingAwaiting) return null;
+
+  setPendingResumeUpload(existingAwaiting.id, existingAwaiting.data || {});
+  return pendingResumeUpload;
+}
+
+async function ensureReferenceVideoUploadContext() {
+  if (!selectedTemplate?.id) {
+    throw new Error("Pick a trend first.");
+  }
+
+  const reusable = getReusableReferenceUploadContext();
+  if (reusable?.jobId && reusable?.uploadPath) {
+    return reusable;
+  }
+
+  const clientRequestId = createClientRequestId("gen");
+  const response = await callCreateJob({
+    templateId: selectedTemplate.id,
+    selectionKind: TREND_SELECTION_REFERENCE,
+    clientRequestId,
+  });
+  const jobId = response?.data?.jobId || "";
+  const uploadPath = response?.data?.uploadPath || "";
+  if (!jobId || !uploadPath) {
+    throw new Error("Unable to prepare reference upload.");
+  }
+
+  const prepared = {
+    templateId: selectedTemplate.id,
+    inputImagePath: uploadPath,
+    selectionKind: TREND_SELECTION_REFERENCE,
+  };
+  setPendingResumeUpload(jobId, prepared);
+  return pendingResumeUpload;
+}
+
+async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = selectedReferenceVideoFileToken} = {}) {
+  if (!selectedReferenceVideoFile) {
+    throw new Error("Upload your reference video first.");
+  }
+
+  if (
+    selectedReferenceVideoUploadState === "uploaded" &&
+    selectedReferenceVideoUploadedJobId &&
+    selectedReferenceVideoUploadedInputPath &&
+    selectedReferenceVideoUploadedReferencePath
+  ) {
+    return {
+      jobId: selectedReferenceVideoUploadedJobId,
+      uploadPath: selectedReferenceVideoUploadedInputPath,
+      referenceVideoPath: selectedReferenceVideoUploadedReferencePath,
+    };
+  }
+
+  if (selectedReferenceVideoUploadPromise) {
+    return selectedReferenceVideoUploadPromise;
+  }
+
+  const localFile = selectedReferenceVideoFile;
+  const localToken = fileToken;
+  const localTemplateId = selectedTemplate?.id || "";
+
+  const uploadPromise = (async () => {
+    const preparedVideo = prepareReferenceVideoInput(localFile);
+    const preparedContext = await ensureReferenceVideoUploadContext();
+    const jobId = preparedContext?.jobId || "";
+    const uploadPath = preparedContext?.uploadPath || "";
+    if (!jobId || !uploadPath) {
+      throw new Error("Unable to prepare reference upload.");
+    }
+
+    const uploadDir = uploadPath.replace(/\/[^/]+$/, "");
+    const referenceVideoPath =
+      `${uploadDir}/reference_${localToken}${preparedVideo.extension}`;
+    const referenceRef = ref(storage, referenceVideoPath);
+
+    if (
+      localToken === selectedReferenceVideoFileToken &&
+      localFile === selectedReferenceVideoFile &&
+      localTemplateId === (selectedTemplate?.id || "")
+    ) {
+      selectedReferenceVideoUploadState = "uploading";
+      selectedReferenceVideoUploadProgress = 0;
+      refreshReferenceVideoCardUi();
+      setUploadSafetyHint(
+        "Do not close this page while your files are uploading.",
+        true
+      );
+      if (
+        localFile.size >= LARGE_REFERENCE_VIDEO_HINT_BYTES ||
+        shouldUseRedirectLogin()
+      ) {
+        setStatusHintText(LARGE_UPLOAD_HINT_TEXT);
+        setStatusHintVisible(true);
+      }
+    }
+
+    await uploadFileWithProgress(
+      referenceRef,
+      preparedVideo.blob,
+      {contentType: preparedVideo.contentType},
+      (percent, snapshot) => {
+        if (
+          localToken !== selectedReferenceVideoFileToken ||
+          localFile !== selectedReferenceVideoFile
+        ) {
+          return;
+        }
+        selectedReferenceVideoUploadProgress = percent;
+        refreshReferenceVideoCardUi();
+        if (!surfaceStatus && !generateSubmissionInFlight) {
+          setStatusHintVisible(true);
+        }
+        const transferredLabel = formatUploadMegabytes(snapshot?.bytesTransferred);
+        const totalLabel = formatUploadMegabytes(snapshot?.totalBytes);
+        setStatus(
+          `Uploading video… ${percent}% (${transferredLabel} / ${totalLabel})`
+        );
+      }
+    );
+
+    if (
+      localToken === selectedReferenceVideoFileToken &&
+      localFile === selectedReferenceVideoFile
+    ) {
+      selectedReferenceVideoUploadState = "uploaded";
+      selectedReferenceVideoUploadProgress = 100;
+      selectedReferenceVideoUploadedJobId = jobId;
+      selectedReferenceVideoUploadedInputPath = uploadPath;
+      selectedReferenceVideoUploadedReferencePath = referenceVideoPath;
+      refreshReferenceVideoCardUi();
+      if (!generateSubmissionInFlight) {
+        setStatus("");
+        setUploadSafetyHint("", false);
+        setStatusHintVisible(false);
+      }
+    }
+
+    return {jobId, uploadPath, referenceVideoPath};
+  })().catch((error) => {
+    if (
+      localToken === selectedReferenceVideoFileToken &&
+      localFile === selectedReferenceVideoFile
+    ) {
+      selectedReferenceVideoUploadState = "error";
+      refreshReferenceVideoCardUi();
+      if (!generateSubmissionInFlight) {
+        setStatus("");
+        setUploadSafetyHint("", false);
+      }
+    }
+    throw error;
+  }).finally(() => {
+    if (selectedReferenceVideoUploadPromise === uploadPromise) {
+      selectedReferenceVideoUploadPromise = null;
+    }
+  });
+
+  selectedReferenceVideoUploadPromise = uploadPromise;
+  return uploadPromise;
+}
+
+async function maybeStartReferenceVideoAutoUpload(fileToken) {
+  if (!currentUser || !selectedReferenceVideoFile) return;
+
+  try {
+    const expectedCostCredits = await getSelectedTrendCostCredits();
+    if (
+      Number.isFinite(expectedCostCredits) &&
+      expectedCostCredits > 0 &&
+      currentCreditsBalance < expectedCostCredits
+    ) {
+      const shortfallCredits = Math.ceil(expectedCostCredits - currentCreditsBalance);
+      await showNoticeModal({
+        message: `You are short ${shortfallCredits} credits`,
+        buttonText: "OK",
+        onConfirm: () => {
+          openWallet();
+        },
+      });
+      return;
+    }
+
+    if (
+      fileToken !== selectedReferenceVideoFileToken ||
+      !selectedReferenceVideoFile
+    ) {
+      return;
+    }
+
+    await ensureReferenceVideoUploaded({fileToken});
+  } catch (error) {
+    if (
+      fileToken !== selectedReferenceVideoFileToken ||
+      !selectedReferenceVideoFile
+    ) {
+      return;
+    }
+    const activeJobConflict = extractActiveJobConflict(error);
+    if (activeJobConflict) {
+      showFormError("Finish your current upload or generation before starting a new one.");
+      return;
+    }
+    showFormError(callableErrorMessage(error));
+  }
 }
 
 function createReferenceVideoPreviewDataUrl(file) {
@@ -2101,7 +2389,17 @@ function renderReferenceVideoCard() {
 
   const placeholder = document.createElement("div");
   placeholder.className = "refPlaceholder";
-  placeholder.textContent = "Your video reference";
+  const placeholderContent = document.createElement("div");
+  placeholderContent.className = "refPlaceholderContent";
+  const placeholderTitle = document.createElement("div");
+  placeholderTitle.className = "refPlaceholderTitle";
+  placeholderTitle.textContent = "Your video reference";
+  const placeholderSub = document.createElement("div");
+  placeholderSub.className = "refPlaceholderSub";
+  placeholderSub.textContent = "Choose mp4 or mov";
+  placeholderContent.appendChild(placeholderTitle);
+  placeholderContent.appendChild(placeholderSub);
+  placeholder.appendChild(placeholderContent);
   media.appendChild(placeholder);
 
   const previewImg = document.createElement("img");
@@ -2138,14 +2436,6 @@ function renderReferenceVideoCard() {
 
   const picker = $("fileReferenceVideo");
 
-  const updateReferenceMetaUi = () => {
-    const presentation = getReferenceVideoMetaPresentation();
-    meta.textContent = presentation.text;
-    meta.title = presentation.title;
-    meta.classList.toggle("isSuccess", presentation.state === "uploaded");
-    meta.classList.toggle("isError", presentation.state === "error");
-  };
-
   const activateReferenceSelection = () => {
     if (!selectedReferenceVideoFile) return;
     selectedTrendKind = TREND_SELECTION_REFERENCE;
@@ -2169,10 +2459,12 @@ function renderReferenceVideoCard() {
   if (picker) {
     picker.onchange = () => {
       const file = picker.files?.[0] || null;
+      const fileToken = ++selectedReferenceVideoFileToken;
       selectedReferenceVideoFile = file;
       selectedReferenceVideoName = file ? file.name : "";
-      selectedReferenceVideoUploadState = "idle";
+      selectedReferenceVideoUploadState = file ? "selected" : "idle";
       selectedReferenceVideoDurationSec = null;
+      resetReferenceVideoUploadTracking();
       resetReferenceVideoPreview();
 
       if (file) {
@@ -2182,11 +2474,12 @@ function renderReferenceVideoCard() {
         }
         void updateSelectedReferenceVideoDuration(file);
         generateReferenceVideoPreview(file);
+        void maybeStartReferenceVideoAutoUpload(fileToken);
       } else if (selectedTrendKind === TREND_SELECTION_REFERENCE) {
         selectedTrendKind = TREND_SELECTION_TEMPLATE;
       }
 
-      updateReferenceMetaUi();
+      refreshReferenceVideoCardUi();
       syncTrendSelectionUi();
       if (file && referenceVideoScrollAfterPick) {
         scrollToPhotoUploadField();
@@ -2200,7 +2493,7 @@ function renderReferenceVideoCard() {
   card.appendChild(meta);
   card.appendChild(estimate);
   card.appendChild(actionBtn);
-  updateReferenceMetaUi();
+  refreshReferenceVideoCardUi();
 
   return card;
 }
@@ -2996,7 +3289,7 @@ $("btnGenerate").onclick = async () => {
     if (shouldReusePendingUpload) {
       jobId = pendingResumeUpload.jobId;
       uploadPath = pendingResumeUpload.uploadPath;
-    } else {
+    } else if (selectedTrendKind !== TREND_SELECTION_REFERENCE) {
       const clientRequestId = createClientRequestId("gen");
       const response = await callCreateJob({
         templateId: selectedTemplate.id,
@@ -3024,40 +3317,15 @@ $("btnGenerate").onclick = async () => {
       !!selectedReferenceVideoFile
     );
     if (useReferenceVideo && selectedReferenceVideoFile) {
-      const preparedVideo = prepareReferenceVideoInput(selectedReferenceVideoFile);
-      const uploadDir = uploadPath.replace(/\/[^/]+$/, "");
-      referenceVideoPath = `${uploadDir}/reference${preparedVideo.extension}`;
-
-      setStatus("Uploading video… 0%");
-      setUploadSafetyHint("Do not close this page while your files are uploading.", true);
-      if (
-        selectedReferenceVideoFile.size >= LARGE_REFERENCE_VIDEO_HINT_BYTES ||
-        shouldUseRedirectLogin()
-      ) {
-        setStatusHintText(LARGE_UPLOAD_HINT_TEXT);
-        setStatusHintVisible(true);
-      }
-      const referenceRef = ref(storage, referenceVideoPath);
-      try {
-        await uploadFileWithProgress(
-          referenceRef,
-          preparedVideo.blob,
-          {contentType: preparedVideo.contentType},
-          (percent, snapshot) => {
-            const transferredLabel = formatUploadMegabytes(snapshot?.bytesTransferred);
-            const totalLabel = formatUploadMegabytes(snapshot?.totalBytes);
-            setStatus(
-              `Uploading video… ${percent}% (${transferredLabel} / ${totalLabel})`
-            );
-          }
-        );
-        selectedReferenceVideoUploadState = "uploaded";
-        refreshReferenceVideoCardUi();
-      } catch (error) {
-        selectedReferenceVideoUploadState = "error";
-        refreshReferenceVideoCardUi();
-        throw error;
-      }
+      setStatus(
+        selectedReferenceVideoUploadState === "uploaded" ?
+          "Reference video is ready." :
+          "Waiting for reference video upload…"
+      );
+      const uploadedReference = await ensureReferenceVideoUploaded({surfaceStatus: true});
+      jobId = uploadedReference?.jobId || jobId;
+      uploadPath = uploadedReference?.uploadPath || uploadPath;
+      referenceVideoPath = uploadedReference?.referenceVideoPath || "";
     }
 
     setStatus("Preparing photo…");
@@ -3215,7 +3483,10 @@ onAuthStateChanged(auth, async (user) => {
     selectedReferenceVideoFile = null;
     selectedReferenceVideoName = "";
     selectedReferenceVideoUploadState = "idle";
+    selectedReferenceVideoUploadProgress = 0;
     selectedReferenceVideoDurationSec = null;
+    selectedReferenceVideoFileToken += 1;
+    resetReferenceVideoUploadTracking();
     resetReferenceVideoPreview();
     clearPendingResumeUpload();
     const referencePicker = $("fileReferenceVideo");

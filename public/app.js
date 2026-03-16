@@ -1323,6 +1323,34 @@ function getReferenceVideoMetaPresentation() {
   };
 }
 
+function getReferenceVideoCostEstimatePresentation() {
+  if (!selectedReferenceVideoFile) {
+    return {
+      text: "",
+      title: "",
+      visible: false,
+    };
+  }
+
+  if (
+    Number.isFinite(selectedReferenceVideoDurationSec) &&
+    selectedReferenceVideoDurationSec > 0
+  ) {
+    const estimatedCredits = Math.max(1, Math.ceil(selectedReferenceVideoDurationSec));
+    return {
+      text: `Will cost ~${estimatedCredits} credits`,
+      title: `Will cost about ${estimatedCredits} credits`,
+      visible: true,
+    };
+  }
+
+  return {
+    text: "Calculating cost…",
+    title: "Calculating cost",
+    visible: true,
+  };
+}
+
 function refreshReferenceVideoCardMediaUi() {
   const card = document.querySelector(".tplCard[data-trend-role='reference']");
   if (!card) return;
@@ -1345,14 +1373,24 @@ function refreshReferenceVideoCardUi() {
   const meta = document.querySelector(
     ".tplCard[data-trend-role='reference'] .refMetaName"
   );
+  const estimate = document.querySelector(
+    ".tplCard[data-trend-role='reference'] .refCostEstimate"
+  );
   refreshReferenceVideoCardMediaUi();
-  if (!meta) return;
+  if (meta) {
+    const presentation = getReferenceVideoMetaPresentation();
+    meta.textContent = presentation.text;
+    meta.title = presentation.title;
+    meta.classList.toggle("isSuccess", presentation.state === "uploaded");
+    meta.classList.toggle("isError", presentation.state === "error");
+  }
 
-  const presentation = getReferenceVideoMetaPresentation();
-  meta.textContent = presentation.text;
-  meta.title = presentation.title;
-  meta.classList.toggle("isSuccess", presentation.state === "uploaded");
-  meta.classList.toggle("isError", presentation.state === "error");
+  if (estimate) {
+    const estimatePresentation = getReferenceVideoCostEstimatePresentation();
+    estimate.textContent = estimatePresentation.text;
+    estimate.title = estimatePresentation.title;
+    estimate.classList.toggle("isVisible", estimatePresentation.visible);
+  }
 }
 
 async function openReferenceVideoPicker({enableScrollAfterPick = false} = {}) {
@@ -1438,6 +1476,7 @@ function readVideoFileDurationSeconds(file) {
 async function updateSelectedReferenceVideoDuration(file) {
   const token = ++selectedReferenceVideoMetadataToken;
   selectedReferenceVideoDurationSec = null;
+  refreshReferenceVideoCardUi();
   if (!file) return;
 
   try {
@@ -1448,6 +1487,7 @@ async function updateSelectedReferenceVideoDuration(file) {
     if (token !== selectedReferenceVideoMetadataToken) return;
     selectedReferenceVideoDurationSec = null;
   }
+  refreshReferenceVideoCardUi();
 }
 
 function createReferenceVideoPreviewDataUrl(file) {
@@ -2083,6 +2123,13 @@ function renderReferenceVideoCard() {
   meta.classList.toggle("isSuccess", initialMeta.state === "uploaded");
   meta.classList.toggle("isError", initialMeta.state === "error");
 
+  const estimate = document.createElement("div");
+  estimate.className = "refCostEstimate";
+  const initialEstimate = getReferenceVideoCostEstimatePresentation();
+  estimate.textContent = initialEstimate.text;
+  estimate.title = initialEstimate.title;
+  estimate.classList.toggle("isVisible", initialEstimate.visible);
+
   const actionBtn = document.createElement("button");
   actionBtn.className = "btn tplUse";
   actionBtn.style.marginTop = "10px";
@@ -2151,6 +2198,7 @@ function renderReferenceVideoCard() {
   card.appendChild(media);
   card.appendChild(title);
   card.appendChild(meta);
+  card.appendChild(estimate);
   card.appendChild(actionBtn);
   updateReferenceMetaUi();
 

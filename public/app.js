@@ -104,6 +104,11 @@ function isAndroid() {
   return /Android/i.test(ua);
 }
 
+function isIOS() {
+  const ua = navigator.userAgent || "";
+  return /iPhone|iPad|iPod/i.test(ua);
+}
+
 function buildExternalBrowserUrlFor(rawUrl) {
   const targetUrl = safeUrl(rawUrl) || window.location.href;
   if (!isAndroid()) return targetUrl;
@@ -2993,6 +2998,11 @@ function renderDoneJobActions(jobId) {
   const isPreparing = preparingDownloadJobIds.has(jobId);
   const preparedUrl = safeUrl(preparedDownloadByJobId.get(jobId) || "");
   const saveVideoPageUrl = buildSaveVideoPageUrl(preparedUrl);
+  const prefersSavePage = isIOS() || shouldUseRedirectLogin();
+  const downloadTargetUrl = prefersSavePage ?
+    (saveVideoPageUrl || preparedUrl) :
+    preparedUrl;
+  const copyTargetUrl = saveVideoPageUrl || preparedUrl;
 
   if (!preparedUrl) {
     const prepareBtn = document.createElement("button");
@@ -3014,10 +3024,12 @@ function renderDoneJobActions(jobId) {
   const downloadBtn = document.createElement("a");
   downloadBtn.className = "btnDownloadPrimary";
   downloadBtn.textContent = "Download";
-  downloadBtn.href = preparedUrl;
+  downloadBtn.href = downloadTargetUrl;
   downloadBtn.target = "_blank";
   downloadBtn.rel = "noopener noreferrer";
-  downloadBtn.download = "";
+  if (!prefersSavePage) {
+    downloadBtn.download = "";
+  }
   actions.appendChild(downloadBtn);
 
   const orEl = document.createElement("div");
@@ -3042,7 +3054,7 @@ function renderDoneJobActions(jobId) {
   copyBtn.textContent = "Copy URL";
   copyBtn.onclick = async () => {
     try {
-      await navigator.clipboard.writeText(preparedUrl);
+      await navigator.clipboard.writeText(copyTargetUrl);
       const originalText = "Copy URL";
       copyBtn.textContent = "URL copied";
       copyBtn.disabled = true;
@@ -3061,7 +3073,7 @@ function renderDoneJobActions(jobId) {
   fallbackHint.textContent = (
     shouldUseRedirectLogin() && !isAndroid()
   ) ?
-    "On iPhone: if download fails, tap Copy URL, paste it into Safari/Chrome, and download there." :
+    "On iPhone: if download fails, tap Copy URL, open the link in Safari/Chrome, then use Save video or Share." :
     "If download does not start, tap “Watch video”.";
   wrapper.appendChild(fallbackHint);
 

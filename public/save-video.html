@@ -47,7 +47,7 @@
         <button id="btnShare" class="btnGhost" type="button">Share</button>
         <button id="btnCopy" class="btnGhost" type="button">Copy URL</button>
       </div>
-      <div class="note">On iPhone: tap <b>Save video</b>. If the system does not offer <b>Save Video</b>, try <b>Share</b>. If that still does not work, use <b>Copy URL</b> and open the link in Safari/Chrome.</div>
+      <div class="note">On iPhone: tap <b>Save video</b>. If the system does not offer <b>Save Video</b>, try <b>Share</b>. If that still does not work, use <b>Copy URL</b> and open this page in Safari/Chrome.</div>
     </div>
   </div>
 
@@ -79,6 +79,8 @@
       var btnDownload = document.getElementById('btnDownload');
       var btnShare = document.getElementById('btnShare');
       var btnCopy = document.getElementById('btnCopy');
+
+      var pageUrl = window.location.href;
 
       if (!videoUrl) {
         errorEl.textContent = 'Video URL is missing or invalid.';
@@ -154,7 +156,7 @@
           try {
             await navigator.share({
               title: 'MoTrend© video',
-              url: videoUrl,
+              url: pageUrl,
             });
           } catch (error) {
             if (!error || error.name === 'AbortError') {
@@ -197,7 +199,7 @@
 
       btnCopy.addEventListener('click', async function() {
         try {
-          await navigator.clipboard.writeText(videoUrl);
+          await navigator.clipboard.writeText(pageUrl);
           showTemporaryButtonState(btnCopy, 'URL copied', 'Copy URL', 500);
         } catch {
           btnCopy.textContent = 'Copy failed';

@@ -1019,6 +1019,7 @@ let selectedReferenceVideoName = "";
 let selectedReferenceVideoUploadState = "idle";
 let selectedReferenceVideoUploadProgress = 0;
 let selectedReferenceVideoPreviewUrl = "";
+let selectedReferenceVideoPreviewLoaded = false;
 let selectedReferenceVideoPreviewToken = 0;
 let selectedReferenceVideoDurationSec = null;
 let selectedReferenceVideoMetadataToken = 0;
@@ -1381,7 +1382,8 @@ function refreshReferenceVideoCardMediaUi() {
   const placeholderTitle = card.querySelector(".refPlaceholderTitle");
   const placeholderSub = card.querySelector(".refPlaceholderSub");
   const previewImg = card.querySelector(".refPreviewImage");
-  const hasPreview = !!selectedReferenceVideoPreviewUrl;
+  const hasPreview =
+    !!selectedReferenceVideoPreviewUrl && selectedReferenceVideoPreviewLoaded;
 
   let placeholderState = "idle";
   let placeholderPrimary = "Your video reference";
@@ -1394,7 +1396,7 @@ function refreshReferenceVideoCardMediaUi() {
   } else if (selectedReferenceVideoUploadState === "uploaded") {
     placeholderState = "success";
     placeholderPrimary = "Your video is uploaded";
-    placeholderSecondary = "Preview is preparing…";
+    placeholderSecondary = hasPreview ? "" : "Preview is preparing…";
   } else if (selectedReferenceVideoUploadState === "error") {
     placeholderState = "error";
     placeholderPrimary = "Upload failed";
@@ -1406,7 +1408,16 @@ function refreshReferenceVideoCardMediaUi() {
   }
 
   if (previewImg) {
-    previewImg.src = hasPreview ? selectedReferenceVideoPreviewUrl : "";
+    const nextPreviewSrc = selectedReferenceVideoPreviewUrl || "";
+    if ((previewImg.dataset.currentSrc || "") !== nextPreviewSrc) {
+      previewImg.dataset.currentSrc = nextPreviewSrc;
+      if (nextPreviewSrc) {
+        selectedReferenceVideoPreviewLoaded = false;
+        previewImg.src = nextPreviewSrc;
+      } else {
+        previewImg.removeAttribute("src");
+      }
+    }
     previewImg.style.display = hasPreview ? "block" : "none";
   }
 
@@ -1483,6 +1494,7 @@ async function openPhotoPicker() {
 function resetReferenceVideoPreview() {
   selectedReferenceVideoPreviewToken += 1;
   selectedReferenceVideoPreviewUrl = "";
+  selectedReferenceVideoPreviewLoaded = false;
   refreshReferenceVideoCardMediaUi();
 }
 
@@ -1655,10 +1667,6 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
       selectedReferenceVideoUploadState = "uploading";
       selectedReferenceVideoUploadProgress = 0;
       refreshReferenceVideoCardUi();
-      setUploadSafetyHint(
-        "Do not close this page while your files are uploading.",
-        true
-      );
       if (
         localFile.size >= LARGE_REFERENCE_VIDEO_HINT_BYTES ||
         shouldUseRedirectLogin()
@@ -1704,7 +1712,6 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
       refreshReferenceVideoCardUi();
       if (!generateSubmissionInFlight) {
         setStatus("");
-        setUploadSafetyHint("", false);
         setStatusHintVisible(false);
       }
     }
@@ -1719,7 +1726,6 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
       refreshReferenceVideoCardUi();
       if (!generateSubmissionInFlight) {
         setStatus("");
-        setUploadSafetyHint("", false);
       }
     }
     throw error;
@@ -1909,6 +1915,7 @@ function createReferenceVideoPreviewDataUrl(file) {
 async function generateReferenceVideoPreview(file) {
   const token = ++selectedReferenceVideoPreviewToken;
   selectedReferenceVideoPreviewUrl = "";
+  selectedReferenceVideoPreviewLoaded = false;
   refreshReferenceVideoCardMediaUi();
 
   if (!file) return;
@@ -1917,9 +1924,11 @@ async function generateReferenceVideoPreview(file) {
     const dataUrl = await createReferenceVideoPreviewDataUrl(file);
     if (token !== selectedReferenceVideoPreviewToken) return;
     selectedReferenceVideoPreviewUrl = dataUrl || "";
+    selectedReferenceVideoPreviewLoaded = false;
   } catch {
     if (token !== selectedReferenceVideoPreviewToken) return;
     selectedReferenceVideoPreviewUrl = "";
+    selectedReferenceVideoPreviewLoaded = false;
   }
 
   if (token === selectedReferenceVideoPreviewToken) {
@@ -2406,6 +2415,14 @@ function renderReferenceVideoCard() {
   previewImg.className = "refPreviewImage";
   previewImg.alt = "Your video reference preview";
   previewImg.style.display = "none";
+  previewImg.onload = () => {
+    selectedReferenceVideoPreviewLoaded = true;
+    refreshReferenceVideoCardMediaUi();
+  };
+  previewImg.onerror = () => {
+    selectedReferenceVideoPreviewLoaded = false;
+    refreshReferenceVideoCardMediaUi();
+  };
   media.appendChild(previewImg);
 
   const title = document.createElement("div");
@@ -3334,7 +3351,6 @@ $("btnGenerate").onclick = async () => {
     const uploadInput = await prepareUploadImage(rawFile);
 
     setStatus("Uploading photo… 0%");
-    setUploadSafetyHint("Do not close this page while your files are uploading.", true);
     const photoRef = ref(storage, uploadPath);
     await uploadFileWithProgress(
       photoRef,

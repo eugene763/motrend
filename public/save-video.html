@@ -44,10 +44,10 @@
       </div>
       <div class="actions" id="actions" style="display:none">
         <button id="btnDownload" class="btn" type="button">Save video</button>
-        <button id="btnShare" class="btnGhost" type="button">Watch inline</button>
+        <button id="btnShare" class="btnGhost" type="button">Share</button>
         <button id="btnCopy" class="btnGhost" type="button">Copy URL</button>
       </div>
-      <div class="note">On iPhone: tap <b>Save video</b>. If the system does not offer <b>Save Video</b>, use <b>Copy URL</b> and open the link in Safari/Chrome.</div>
+      <div class="note">On iPhone: tap <b>Save video</b>. If the system does not offer <b>Save Video</b>, try <b>Share</b>. If that still does not work, use <b>Copy URL</b> and open the link in Safari/Chrome.</div>
     </div>
   </div>
 
@@ -91,20 +91,80 @@
       videoWrap.style.display = 'block';
       actions.style.display = 'flex';
 
-      btnShare.addEventListener('click', function() {
-        window.open(videoUrl, '_blank', 'noopener,noreferrer');
-      });
+      var videoBlobPromise = null;
+
+      async function fetchVideoBlob() {
+        if (!videoBlobPromise) {
+          videoBlobPromise = fetch(videoUrl, { credentials: 'omit' }).then(function(response) {
+            if (!response.ok) {
+              throw new Error('Unable to fetch video.');
+            }
+            return response.blob();
+          });
+        }
+        return videoBlobPromise;
+      }
 
       async function buildShareableFile() {
-        var response = await fetch(videoUrl, { credentials: 'omit' });
-        if (!response.ok) {
+        var blob = await fetchVideoBlob();
+        if (!blob) {
           throw new Error('Unable to fetch video.');
         }
-        var blob = await response.blob();
         var mimeType = blob.type || 'video/mp4';
         var extension = mimeType === 'video/quicktime' ? '.mov' : '.mp4';
         var file = new File([blob], 'motrend-video' + extension, { type: mimeType });
         return file;
+      }
+
+      function triggerBlobDownload(file) {
+        var objectUrl = URL.createObjectURL(file);
+        var anchor = document.createElement('a');
+        anchor.href = objectUrl;
+        anchor.download = file.name || 'motrend-video.mp4';
+        anchor.rel = 'noopener';
+        anchor.style.display = 'none';
+        document.body.appendChild(anchor);
+        anchor.click();
+        setTimeout(function() {
+          URL.revokeObjectURL(objectUrl);
+          anchor.remove();
+        }, 1000);
+      }
+
+      async function handleSaveVideo() {
+        var file = await buildShareableFile();
+        if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({
+              title: 'MoTrend© video',
+              files: [file],
+            });
+            return;
+          } catch (error) {
+            if (error && error.name === 'AbortError') {
+              return;
+            }
+          }
+        }
+        triggerBlobDownload(file);
+      }
+
+      if (navigator.share) {
+        btnShare.addEventListener('click', async function() {
+          try {
+            await navigator.share({
+              title: 'MoTrend© video',
+              url: videoUrl,
+            });
+          } catch (error) {
+            if (!error || error.name === 'AbortError') {
+              return;
+            }
+            showTemporaryButtonState(btnShare, 'Share failed', 'Share', 900);
+          }
+        });
+      } else {
+        btnShare.style.display = 'none';
       }
 
       function showTemporaryButtonState(button, label, resetLabel, delay) {
@@ -116,26 +176,24 @@
         }, delay);
       }
 
-      if (navigator.share && navigator.canShare) {
-        btnDownload.addEventListener('click', async function() {
-          try {
-            var file = await buildShareableFile();
-            if (!navigator.canShare({ files: [file] })) {
-              throw new Error('File sharing is unavailable.');
-            }
-            await navigator.share({
-              title: 'MoTrend© video',
-              files: [file],
-            });
-          } catch {
-            window.open(videoUrl, '_blank', 'noopener,noreferrer');
-          }
-        });
-      } else {
-        btnDownload.addEventListener('click', function() {
+      btnDownload.addEventListener('click', async function() {
+        var originalText = 'Save video';
+        btnDownload.disabled = true;
+        btnDownload.textContent = 'Preparing…';
+        try {
+          await handleSaveVideo();
+          btnDownload.textContent = originalText;
+        } catch {
+          btnDownload.textContent = 'Open video';
+          setTimeout(function() {
+            btnDownload.textContent = originalText;
+            btnDownload.disabled = false;
+          }, 900);
           window.open(videoUrl, '_blank', 'noopener,noreferrer');
-        });
-      }
+          return;
+        }
+        btnDownload.disabled = false;
+      });
 
       btnCopy.addEventListener('click', async function() {
         try {

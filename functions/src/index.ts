@@ -109,8 +109,10 @@ interface KlingState {
 
 interface DownloadState {
   storagePath?: string;
+  fileDownloadStoragePath?: string;
   fileName?: string;
   downloadToken?: string;
+  fileDownloadToken?: string;
   contentType?: string;
   sizeBytes?: number;
   expiresAt?: admin.firestore.Timestamp;
@@ -1242,6 +1244,10 @@ function defaultDownloadPath(uid: string, jobId: string): string {
   return `outputs/${uid}/${jobId}/result.mp4`;
 }
 
+function defaultFileDownloadPath(uid: string, jobId: string): string {
+  return `outputs/${uid}/${jobId}/result-download.mp4`;
+}
+
 function defaultDownloadFileName(jobId: string): string {
   return sanitizeFileName(`motrend-${jobId}.mp4`);
 }
@@ -1254,6 +1260,16 @@ function buildFirebaseDownloadUrl(params: {
   return "https://firebasestorage.googleapis.com/v0/b/" +
     `${bucketName}/o/${encodeURIComponent(params.storagePath)}` +
     `?alt=media&token=${encodeURIComponent(params.downloadToken)}`;
+}
+
+function buildFirebaseAttachmentDownloadUrl(params: {
+  storagePath: string;
+  downloadToken: string;
+}): string {
+  return buildFirebaseDownloadUrl({
+    storagePath: params.storagePath,
+    downloadToken: params.downloadToken,
+  });
 }
 
 function createDownloadToken(): string {
@@ -1362,11 +1378,46 @@ async function fetchVideoToStorage(params: {
   }
 }
 
+async function cloneStoredVideoToDownloadObject(params: {
+  sourceStoragePath: string;
+  storagePath: string;
+  fileName: string;
+  downloadToken: string;
+  contentType: string;
+}): Promise<void> {
+  const bucket = admin.storage().bucket();
+  const sourceFile = bucket.file(params.sourceStoragePath);
+  const targetFile = bucket.file(params.storagePath);
+
+  const writeStream = targetFile.createWriteStream({
+    resumable: false,
+    metadata: {
+      contentType: params.contentType,
+      contentDisposition: `attachment; filename="${params.fileName}"`,
+      cacheControl: "private, max-age=3600",
+      metadata: {
+        firebaseStorageDownloadTokens: params.downloadToken,
+      },
+    },
+  });
+
+  try {
+    await pipeline(
+      sourceFile.createReadStream(),
+      writeStream
+    );
+  } catch (error) {
+    await targetFile.delete({ignoreNotFound: true});
+    throw error;
+  }
+}
+
 async function prepareOwnedJobDownload(params: {
   uid: string;
   jobId: string;
 }): Promise<{
   downloadUrl?: string;
+  inlineUrl?: string;
   expiresAtMs?: number;
   cached?: boolean;
   pending?: boolean;
@@ -1434,19 +1485,27 @@ async function prepareOwnedJobDownload(params: {
     const nowMs = Date.now();
     const storagePath = pickString(job.download?.storagePath) ||
       defaultDownloadPath(uid, jobId);
+    const fileDownloadStoragePath =
+      pickString(job.download?.fileDownloadStoragePath) ||
+      defaultFileDownloadPath(uid, jobId);
     const downloadToken = pickString(job.download?.downloadToken);
+    const fileDownloadToken = pickString(job.download?.fileDownloadToken);
     const expiresAtMs = timestampMs(job.download?.expiresAt);
 
     if (
       expiresAtMs !== null &&
       expiresAtMs > nowMs &&
       job.download?.storagePath &&
-      downloadToken
+      downloadToken &&
+      fileDownloadStoragePath &&
+      fileDownloadToken
     ) {
       return {
         mode: "cached" as const,
         storagePath,
+        fileDownloadStoragePath,
         downloadToken,
+        fileDownloadToken,
         expiresAtMs,
       };
     }
@@ -1486,12 +1545,17 @@ async function prepareOwnedJobDownload(params: {
   }
 
   if (decision.mode === "cached") {
-    const downloadUrl = buildFirebaseDownloadUrl({
+    const inlineUrl = buildFirebaseDownloadUrl({
       storagePath: decision.storagePath,
       downloadToken: decision.downloadToken,
     });
+    const downloadUrl = buildFirebaseAttachmentDownloadUrl({
+      storagePath: decision.fileDownloadStoragePath,
+      downloadToken: decision.fileDownloadToken,
+    });
     return {
       downloadUrl,
+      inlineUrl,
       expiresAtMs: decision.expiresAtMs,
       cached: true,
     };
@@ -2400,9 +2464,14 @@ async function processDownloadPrepareTask(jobId: string): Promise<void> {
 
   const storagePath = pickString(job.download?.storagePath) ||
     defaultDownloadPath(uid, jobId);
+  const fileDownloadStoragePath =
+    pickString(job.download?.fileDownloadStoragePath) ||
+    defaultFileDownloadPath(uid, jobId);
   const fileName = pickString(job.download?.fileName) ||
     defaultDownloadFileName(jobId);
   const downloadToken = pickString(job.download?.downloadToken) ||
+    createDownloadToken();
+  const fileDownloadToken = pickString(job.download?.fileDownloadToken) ||
     createDownloadToken();
 
   try {
@@ -2412,12 +2481,21 @@ async function processDownloadPrepareTask(jobId: string): Promise<void> {
       fileName,
       downloadToken,
     });
+    await cloneStoredVideoToDownloadObject({
+      sourceStoragePath: storagePath,
+      storagePath: fileDownloadStoragePath,
+      fileName,
+      downloadToken: fileDownloadToken,
+      contentType: downloaded.contentType,
+    });
 
     const nextExpiresAtMs = Date.now() + OUTPUT_TTL_MS;
     await jobRef.update({
       "download.storagePath": storagePath,
+      "download.fileDownloadStoragePath": fileDownloadStoragePath,
       "download.fileName": fileName,
       "download.downloadToken": downloaded.downloadToken,
+      "download.fileDownloadToken": fileDownloadToken,
       "download.contentType": downloaded.contentType,
       "download.sizeBytes": downloaded.sizeBytes,
       "download.expiresAt": admin.firestore.Timestamp.fromMillis(
@@ -2777,6 +2855,9 @@ export const cleanupDownloadsQuarterHourly = onSchedule(
       for (const jobDoc of jobsSnap.docs) {
         const job = (jobDoc.data() as JobDoc | undefined) || {};
         const storagePath = pickString(job.download?.storagePath);
+        const fileDownloadStoragePath = pickString(
+          job.download?.fileDownloadStoragePath
+        );
 
         if (storagePath) {
           try {
@@ -2791,10 +2872,26 @@ export const cleanupDownloadsQuarterHourly = onSchedule(
           }
         }
 
+        if (fileDownloadStoragePath) {
+          try {
+            await admin.storage().bucket().file(fileDownloadStoragePath)
+              .delete({ignoreNotFound: true});
+            deletedFiles += 1;
+          } catch (error) {
+            logger.warn("Failed to delete cached file download", {
+              fileHash: maskPathForLog(fileDownloadStoragePath),
+              message: errorMessage(error),
+            });
+          }
+        }
+
         await jobDoc.ref.update({
           "download.storagePath": admin.firestore.FieldValue.delete(),
+          "download.fileDownloadStoragePath":
+            admin.firestore.FieldValue.delete(),
           "download.fileName": admin.firestore.FieldValue.delete(),
           "download.downloadToken": admin.firestore.FieldValue.delete(),
+          "download.fileDownloadToken": admin.firestore.FieldValue.delete(),
           "download.contentType": admin.firestore.FieldValue.delete(),
           "download.sizeBytes": admin.firestore.FieldValue.delete(),
           "download.expiresAt": admin.firestore.FieldValue.delete(),

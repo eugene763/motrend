@@ -47,7 +47,7 @@
         <button id="btnShare" class="btnGhost" type="button">Share</button>
         <button id="btnCopy" class="btnGhost" type="button">Copy URL</button>
       </div>
-      <div class="note">On iPhone: tap <b>Save video</b>. If the system does not offer <b>Save Video</b>, try <b>Share</b>. If that still does not work, use <b>Copy URL</b> and open this page in Safari/Chrome.</div>
+      <div class="note">On iPhone: tap <b>Save video</b>. If the system does not offer <b>Save Video</b>, try <b>Share</b>. If that still does not work, use <b>Copy URL</b> and open the direct download in Safari/Chrome.</div>
     </div>
   </div>
 
@@ -72,6 +72,7 @@
 
       var params = new URLSearchParams(window.location.search);
       var videoUrl = safeUrl(params.get('videoUrl') || '');
+      var downloadUrl = safeUrl(params.get('downloadUrl') || '');
       var errorEl = document.getElementById('error');
       var videoWrap = document.getElementById('videoWrap');
       var videoEl = document.getElementById('video');
@@ -81,14 +82,15 @@
       var btnCopy = document.getElementById('btnCopy');
 
       var pageUrl = window.location.href;
+      var copyTargetUrl = downloadUrl || videoUrl || pageUrl;
 
-      if (!videoUrl) {
+      if (!videoUrl && !downloadUrl) {
         errorEl.textContent = 'Video URL is missing or invalid.';
         errorEl.style.display = 'block';
         return;
       }
 
-      videoEl.src = videoUrl;
+      videoEl.src = videoUrl || downloadUrl;
 
       videoWrap.style.display = 'block';
       actions.style.display = 'flex';
@@ -97,7 +99,7 @@
 
       async function fetchVideoBlob() {
         if (!videoBlobPromise) {
-          videoBlobPromise = fetch(videoUrl, { credentials: 'omit' }).then(function(response) {
+          videoBlobPromise = fetch(videoUrl || downloadUrl, { credentials: 'omit' }).then(function(response) {
             if (!response.ok) {
               throw new Error('Unable to fetch video.');
             }
@@ -148,6 +150,10 @@
             }
           }
         }
+        if (downloadUrl) {
+          window.location.href = downloadUrl;
+          return;
+        }
         triggerBlobDownload(file);
       }
 
@@ -156,7 +162,7 @@
           try {
             await navigator.share({
               title: 'MoTrend© video',
-              url: pageUrl,
+              url: copyTargetUrl,
             });
           } catch (error) {
             if (!error || error.name === 'AbortError') {
@@ -191,7 +197,7 @@
             btnDownload.textContent = originalText;
             btnDownload.disabled = false;
           }, 900);
-          window.open(videoUrl, '_blank', 'noopener,noreferrer');
+          window.open(downloadUrl || videoUrl, '_blank', 'noopener,noreferrer');
           return;
         }
         btnDownload.disabled = false;
@@ -199,7 +205,7 @@
 
       btnCopy.addEventListener('click', async function() {
         try {
-          await navigator.clipboard.writeText(pageUrl);
+          await navigator.clipboard.writeText(copyTargetUrl);
           showTemporaryButtonState(btnCopy, 'URL copied', 'Copy URL', 500);
         } catch {
           btnCopy.textContent = 'Copy failed';

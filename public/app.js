@@ -687,11 +687,17 @@ function safeUrl(value) {
   }
 }
 
-function buildSaveVideoPageUrl(videoUrl) {
+function buildSaveVideoPageUrl(videoUrl, downloadUrl = "") {
   const safeVideoUrl = safeUrl(videoUrl);
-  if (!safeVideoUrl) return "";
+  const safeDownloadUrl = safeUrl(downloadUrl);
+  if (!safeVideoUrl && !safeDownloadUrl) return "";
   const url = new URL("/save-video.html", window.location.origin);
-  url.searchParams.set("videoUrl", safeVideoUrl);
+  if (safeVideoUrl) {
+    url.searchParams.set("videoUrl", safeVideoUrl);
+  }
+  if (safeDownloadUrl) {
+    url.searchParams.set("downloadUrl", safeDownloadUrl);
+  }
   return url.toString();
 }
 
@@ -1389,6 +1395,10 @@ function refreshReferenceVideoCardMediaUi() {
   const previewImg = card.querySelector(".refPreviewImage");
   const hasPreview =
     !!selectedReferenceVideoPreviewUrl && selectedReferenceVideoPreviewLoaded;
+  const forceOverlay =
+    selectedReferenceVideoUploadState === "selected" ||
+    selectedReferenceVideoUploadState === "uploading" ||
+    selectedReferenceVideoUploadState === "error";
 
   let placeholderState = "idle";
   let placeholderPrimary = "Your video reference";
@@ -1427,10 +1437,12 @@ function refreshReferenceVideoCardMediaUi() {
   }
 
   if (placeholder) {
-    placeholder.style.display = hasPreview ? "none" : "flex";
-    placeholder.classList.toggle("isBusy", !hasPreview && placeholderState === "busy");
-    placeholder.classList.toggle("isSuccess", !hasPreview && placeholderState === "success");
-    placeholder.classList.toggle("isError", !hasPreview && placeholderState === "error");
+    const showPlaceholder = !hasPreview || forceOverlay;
+    placeholder.style.display = showPlaceholder ? "flex" : "none";
+    placeholder.classList.toggle("hasPreview", hasPreview && forceOverlay);
+    placeholder.classList.toggle("isBusy", showPlaceholder && placeholderState === "busy");
+    placeholder.classList.toggle("isSuccess", showPlaceholder && placeholderState === "success");
+    placeholder.classList.toggle("isError", showPlaceholder && placeholderState === "error");
   }
 
   if (placeholderTitle) {
@@ -2204,11 +2216,17 @@ async function prepareDownloadLink(jobId) {
   for (let attempt = 0; attempt < PREPARE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
     const response = await callCreateJob({prepareDownloadJobId: jobId});
     const payload = response?.data || {};
+    const inlineUrl = safeUrl(
+      typeof payload.inlineUrl === "string" ? payload.inlineUrl : ""
+    );
     const downloadUrl = safeUrl(
       typeof payload.downloadUrl === "string" ? payload.downloadUrl : ""
     );
-    if (downloadUrl) {
-      return downloadUrl;
+    if (inlineUrl || downloadUrl) {
+      return {
+        inlineUrl: inlineUrl || downloadUrl,
+        downloadUrl: downloadUrl || inlineUrl,
+      };
     }
 
     const isPending = payload?.pending === true;
@@ -2996,15 +3014,24 @@ function renderDoneJobActions(jobId) {
   wrapper.appendChild(actions);
 
   const isPreparing = preparingDownloadJobIds.has(jobId);
-  const preparedUrl = safeUrl(preparedDownloadByJobId.get(jobId) || "");
-  const saveVideoPageUrl = buildSaveVideoPageUrl(preparedUrl);
+  const storedPreparedState = preparedDownloadByJobId.get(jobId);
+  const preparedState = typeof storedPreparedState === "string" ?
+    {downloadUrl: storedPreparedState} :
+    (storedPreparedState || {});
+  const inlineUrl = safeUrl(
+    preparedState.inlineUrl || preparedState.downloadUrl || ""
+  );
+  const preparedUrl = safeUrl(
+    preparedState.downloadUrl || preparedState.inlineUrl || ""
+  );
+  const saveVideoPageUrl = buildSaveVideoPageUrl(inlineUrl, preparedUrl);
   const prefersSavePage = isIOS() || shouldUseRedirectLogin();
   const downloadTargetUrl = prefersSavePage ?
-    (saveVideoPageUrl || preparedUrl) :
-    preparedUrl;
-  const copyTargetUrl = saveVideoPageUrl || preparedUrl;
+    (saveVideoPageUrl || preparedUrl || inlineUrl) :
+    (preparedUrl || inlineUrl);
+  const copyTargetUrl = preparedUrl || inlineUrl || saveVideoPageUrl;
 
-  if (!preparedUrl) {
+  if (!preparedUrl && !inlineUrl) {
     const prepareBtn = document.createElement("button");
     prepareBtn.className = "btn";
     prepareBtn.disabled = isPreparing;
@@ -3041,7 +3068,7 @@ function renderDoneJobActions(jobId) {
   const openExternalBtn = document.createElement("a");
   openExternalBtn.className = "btn";
   openExternalBtn.textContent = "Watch video";
-  const openTargetUrl = saveVideoPageUrl || preparedUrl;
+  const openTargetUrl = saveVideoPageUrl || inlineUrl || preparedUrl;
   openExternalBtn.href = shouldUseRedirectLogin() ?
     buildExternalBrowserUrlFor(openTargetUrl) :
     openTargetUrl;
@@ -3073,7 +3100,7 @@ function renderDoneJobActions(jobId) {
   fallbackHint.textContent = (
     shouldUseRedirectLogin() && !isAndroid()
   ) ?
-    "On iPhone: if download fails, tap Copy URL, open the link in Safari/Chrome, then use Save video or Share." :
+    "On iPhone: if Save video does not work, tap Copy URL and open the direct download in Safari/Chrome." :
     "If download does not start, tap “Watch video”.";
   wrapper.appendChild(fallbackHint);
 

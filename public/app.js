@@ -33,7 +33,6 @@ import {
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import {
-  getDownloadURL,
   getStorage,
   ref,
   uploadBytesResumable,
@@ -2619,7 +2618,6 @@ $("btnGenerate").onclick = async () => {
     setStatus("Uploading files… 0%");
 
     let referenceVideoPath = "";
-    let referenceVideoUrl = "";
     const useReferenceVideo = (
       selectedTrendKind === TREND_SELECTION_REFERENCE &&
       !!selectedReferenceVideoFile
@@ -2652,7 +2650,6 @@ $("btnGenerate").onclick = async () => {
             );
           }
         );
-        referenceVideoUrl = await getDownloadURL(referenceRef);
         selectedReferenceVideoUploadState = "uploaded";
         refreshReferenceVideoCardUi();
       } catch (error) {
@@ -2683,15 +2680,11 @@ $("btnGenerate").onclick = async () => {
       }
     );
 
-    const inputImageUrl = await getDownloadURL(photoRef);
-
     setStatus("Finalizing upload…");
     await callCreateJob({
       finalizeJobId: jobId,
       inputImagePath: uploadPath,
-      inputImageUrl,
       referenceVideoPath: referenceVideoPath || undefined,
-      referenceVideoUrl: referenceVideoUrl || undefined,
     });
     clearPendingResumeUpload(jobId);
     setUploadSafetyHint(

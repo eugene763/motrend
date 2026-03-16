@@ -24,7 +24,7 @@ const INITIAL_CREDITS = 20;
 const INPUT_TTL_MS = 6 * 60 * 60 * 1000;
 const OUTPUT_TTL_MS = 60 * 60 * 1000;
 const JOB_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const AWAITING_UPLOAD_TTL_MS = 30 * 60 * 1000;
+const AWAITING_UPLOAD_TTL_MS = INPUT_TTL_MS;
 const LEGACY_QUEUED_WITHOUT_UPLOAD_TTL_MS = 30 * 60 * 1000;
 const LEGACY_QUEUED_AUTO_REFUND_FROM_MS =
   Date.parse("2026-03-14T00:00:00+04:00");
@@ -635,6 +635,36 @@ async function resolveRefundAmountForJobInTransaction(
 async function storageObjectExists(storagePath: string): Promise<boolean> {
   const [exists] = await admin.storage().bucket().file(storagePath).exists();
   return exists === true;
+}
+
+async function ensureStorageDownloadUrl(storagePath: string): Promise<string> {
+  const file = admin.storage().bucket().file(storagePath);
+  const [metadata] = await file.getMetadata();
+  const existingTokensRaw = pickString(
+    metadata.metadata?.firebaseStorageDownloadTokens
+  );
+  let downloadToken = "";
+  if (existingTokensRaw) {
+    downloadToken = existingTokensRaw
+      .split(",")
+      .map((item) => item.trim())
+      .find(Boolean) || "";
+  }
+
+  if (!downloadToken) {
+    downloadToken = createDownloadToken();
+    await file.setMetadata({
+      metadata: {
+        ...(metadata.metadata || {}),
+        firebaseStorageDownloadTokens: downloadToken,
+      },
+    });
+  }
+
+  return buildFirebaseDownloadUrl({
+    storagePath,
+    downloadToken,
+  });
 }
 
 function readUInt64BEAsNumber(buffer: Buffer, offset: number): number {
@@ -1381,17 +1411,13 @@ async function finalizePreparedJob(params: {
   uid: string;
   jobId: string;
   inputImagePath: string;
-  inputImageUrl: string;
   referenceVideoPath: string | null;
-  referenceVideoUrl: string | null;
 }): Promise<Record<string, unknown>> {
   const {
     uid,
     jobId,
     inputImagePath,
-    inputImageUrl,
     referenceVideoPath,
-    referenceVideoUrl,
   } = params;
   const jobRef = db.collection("jobs").doc(jobId);
 
@@ -1428,8 +1454,13 @@ async function finalizePreparedJob(params: {
     );
   }
 
+  const inputImageUrl = await ensureStorageDownloadUrl(inputImagePath);
+  const uploadedReferenceVideoUrl = referenceVideoPath ?
+    await ensureStorageDownloadUrl(referenceVideoPath) :
+    null;
+
   const uploadedReferenceDurationSec = (
-    referenceVideoPath && referenceVideoUrl
+    referenceVideoPath && uploadedReferenceVideoUrl
   ) ?
     await probeReferenceVideoDurationSeconds(referenceVideoPath) :
     null;
@@ -1473,7 +1504,7 @@ async function finalizePreparedJob(params: {
     }
 
     const effectiveReferenceVideoUrl = pickString(
-      referenceVideoUrl,
+      uploadedReferenceVideoUrl,
       template.referenceVideoUrl,
       template.kling?.referenceVideoUrl
     );
@@ -1534,9 +1565,9 @@ async function finalizePreparedJob(params: {
       updates["billing.rawDurationSec"] =
         Number(uploadedReferenceDurationSec.toFixed(3));
     }
-    if (referenceVideoPath && referenceVideoUrl) {
+    if (referenceVideoPath && uploadedReferenceVideoUrl) {
       updates.referenceVideoPath = referenceVideoPath;
-      updates.referenceVideoUrl = referenceVideoUrl;
+      updates.referenceVideoUrl = uploadedReferenceVideoUrl;
     }
     tx.update(jobRef, updates);
     enqueueQueueTaskInTransaction(tx, {
@@ -1858,11 +1889,10 @@ export const createJob = onCall(
       }
 
       const inputImagePath = pickString(req.data?.inputImagePath);
-      const inputImageUrl = pickString(req.data?.inputImageUrl);
-      if (!inputImagePath || !inputImageUrl) {
+      if (!inputImagePath) {
         throw new HttpsError(
           "invalid-argument",
-          "inputImagePath and inputImageUrl are required"
+          "inputImagePath is required"
         );
       }
 
@@ -1870,9 +1900,7 @@ export const createJob = onCall(
         uid,
         jobId: finalizeJobId,
         inputImagePath,
-        inputImageUrl,
         referenceVideoPath: pickString(req.data?.referenceVideoPath),
-        referenceVideoUrl: pickString(req.data?.referenceVideoUrl),
       });
     }
 

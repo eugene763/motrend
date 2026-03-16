@@ -60,6 +60,10 @@
         try {
           var url = new URL(trimmed, window.location.origin);
           if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+          var isFirebaseDownloadHost = url.hostname === 'firebasestorage.googleapis.com';
+          var bucketMatch = /^\/v0\/b\/gen-lang-client-0651837818\.firebasestorage\.app\/o\//.test(url.pathname);
+          var hasToken = !!(url.searchParams.get('token') || '').trim();
+          if (!isFirebaseDownloadHost || !bucketMatch || !hasToken) return '';
           return url.toString();
         } catch {
           return '';

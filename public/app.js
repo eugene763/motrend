@@ -1089,7 +1089,7 @@ const DEFAULT_VISIBLE_JOBS = 5;
 const MAX_WATCH_JOBS = 20;
 const PROGRESS_HINT_TEXT = "Usually takes 10–20 minutes";
 const LARGE_UPLOAD_HINT_TEXT =
-  "Large video uploads can take 5–10 minutes in Telegram/iPhone. Please keep this page open.";
+  "Large video uploads can take 5–10 minutes in Telegram/iPhone.";
 const PROGRESS_STAGE_A_MS = 120000; // 0-50
 const PROGRESS_STAGE_B_MS = 150000; // 50-70
 const PROGRESS_STAGE_C_MS = 420000; // 70-90
@@ -1407,7 +1407,7 @@ function refreshReferenceVideoCardMediaUi() {
   if (selectedReferenceVideoUploadState === "uploading") {
     placeholderState = "busy";
     placeholderPrimary = "Uploading video…";
-    placeholderSecondary = `${selectedReferenceVideoUploadProgress}%`;
+    placeholderSecondary = `${selectedReferenceVideoUploadProgress}% uploaded`;
   } else if (selectedReferenceVideoUploadState === "uploaded") {
     placeholderState = "success";
     placeholderPrimary = "Your video is uploaded";
@@ -3025,11 +3025,9 @@ function renderDoneJobActions(jobId) {
     preparedState.downloadUrl || preparedState.inlineUrl || ""
   );
   const saveVideoPageUrl = buildSaveVideoPageUrl(inlineUrl, preparedUrl);
-  const prefersSavePage = isIOS() || shouldUseRedirectLogin();
-  const downloadTargetUrl = prefersSavePage ?
-    (saveVideoPageUrl || preparedUrl || inlineUrl) :
-    (preparedUrl || inlineUrl);
-  const copyTargetUrl = preparedUrl || inlineUrl || saveVideoPageUrl;
+  const saveVideoTargetUrl = preparedUrl || inlineUrl || saveVideoPageUrl;
+  const watchTargetUrl = saveVideoPageUrl || inlineUrl || preparedUrl;
+  const shareTargetUrl = saveVideoPageUrl || preparedUrl || inlineUrl;
 
   if (!preparedUrl && !inlineUrl) {
     const prepareBtn = document.createElement("button");
@@ -3048,60 +3046,62 @@ function renderDoneJobActions(jobId) {
     return wrapper;
   }
 
-  const downloadBtn = document.createElement("a");
-  downloadBtn.className = "btnDownloadPrimary";
-  downloadBtn.textContent = "Download";
-  downloadBtn.href = downloadTargetUrl;
-  downloadBtn.target = "_blank";
-  downloadBtn.rel = "noopener noreferrer";
-  if (!prefersSavePage) {
-    downloadBtn.download = "";
-  }
-  actions.appendChild(downloadBtn);
+  const saveVideoBtn = document.createElement("a");
+  saveVideoBtn.className = "btnDownloadPrimary";
+  saveVideoBtn.textContent = "Save video";
+  saveVideoBtn.href = saveVideoTargetUrl;
+  actions.appendChild(saveVideoBtn);
 
-  const orEl = document.createElement("div");
-  orEl.className = "jobOr";
-  orEl.style.display = "block";
-  orEl.textContent = "or";
-  actions.appendChild(orEl);
+  const watchBtn = document.createElement("a");
+  watchBtn.className = "btn";
+  watchBtn.textContent = "Watch video";
+  watchBtn.href = shouldUseRedirectLogin() ?
+    buildExternalBrowserUrlFor(watchTargetUrl) :
+    watchTargetUrl;
+  watchBtn.target = "_blank";
+  watchBtn.rel = "noopener noreferrer";
+  actions.appendChild(watchBtn);
 
-  const openExternalBtn = document.createElement("a");
-  openExternalBtn.className = "btn";
-  openExternalBtn.textContent = "Watch video";
-  const openTargetUrl = saveVideoPageUrl || inlineUrl || preparedUrl;
-  openExternalBtn.href = shouldUseRedirectLogin() ?
-    buildExternalBrowserUrlFor(openTargetUrl) :
-    openTargetUrl;
-  openExternalBtn.target = "_blank";
-  openExternalBtn.rel = "noopener noreferrer";
-  actions.appendChild(openExternalBtn);
-
-  const copyBtn = document.createElement("button");
-  copyBtn.className = "btn2";
-  copyBtn.textContent = "Copy URL";
-  copyBtn.onclick = async () => {
+  const shareBtn = document.createElement("button");
+  shareBtn.className = "btn2";
+  shareBtn.textContent = "Share";
+  shareBtn.onclick = async () => {
+    if (!shareTargetUrl) {
+      showFormError("Link is not ready yet. Please try again.");
+      return;
+    }
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: "MoTrend© video",
+          url: shareTargetUrl,
+        });
+        return;
+      } catch (error) {
+        if (error && error.name === "AbortError") {
+          return;
+        }
+      }
+    }
     try {
-      await navigator.clipboard.writeText(copyTargetUrl);
-      const originalText = "Copy URL";
-      copyBtn.textContent = "URL copied";
-      copyBtn.disabled = true;
+      await navigator.clipboard.writeText(shareTargetUrl);
+      const originalText = "Share";
+      shareBtn.textContent = "URL copied";
+      shareBtn.disabled = true;
       setTimeout(() => {
-        copyBtn.textContent = originalText;
-        copyBtn.disabled = false;
+        shareBtn.textContent = originalText;
+        shareBtn.disabled = false;
       }, 500);
     } catch {
-      showFormError("Unable to copy link. Please copy it manually.");
+      showFormError("Unable to share link. Please try again.");
     }
   };
-  actions.appendChild(copyBtn);
+  actions.appendChild(shareBtn);
 
   const fallbackHint = document.createElement("div");
   fallbackHint.className = "muted jobsHint";
-  fallbackHint.textContent = (
-    shouldUseRedirectLogin() && !isAndroid()
-  ) ?
-    "On iPhone: if Save video does not work, tap Copy URL and open the direct download in Safari/Chrome." :
-    "If download does not start, tap “Watch video”.";
+  fallbackHint.textContent =
+    "If Save video does not start, tap Watch video.";
   wrapper.appendChild(fallbackHint);
 
   return wrapper;

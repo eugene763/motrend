@@ -44,10 +44,11 @@
       </div>
       <div class="actions" id="actions" style="display:none">
         <button id="btnDownload" class="btn" type="button">Save video</button>
-        <button id="btnShare" class="btnGhost" type="button">Share</button>
+        <a id="btnSaveFile" class="btnGhost" href="#" download rel="noopener noreferrer">Save file</a>
         <button id="btnCopy" class="btnGhost" type="button">Copy URL</button>
+        <button id="btnShare" class="btnGhost" type="button">Share</button>
       </div>
-      <div class="note">On iPhone: tap <b>Save video</b>. If the system does not offer <b>Save Video</b>, try <b>Share</b>. If that still does not work, use <b>Copy URL</b> and open the direct download in Safari/Chrome.</div>
+      <div class="note">If the video does not download immediately, tap <b>Copy URL</b> and open the link in Safari, Chrome, or another browser.</div>
     </div>
   </div>
 
@@ -78,6 +79,7 @@
       var videoEl = document.getElementById('video');
       var actions = document.getElementById('actions');
       var btnDownload = document.getElementById('btnDownload');
+      var btnSaveFile = document.getElementById('btnSaveFile');
       var btnShare = document.getElementById('btnShare');
       var btnCopy = document.getElementById('btnCopy');
 
@@ -91,78 +93,21 @@
       }
 
       videoEl.src = videoUrl || downloadUrl;
+      if (downloadUrl) {
+        btnSaveFile.href = downloadUrl;
+      } else if (videoUrl) {
+        btnSaveFile.href = videoUrl;
+      }
 
       videoWrap.style.display = 'block';
       actions.style.display = 'flex';
-
-      var videoBlobPromise = null;
-
-      async function fetchVideoBlob() {
-        if (!videoBlobPromise) {
-          videoBlobPromise = fetch(videoUrl || downloadUrl, { credentials: 'omit' }).then(function(response) {
-            if (!response.ok) {
-              throw new Error('Unable to fetch video.');
-            }
-            return response.blob();
-          });
-        }
-        return videoBlobPromise;
-      }
-
-      async function buildShareableFile() {
-        var blob = await fetchVideoBlob();
-        if (!blob) {
-          throw new Error('Unable to fetch video.');
-        }
-        var mimeType = blob.type || 'video/mp4';
-        var extension = mimeType === 'video/quicktime' ? '.mov' : '.mp4';
-        var file = new File([blob], 'motrend-video' + extension, { type: mimeType });
-        return file;
-      }
-
-      function triggerBlobDownload(file) {
-        var objectUrl = URL.createObjectURL(file);
-        var anchor = document.createElement('a');
-        anchor.href = objectUrl;
-        anchor.download = file.name || 'motrend-video.mp4';
-        anchor.rel = 'noopener';
-        anchor.style.display = 'none';
-        document.body.appendChild(anchor);
-        anchor.click();
-        setTimeout(function() {
-          URL.revokeObjectURL(objectUrl);
-          anchor.remove();
-        }, 1000);
-      }
-
-      async function handleSaveVideo() {
-        var file = await buildShareableFile();
-        if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-          try {
-            await navigator.share({
-              title: 'MoTrend© video',
-              files: [file],
-            });
-            return;
-          } catch (error) {
-            if (error && error.name === 'AbortError') {
-              return;
-            }
-          }
-        }
-        if (downloadUrl) {
-          window.location.href = downloadUrl;
-          return;
-        }
-        triggerBlobDownload(file);
-      }
 
       if (navigator.share) {
         btnShare.addEventListener('click', async function() {
           try {
             await navigator.share({
               title: 'MoTrend© video',
-              url: copyTargetUrl,
+              url: pageUrl,
             });
           } catch (error) {
             if (!error || error.name === 'AbortError') {
@@ -184,23 +129,15 @@
         }, delay);
       }
 
-      btnDownload.addEventListener('click', async function() {
+      btnDownload.addEventListener('click', function() {
         var originalText = 'Save video';
         btnDownload.disabled = true;
-        btnDownload.textContent = 'Preparing…';
-        try {
-          await handleSaveVideo();
+        btnDownload.textContent = 'Opening…';
+        window.location.assign(videoUrl || downloadUrl);
+        setTimeout(function() {
           btnDownload.textContent = originalText;
-        } catch {
-          btnDownload.textContent = 'Open video';
-          setTimeout(function() {
-            btnDownload.textContent = originalText;
-            btnDownload.disabled = false;
-          }, 900);
-          window.open(downloadUrl || videoUrl, '_blank', 'noopener,noreferrer');
-          return;
-        }
-        btnDownload.disabled = false;
+          btnDownload.disabled = false;
+        }, 1000);
       });
 
       btnCopy.addEventListener('click', async function() {
@@ -214,6 +151,19 @@
           }, 800);
         }
       });
+
+      try {
+        if (!sessionStorage.getItem('motrend-save-video-tip-shown')) {
+          sessionStorage.setItem('motrend-save-video-tip-shown', '1');
+          setTimeout(function() {
+            window.alert(
+              'If the video does not download immediately, tap Copy URL and open the link in Safari, Chrome, or another browser.'
+            );
+          }, 180);
+        }
+      } catch {
+        // no-op
+      }
     })();
   </script>
 </body>

@@ -43,8 +43,7 @@
         <video id="video" controls playsinline></video>
       </div>
       <div class="actions" id="actions" style="display:none">
-        <button id="btnDownload" class="btn" type="button">Save video</button>
-        <a id="btnSaveFile" class="btnGhost" href="#" download rel="noopener noreferrer">Save file</a>
+        <a id="btnSaveFile" class="btn" href="#" download rel="noopener noreferrer">Save file</a>
         <button id="btnCopy" class="btnGhost" type="button">Copy URL</button>
         <button id="btnShare" class="btnGhost" type="button">Share</button>
       </div>
@@ -78,7 +77,6 @@
       var videoWrap = document.getElementById('videoWrap');
       var videoEl = document.getElementById('video');
       var actions = document.getElementById('actions');
-      var btnDownload = document.getElementById('btnDownload');
       var btnSaveFile = document.getElementById('btnSaveFile');
       var btnShare = document.getElementById('btnShare');
       var btnCopy = document.getElementById('btnCopy');
@@ -128,17 +126,6 @@
           button.disabled = false;
         }, delay);
       }
-
-      btnDownload.addEventListener('click', function() {
-        var originalText = 'Save video';
-        btnDownload.disabled = true;
-        btnDownload.textContent = 'Opening…';
-        window.location.assign(videoUrl || downloadUrl);
-        setTimeout(function() {
-          btnDownload.textContent = originalText;
-          btnDownload.disabled = false;
-        }, 1000);
-      });
 
       btnCopy.addEventListener('click', async function() {
         try {

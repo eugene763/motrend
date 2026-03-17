@@ -140,8 +140,8 @@
       });
 
       try {
-        if (!sessionStorage.getItem('motrend-save-video-tip-shown')) {
-          sessionStorage.setItem('motrend-save-video-tip-shown', '1');
+        if (!localStorage.getItem('motrend-save-video-tip-shown')) {
+          localStorage.setItem('motrend-save-video-tip-shown', '1');
           setTimeout(function() {
             window.alert(
               'If the video does not download immediately, tap Copy URL and open the link in Safari, Chrome, or another browser.'

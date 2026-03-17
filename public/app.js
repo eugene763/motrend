@@ -221,8 +221,8 @@ const ATTRIBUTION_STORAGE_KEY = "motrend_attribution_v1";
 const ATTRIBUTION_SYNC_PREFIX = "motrend_attribution_sync_v1_";
 const AUTH_GIFT_PROMO_SEEN_KEY = "motrend_auth_gift_prompt_seen_v1";
 const AUTH_GIFT_SUCCESS_PENDING_KEY = "motrend_auth_gift_success_pending_v1";
-const BACKGROUND_GENERATION_NOTICE_SEEN_KEY =
-  "motrend_background_generation_notice_seen_v1";
+const REFERENCE_VIDEO_UPLOAD_NOTICE_SEEN_KEY =
+  "motrend_reference_video_upload_notice_seen_v1";
 const ATTRIBUTION_UTM_KEYS = [
   "utm_source",
   "utm_medium",
@@ -1885,7 +1885,12 @@ function createReferenceVideoPreviewDataUrl(file) {
 
     const seekToPreviewFrame = () => {
       const duration = Number.isFinite(video.duration) ? video.duration : 0;
-      const targetTime = duration > 0.5 ? Math.min(0.35, duration / 3) : 0;
+      let targetTime = 0;
+      if (duration > 1.8) {
+        targetTime = Math.min(duration - 0.2, 1.2);
+      } else if (duration > 0.5) {
+        targetTime = Math.max(0.2, duration * 0.35);
+      }
       if (targetTime <= 0) {
         drawSoon();
         return;
@@ -3418,11 +3423,14 @@ $("btnGenerate").onclick = async () => {
 
     startEstimatedProgress("Generating your trend…");
     attachEstimatedProgressJob(jobId);
-    if (!getStoredFlag(BACKGROUND_GENERATION_NOTICE_SEEN_KEY)) {
-      setStoredFlag(BACKGROUND_GENERATION_NOTICE_SEEN_KEY, true);
+    if (
+      useReferenceVideo &&
+      !getStoredFlag(REFERENCE_VIDEO_UPLOAD_NOTICE_SEEN_KEY)
+    ) {
+      setStoredFlag(REFERENCE_VIDEO_UPLOAD_NOTICE_SEEN_KEY, true);
       await showNoticeModal({
         message:
-          "Upload is complete. You can now close this window — your trend will keep generating in the background.",
+          "Video upload is complete. You can now close this window — your trend will keep generating in the background.",
         buttonText: "OK",
       });
     }

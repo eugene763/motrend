@@ -9,6 +9,7 @@ import {
   GoogleAuthProvider,
   browserSessionPersistence,
   createUserWithEmailAndPassword,
+  getAdditionalUserInfo,
   getRedirectResult,
   getAuth,
   onAuthStateChanged,
@@ -192,6 +193,13 @@ function setStoredFlag(key, value = true, storage = localStorage) {
   }
 }
 
+function getReferenceVideoUploadNoticeKey(uid = "") {
+  const cleanUid = typeof uid === "string" ? uid.trim() : "";
+  return cleanUid ?
+    `motrend_reference_video_upload_notice_seen_${cleanUid}` :
+    "motrend_reference_video_upload_notice_seen_v1";
+}
+
 function setStatus(message) {
   const el = $("status");
   if (!el) return;
@@ -221,8 +229,6 @@ const ATTRIBUTION_STORAGE_KEY = "motrend_attribution_v1";
 const ATTRIBUTION_SYNC_PREFIX = "motrend_attribution_sync_v1_";
 const AUTH_GIFT_PROMO_SEEN_KEY = "motrend_auth_gift_prompt_seen_v1";
 const AUTH_GIFT_SUCCESS_PENDING_KEY = "motrend_auth_gift_success_pending_v1";
-const REFERENCE_VIDEO_UPLOAD_NOTICE_SEEN_KEY =
-  "motrend_reference_video_upload_notice_seen_v1";
 const ATTRIBUTION_UTM_KEYS = [
   "utm_source",
   "utm_medium",
@@ -630,9 +636,8 @@ function setSupportButtonMessage(supportCode = "") {
 function openAuth(message = "") {
   if (!currentUser && !getStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY)) {
     setStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY, true);
-    setStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, true, sessionStorage);
     void showNoticeModal({
-      message: "🎁 Sign in now and get 5 free credits!",
+      message: "🎁 New users: sign up now and get 5 free credits!",
       buttonText: "OK",
       onConfirm: () => openAuth(message),
     });
@@ -1029,6 +1034,8 @@ let selectedReferenceVideoFile = null;
 let selectedReferenceVideoName = "";
 let selectedReferenceVideoUploadState = "idle";
 let selectedReferenceVideoUploadProgress = 0;
+let selectedReferenceVideoUploadTransferredBytes = 0;
+let selectedReferenceVideoUploadTotalBytes = 0;
 let selectedReferenceVideoPreviewUrl = "";
 let selectedReferenceVideoPreviewLoaded = false;
 let selectedReferenceVideoPreviewToken = 0;
@@ -1126,6 +1133,45 @@ function formatUploadMegabytes(bytes) {
   if (!Number.isFinite(value) || value <= 0) return "0.0 MB";
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+function buildReferenceVideoUploadStatus() {
+  const percent = Math.max(
+    0,
+    Math.min(100, Math.round(Number(selectedReferenceVideoUploadProgress) || 0))
+  );
+  const transferredLabel = formatUploadMegabytes(
+    selectedReferenceVideoUploadTransferredBytes
+  );
+  const totalLabel = formatUploadMegabytes(
+    selectedReferenceVideoUploadTotalBytes ||
+    selectedReferenceVideoFile?.size ||
+    0
+  );
+  return `Uploading video… ${percent}% (${transferredLabel} / ${totalLabel})`;
+}
+
+function refreshReferenceVideoUploadStatusSurface() {
+  if (selectedReferenceVideoUploadState !== "uploading") return;
+  setStatus(buildReferenceVideoUploadStatus());
+  if (
+    (selectedReferenceVideoFile?.size || 0) >= LARGE_REFERENCE_VIDEO_HINT_BYTES ||
+    shouldUseRedirectLogin()
+  ) {
+    setStatusHintText(LARGE_UPLOAD_HINT_TEXT);
+    setStatusHintVisible(true);
+  }
+  refreshReferenceVideoCardUi();
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    refreshReferenceVideoUploadStatusSurface();
+  }
+});
+
+window.addEventListener("focus", () => {
+  refreshReferenceVideoUploadStatusSurface();
+});
 
 function computeEstimatedProgressPercent(nowMs, startedAtMs) {
   if (!Number.isFinite(startedAtMs) || startedAtMs <= 0) return 0;
@@ -1411,7 +1457,7 @@ function refreshReferenceVideoCardMediaUi() {
   } else if (selectedReferenceVideoUploadState === "uploaded") {
     placeholderState = "success";
     placeholderPrimary = "Your video is uploaded";
-    placeholderSecondary = hasPreview ? "" : "Preview is preparing…";
+    placeholderSecondary = hasPreview ? "" : "Preview may not appear in this browser";
   } else if (selectedReferenceVideoUploadState === "error") {
     placeholderState = "error";
     placeholderPrimary = "Upload failed";
@@ -1517,6 +1563,8 @@ function resetReferenceVideoPreview() {
 
 function resetReferenceVideoUploadTracking() {
   selectedReferenceVideoUploadProgress = 0;
+  selectedReferenceVideoUploadTransferredBytes = 0;
+  selectedReferenceVideoUploadTotalBytes = 0;
   selectedReferenceVideoUploadPromise = null;
   selectedReferenceVideoUploadedJobId = "";
   selectedReferenceVideoUploadedInputPath = "";
@@ -1683,6 +1731,8 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
     ) {
       selectedReferenceVideoUploadState = "uploading";
       selectedReferenceVideoUploadProgress = 0;
+      selectedReferenceVideoUploadTransferredBytes = 0;
+      selectedReferenceVideoUploadTotalBytes = preparedVideo.blob.size || localFile.size || 0;
       refreshReferenceVideoCardUi();
       if (
         localFile.size >= LARGE_REFERENCE_VIDEO_HINT_BYTES ||
@@ -1705,15 +1755,13 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
           return;
         }
         selectedReferenceVideoUploadProgress = percent;
+        selectedReferenceVideoUploadTransferredBytes = Number(snapshot?.bytesTransferred || 0);
+        selectedReferenceVideoUploadTotalBytes = Number(snapshot?.totalBytes || 0);
         refreshReferenceVideoCardUi();
         if (!surfaceStatus && !generateSubmissionInFlight) {
           setStatusHintVisible(true);
         }
-        const transferredLabel = formatUploadMegabytes(snapshot?.bytesTransferred);
-        const totalLabel = formatUploadMegabytes(snapshot?.totalBytes);
-        setStatus(
-          `Uploading video… ${percent}% (${transferredLabel} / ${totalLabel})`
-        );
+        setStatus(buildReferenceVideoUploadStatus());
       }
     );
 
@@ -1723,6 +1771,7 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
     ) {
       selectedReferenceVideoUploadState = "uploaded";
       selectedReferenceVideoUploadProgress = 100;
+      selectedReferenceVideoUploadTransferredBytes = selectedReferenceVideoUploadTotalBytes;
       selectedReferenceVideoUploadedJobId = jobId;
       selectedReferenceVideoUploadedInputPath = uploadPath;
       selectedReferenceVideoUploadedReferencePath = referenceVideoPath;
@@ -1740,6 +1789,8 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
       localFile === selectedReferenceVideoFile
     ) {
       selectedReferenceVideoUploadState = "error";
+      selectedReferenceVideoUploadTransferredBytes = 0;
+      selectedReferenceVideoUploadTotalBytes = 0;
       refreshReferenceVideoCardUi();
       if (!generateSubmissionInFlight) {
         setStatus("");
@@ -1886,8 +1937,10 @@ function createReferenceVideoPreviewDataUrl(file) {
     const seekToPreviewFrame = () => {
       const duration = Number.isFinite(video.duration) ? video.duration : 0;
       let targetTime = 0;
-      if (duration > 1.8) {
-        targetTime = Math.min(duration - 0.2, 1.2);
+      if (duration > 4) {
+        targetTime = Math.min(duration - 0.35, 2.2);
+      } else if (duration > 1.8) {
+        targetTime = Math.min(duration - 0.25, 1.6);
       } else if (duration > 0.5) {
         targetTime = Math.max(0.2, duration * 0.35);
       }
@@ -2303,6 +2356,9 @@ $("btnEmailSignUp").onclick = async () => {
   try {
     track("signup_click", {method: "email"});
     const credential = await createUserWithEmailAndPassword(auth, email, pass);
+    if (credential?.user?.uid) {
+      setStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, true, sessionStorage);
+    }
   } catch (error) {
     showAuthError(callableErrorMessage(error));
   }
@@ -2328,6 +2384,9 @@ $("btnLogin").onclick = async () => {
       return;
     }
     const result = await signInWithPopup(auth, provider);
+    if (result && getAdditionalUserInfo(result)?.isNewUser) {
+      setStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, true, sessionStorage);
+    }
   } catch (error) {
     const code = typeof error?.code === "string" ? error.code : "";
     const popupFailed = [
@@ -2510,6 +2569,8 @@ function renderReferenceVideoCard() {
       selectedReferenceVideoUploadState = file ? "selected" : "idle";
       selectedReferenceVideoDurationSec = null;
       resetReferenceVideoUploadTracking();
+      selectedReferenceVideoUploadTransferredBytes = 0;
+      selectedReferenceVideoUploadTotalBytes = file?.size || 0;
       resetReferenceVideoPreview();
 
       if (file) {
@@ -2835,6 +2896,18 @@ function updateLatestJobUI(jobId, job) {
     !!estimatedProgressJobId &&
     estimatedProgressJobId === jobId
   );
+  const activeReferenceUploadForJob = (
+    selectedReferenceVideoUploadState === "uploading" &&
+    !!pendingResumeUpload?.jobId &&
+    pendingResumeUpload.jobId === jobId
+  );
+
+  if (activeReferenceUploadForJob) {
+    setStatus(buildReferenceVideoUploadStatus());
+    setStatusHintText(LARGE_UPLOAD_HINT_TEXT);
+    setStatusHintVisible(true);
+    return;
+  }
 
   if (status === "done" && outputUrl && jobId) {
     if (trackedCurrentJob) {
@@ -3377,6 +3450,10 @@ $("btnGenerate").onclick = async () => {
       selectedTrendKind === TREND_SELECTION_REFERENCE &&
       !!selectedReferenceVideoFile
     );
+    const referenceVideoWasPendingAtGenerate = (
+      useReferenceVideo &&
+      selectedReferenceVideoUploadState !== "uploaded"
+    );
     if (useReferenceVideo && selectedReferenceVideoFile) {
       setStatus(
         selectedReferenceVideoUploadState === "uploaded" ?
@@ -3425,9 +3502,10 @@ $("btnGenerate").onclick = async () => {
     attachEstimatedProgressJob(jobId);
     if (
       useReferenceVideo &&
-      !getStoredFlag(REFERENCE_VIDEO_UPLOAD_NOTICE_SEEN_KEY)
+      referenceVideoWasPendingAtGenerate &&
+      !getStoredFlag(getReferenceVideoUploadNoticeKey(currentUser?.uid || ""))
     ) {
-      setStoredFlag(REFERENCE_VIDEO_UPLOAD_NOTICE_SEEN_KEY, true);
+      setStoredFlag(getReferenceVideoUploadNoticeKey(currentUser?.uid || ""), true);
       await showNoticeModal({
         message:
           "Video upload is complete. You can now close this window — your trend will keep generating in the background.",
@@ -3508,7 +3586,10 @@ if (fileInput) {
 }
 
 try {
-  await getRedirectResult(auth);
+  const redirectResult = await getRedirectResult(auth);
+  if (redirectResult && getAdditionalUserInfo(redirectResult)?.isNewUser) {
+    setStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, true, sessionStorage);
+  }
 } catch (error) {
   const code = typeof error?.code === "string" ? error.code : "";
   if (isTelegramInAppBrowser() && code.includes("invalid-action-code")) {
@@ -3547,6 +3628,8 @@ onAuthStateChanged(auth, async (user) => {
     selectedReferenceVideoName = "";
     selectedReferenceVideoUploadState = "idle";
     selectedReferenceVideoUploadProgress = 0;
+    selectedReferenceVideoUploadTransferredBytes = 0;
+    selectedReferenceVideoUploadTotalBytes = 0;
     selectedReferenceVideoDurationSec = null;
     selectedReferenceVideoFileToken += 1;
     resetReferenceVideoUploadTracking();

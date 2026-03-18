@@ -19,7 +19,7 @@ service firebase.storage {
             request.resource.contentType == 'video/mp4' ||
             request.resource.contentType == 'video/quicktime'
           ) &&
-          request.resource.size < 200 * 1024 * 1024
+          request.resource.size < 101 * 1024 * 1024
         )
       );
     }

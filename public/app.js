@@ -1083,7 +1083,7 @@ const TARGET_UPLOAD_IMAGE_BYTES = 6 * 1024 * 1024;
 const MAX_UPLOAD_IMAGE_DIMENSION = 1080;
 const MIN_UPLOAD_IMAGE_DIMENSION = 960;
 const UPLOAD_IMAGE_QUALITY_STEPS = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65];
-const MAX_REFERENCE_VIDEO_BYTES = 200 * 1024 * 1024;
+const MAX_REFERENCE_VIDEO_BYTES = 101 * 1024 * 1024;
 const PHOTO_HINT_KEY = "motrend_photo_hint_v1";
 const VIDEO_HINT_KEY = "motrend_video_hint_v1";
 const PHOTO_HINT_MESSAGE =
@@ -2196,7 +2196,7 @@ function prepareReferenceVideoInput(file) {
     throw new Error("Please upload an MP4 or MOV video.");
   }
   if (file.size > MAX_REFERENCE_VIDEO_BYTES) {
-    throw new Error("Reference video is too large. Max file size is 200 MB.");
+    throw new Error("Reference video is too large. Max file size is 101 MB.");
   }
   const normalizedContentType = isMov ? "video/quicktime" : "video/mp4";
   return {

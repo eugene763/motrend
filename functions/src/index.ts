@@ -2,7 +2,6 @@
 import {defineSecret} from "firebase-functions/params";
 import {
   onDocumentCreated,
-  onDocumentUpdated,
 } from "firebase-functions/v2/firestore";
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import {onSchedule} from "firebase-functions/v2/scheduler";
@@ -26,6 +25,7 @@ const OUTPUT_TTL_MS = 60 * 60 * 1000;
 const JOB_REQUEST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const AWAITING_UPLOAD_TTL_MS = INPUT_TTL_MS;
 const LEGACY_QUEUED_WITHOUT_UPLOAD_TTL_MS = 30 * 60 * 1000;
+const PROCESSING_TTL_MS = 2 * 60 * 60 * 1000;
 const LEGACY_QUEUED_AUTO_REFUND_FROM_MS =
   Date.parse("2026-03-14T00:00:00+04:00");
 const KLING_HTTP_TIMEOUT_MS = 20_000;
@@ -33,9 +33,15 @@ const DOWNLOAD_FETCH_TIMEOUT_MS = 60_000;
 const REFRESH_COOLDOWN_MS = 7_000;
 const DOWNLOAD_LOCK_MS = 2 * 60 * 1000;
 const MAX_DOWNLOAD_BYTES = 120 * 1024 * 1024;
+const MAX_INPUT_IMAGE_BYTES = 40 * 1024 * 1024;
+const MAX_REFERENCE_VIDEO_BYTES = 101 * 1024 * 1024;
+const PROBE_RANGE_BYTES = 2 * 1024 * 1024;
+const REMOTE_PROBE_BYTES = 2 * 1024 * 1024;
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const SUPPORT_CODES_COLLECTION = "support_codes";
 const CREDIT_ADJUSTMENTS_COLLECTION = "credit_adjustments";
 const JOB_REQUESTS_COLLECTION = "job_requests";
+const RATE_LIMITS_COLLECTION = "rate_limits";
 const USER_PRIVATE_COLLECTION = "private";
 const USER_ATTRIBUTION_DOC_ID = "attribution";
 const LEGACY_QUEUE_COLLECTION = "job_queue";
@@ -67,11 +73,28 @@ type QueueTaskType =
   | "kling_poll"
   | "download_prepare";
 
+type CreateJobRateLimitAction =
+  | "support_profile"
+  | "upsert_attribution"
+  | "refresh"
+  | "prepare"
+  | "finalize"
+  | "prepare_download";
+
 function isQueueTaskType(value: string | null): value is QueueTaskType {
   return value === "kling_submit" ||
     value === "kling_poll" ||
     value === "download_prepare";
 }
+
+const CREATE_JOB_RATE_LIMITS: Record<CreateJobRateLimitAction, number> = {
+  support_profile: 20,
+  upsert_attribution: 10,
+  refresh: 12,
+  prepare: 6,
+  finalize: 6,
+  prepare_download: 12,
+};
 
 function normalizeSelectionKind(value: unknown): "template" | "reference" {
   return value === "reference" ? "reference" : "template";
@@ -181,6 +204,16 @@ interface JobRequestDoc {
   selectionKind?: "template" | "reference";
   jobId?: string;
   uploadPath?: string;
+  createdAt?: admin.firestore.Timestamp;
+  updatedAt?: admin.firestore.Timestamp;
+}
+
+interface RateLimitDoc {
+  uid?: string;
+  action?: CreateJobRateLimitAction;
+  count?: number;
+  windowStartedAt?: admin.firestore.Timestamp;
+  expiresAt?: admin.firestore.Timestamp;
   createdAt?: admin.firestore.Timestamp;
   updatedAt?: admin.firestore.Timestamp;
 }
@@ -309,6 +342,99 @@ function positiveFiniteInt(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   const normalized = Math.floor(value);
   return normalized > 0 ? normalized : null;
+}
+
+// New users can reach finalize before onUserDocCreated populates
+// creditsBalance.
+// In that race we intentionally treat them as owning INITIAL_CREDITS so the
+// first debit is still processed correctly and the trigger later won't
+// overwrite it.
+function effectiveCreditsBalance(userData?: UserDoc): number {
+  return (
+    typeof userData?.creditsBalance === "number" &&
+    Number.isFinite(userData.creditsBalance)
+  ) ? userData.creditsBalance : INITIAL_CREDITS;
+}
+
+function isLikelyJpegBuffer(buffer: Buffer): boolean {
+  return buffer.length >= 3 &&
+    buffer[0] === 0xFF &&
+    buffer[1] === 0xD8 &&
+    buffer[2] === 0xFF;
+}
+
+function isLikelyIsoBmffVideoBuffer(buffer: Buffer): boolean {
+  const box = readIsoBox(buffer, 0, buffer.length);
+  if (!box || box.type !== "ftyp") return false;
+  if (box.contentStart + 8 > box.end) return false;
+
+  const brands: string[] = [];
+  brands.push(buffer.toString("ascii", box.contentStart, box.contentStart + 4));
+  for (let offset = box.contentStart + 8; offset + 4 <= box.end; offset += 4) {
+    brands.push(buffer.toString("ascii", offset, offset + 4));
+  }
+
+  return brands.some((brand) => {
+    return [
+      "qt  ",
+      "isom",
+      "iso2",
+      "avc1",
+      "mp41",
+      "mp42",
+      "M4V ",
+      "MSNV",
+    ].includes(brand);
+  });
+}
+
+function buildProbeRanges(totalBytes: number, windowBytes: number): Array<{
+  start: number;
+  end: number;
+}> {
+  if (!Number.isFinite(totalBytes) || totalBytes <= 0) return [];
+  if (totalBytes <= windowBytes * 2) {
+    return [{start: 0, end: Math.max(0, totalBytes - 1)}];
+  }
+
+  const headEnd = Math.max(0, Math.min(totalBytes - 1, windowBytes - 1));
+  const tailStart = Math.max(0, totalBytes - windowBytes);
+  const ranges = [{start: 0, end: headEnd}];
+  if (tailStart > headEnd) {
+    ranges.push({start: tailStart, end: totalBytes - 1});
+  }
+  return ranges;
+}
+
+async function streamToBuffer(
+  stream: NodeJS.ReadableStream,
+  maxBytes: number
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  for await (const chunk of stream) {
+    const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += bufferChunk.length;
+    if (totalBytes > maxBytes) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Video metadata chunk is too large to inspect."
+      );
+    }
+    chunks.push(bufferChunk);
+  }
+  return Buffer.concat(chunks, totalBytes);
+}
+
+async function readStorageRangeBuffer(
+  storagePath: string,
+  start: number,
+  end: number
+): Promise<Buffer> {
+  return await streamToBuffer(
+    admin.storage().bucket().file(storagePath).createReadStream({start, end}),
+    Math.max(1, end - start + 1)
+  );
 }
 
 function baseSupportCode(uid: string): string {
@@ -514,6 +640,62 @@ function requireAdminUid(req: {
   return uid;
 }
 
+function rateLimitDocId(
+  uid: string,
+  action: CreateJobRateLimitAction,
+  windowStartMs: number
+): string {
+  return `${uid}_${action}_${windowStartMs}`;
+}
+
+async function enforceCreateJobRateLimit(
+  uid: string,
+  action: CreateJobRateLimitAction
+): Promise<void> {
+  const limit = CREATE_JOB_RATE_LIMITS[action];
+  const nowMs = Date.now();
+  const windowStartMs = Math.floor(nowMs / RATE_LIMIT_WINDOW_MS) *
+    RATE_LIMIT_WINDOW_MS;
+  const retryAfterMs = Math.max(
+    1_000,
+    (windowStartMs + RATE_LIMIT_WINDOW_MS) - nowMs
+  );
+  const docRef = db.collection(RATE_LIMITS_COLLECTION).doc(
+    rateLimitDocId(uid, action, windowStartMs)
+  );
+  const windowStartedAt = admin.firestore.Timestamp.fromMillis(windowStartMs);
+  const expiresAt = admin.firestore.Timestamp.fromMillis(
+    windowStartMs + RATE_LIMIT_WINDOW_MS + (5 * 60 * 1000)
+  );
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(docRef);
+    const current = (snap.data() as RateLimitDoc | undefined) || {};
+    const count = positiveFiniteInt(current.count) || 0;
+    if (count >= limit) {
+      throw new HttpsError(
+        "resource-exhausted",
+        "Too many requests. Please slow down.",
+        {
+          retryAfterMs,
+          rateLimitAction: action,
+        }
+      );
+    }
+    tx.set(docRef, {
+      uid,
+      action,
+      count: count + 1,
+      windowStartedAt,
+      expiresAt,
+      createdAt:
+        current.createdAt ||
+        admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+  });
+}
+
 async function ensureSupportCodeForUid(uid: string): Promise<string> {
   const userRef = db.collection("users").doc(uid);
   return await db.runTransaction(async (tx) => {
@@ -590,30 +772,15 @@ async function refundCreditsForJobKling1200(
     const uid = pickString(job.uid);
     if (!uid) return false;
 
-    const refundAmount = await resolveRefundAmountForJobInTransaction(tx, job);
-    if (refundAmount === null) return false;
-
-    const userRef = db.collection("users").doc(uid);
-    const userSnap = await tx.get(userRef);
-    const userData = (userSnap.data() as UserDoc | undefined) || {};
-    const hasCreditsBalance = (
-      typeof userData.creditsBalance === "number" &&
-      Number.isFinite(userData.creditsBalance)
+    const refunded = await refundJobIfNeededInTransaction(
+      tx,
+      jobRef,
+      job,
+      "kling_500_code_1200"
     );
-    const currentCredits = hasCreditsBalance ?
-      userData.creditsBalance as number :
-      INITIAL_CREDITS;
-
-    tx.set(userRef, {
-      creditsBalance: currentCredits + refundAmount,
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, {merge: true});
+    if (!refunded) return false;
 
     tx.update(jobRef, {
-      "refund.applied": true,
-      "refund.amount": refundAmount,
-      "refund.reason": "kling_500_code_1200",
-      "refund.refundedAt": admin.firestore.FieldValue.serverTimestamp(),
       "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
     });
 
@@ -637,6 +804,47 @@ async function resolveRefundAmountForJobInTransaction(
   const template = (templateSnap.data() as TemplateDoc | undefined) || {};
   refundAmount = templateCostCredits(template);
   return refundAmount;
+}
+
+async function addCreditsToUserInTransaction(
+  tx: admin.firestore.Transaction,
+  uid: string,
+  creditDelta: number
+): Promise<void> {
+  if (!uid || !Number.isFinite(creditDelta) || creditDelta === 0) return;
+  const userRef = db.collection("users").doc(uid);
+  const userSnap = await tx.get(userRef);
+  const userData = (userSnap.data() as UserDoc | undefined) || {};
+  const currentCredits = effectiveCreditsBalance(userData);
+
+  tx.set(userRef, {
+    creditsBalance: currentCredits + creditDelta,
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, {merge: true});
+}
+
+async function refundJobIfNeededInTransaction(
+  tx: admin.firestore.Transaction,
+  jobRef: admin.firestore.DocumentReference,
+  job: JobDoc,
+  reason: string
+): Promise<boolean> {
+  if (job.refund?.applied === true) return false;
+
+  const uid = pickString(job.uid);
+  if (!uid) return false;
+
+  const refundAmount = await resolveRefundAmountForJobInTransaction(tx, job);
+  if (refundAmount === null) return false;
+
+  await addCreditsToUserInTransaction(tx, uid, refundAmount);
+  tx.update(jobRef, {
+    "refund.applied": true,
+    "refund.amount": refundAmount,
+    "refund.reason": reason,
+    "refund.refundedAt": admin.firestore.FieldValue.serverTimestamp(),
+  });
+  return true;
 }
 
 async function storageObjectExists(storagePath: string): Promise<boolean> {
@@ -672,6 +880,43 @@ async function ensureStorageDownloadUrl(storagePath: string): Promise<string> {
     storagePath,
     downloadToken,
   });
+}
+
+async function assertUploadedPhotoIsValid(storagePath: string): Promise<void> {
+  const file = admin.storage().bucket().file(storagePath);
+  const [metadata] = await file.getMetadata();
+  const size = Number(metadata.size || 0);
+  if (!Number.isFinite(size) || size <= 0) {
+    throw new HttpsError("failed-precondition", "Uploaded photo is empty.");
+  }
+  if (size > MAX_INPUT_IMAGE_BYTES) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Uploaded photo exceeds the 40 MB upload limit."
+    );
+  }
+
+  const sniffBuffer = await readStorageRangeBuffer(storagePath, 0, 31);
+  if (!isLikelyJpegBuffer(sniffBuffer)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Uploaded photo must be a JPEG image."
+    );
+  }
+}
+
+async function assertUploadedReferenceVideoIsValid(
+  storagePath: string
+): Promise<number> {
+  const sniffBuffer = await readStorageRangeBuffer(storagePath, 0, 4095);
+  if (!isLikelyIsoBmffVideoBuffer(sniffBuffer)) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Unable to read reference video duration. " +
+      "Please upload an MP4 or MOV video."
+    );
+  }
+  return await probeReferenceVideoDurationSeconds(storagePath);
 }
 
 function readUInt64BEAsNumber(buffer: Buffer, offset: number): number {
@@ -794,25 +1039,76 @@ async function probeReferenceVideoDurationSeconds(
       "Uploaded reference video is empty."
     );
   }
-
-  const [buffer] = await file.download();
-  const durationSec = parseIsoBmffDurationSeconds(buffer);
-  if (
-    durationSec === null ||
-    !Number.isFinite(durationSec) ||
-    durationSec <= 0
-  ) {
+  if (size > MAX_REFERENCE_VIDEO_BYTES) {
     throw new HttpsError(
       "failed-precondition",
-      "Unable to read reference video duration. " +
-      "Please upload an MP4 or MOV video."
+      "Reference video exceeds the 101 MB upload limit."
     );
   }
 
-  return durationSec;
+  const ranges = buildProbeRanges(size, PROBE_RANGE_BYTES);
+  let checkedHead = false;
+  for (const range of ranges) {
+    const buffer = await readStorageRangeBuffer(
+      storagePath,
+      range.start,
+      range.end
+    );
+    if (!checkedHead) {
+      checkedHead = true;
+      if (!isLikelyIsoBmffVideoBuffer(buffer)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Unable to read reference video duration. " +
+          "Please upload an MP4 or MOV video."
+        );
+      }
+    }
+
+    const durationSec = parseIsoBmffDurationSeconds(buffer);
+    if (
+      durationSec !== null &&
+      Number.isFinite(durationSec) &&
+      durationSec > 0
+    ) {
+      return durationSec;
+    }
+  }
+
+  throw new HttpsError(
+    "failed-precondition",
+    "Unable to read reference video duration. " +
+    "Please upload an MP4 or MOV video."
+  );
 }
 
-async function fetchRemoteVideoBuffer(sourceUrl: string): Promise<Buffer> {
+function parseTotalBytesFromHeaders(headers: Headers): number | null {
+  const contentRange = pickString(headers.get("content-range"));
+  if (contentRange) {
+    const match = contentRange.match(/bytes\s+\d+-\d+\/(\d+|\*)/i);
+    if (match && match[1] !== "*") {
+      const total = Number(match[1]);
+      if (Number.isFinite(total) && total > 0) return total;
+    }
+  }
+
+  const contentLength = Number(headers.get("content-length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > 0) {
+    return contentLength;
+  }
+
+  return null;
+}
+
+async function readRemoteRangeBuffer(
+  sourceUrl: string,
+  start: number,
+  end: number,
+  maxBytes: number
+): Promise<{
+  buffer: Buffer;
+  totalBytes: number | null;
+}> {
   const controller = new AbortController();
   const timeout = setTimeout(() => {
     controller.abort();
@@ -821,6 +1117,9 @@ async function fetchRemoteVideoBuffer(sourceUrl: string): Promise<Buffer> {
   try {
     const response = await fetch(sourceUrl, {
       method: "GET",
+      headers: {
+        Range: `bytes=${start}-${end}`,
+      },
       signal: controller.signal,
     });
 
@@ -828,11 +1127,8 @@ async function fetchRemoteVideoBuffer(sourceUrl: string): Promise<Buffer> {
       throw new Error(`Remote video fetch failed: ${response.status}`);
     }
 
-    const contentLength = Number(response.headers.get("content-length") || 0);
-    if (
-      Number.isFinite(contentLength) &&
-      contentLength > MAX_DOWNLOAD_BYTES
-    ) {
+    const totalBytes = parseTotalBytesFromHeaders(response.headers);
+    if (totalBytes !== null && totalBytes > MAX_DOWNLOAD_BYTES) {
       throw new HttpsError(
         "failed-precondition",
         "Generated video is too large to inspect."
@@ -844,22 +1140,14 @@ async function fetchRemoteVideoBuffer(sourceUrl: string): Promise<Buffer> {
       throw new Error("Remote video fetch returned empty stream.");
     }
 
-    const stream = Readable.fromWeb(body as unknown as WebReadableStream);
-    const chunks: Buffer[] = [];
-    let totalBytes = 0;
-    for await (const chunk of stream) {
-      const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      totalBytes += bufferChunk.length;
-      if (totalBytes > MAX_DOWNLOAD_BYTES) {
-        throw new HttpsError(
-          "failed-precondition",
-          "Generated video is too large to inspect."
-        );
-      }
-      chunks.push(bufferChunk);
-    }
-
-    return Buffer.concat(chunks, totalBytes);
+    const buffer = await streamToBuffer(
+      Readable.fromWeb(body as unknown as WebReadableStream),
+      maxBytes
+    );
+    return {
+      buffer,
+      totalBytes,
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -868,19 +1156,53 @@ async function fetchRemoteVideoBuffer(sourceUrl: string): Promise<Buffer> {
 async function probeRemoteVideoDurationSeconds(
   sourceUrl: string
 ): Promise<number> {
-  const buffer = await fetchRemoteVideoBuffer(sourceUrl);
-  const durationSec = parseIsoBmffDurationSeconds(buffer);
-  if (
-    durationSec === null ||
-    !Number.isFinite(durationSec) ||
-    durationSec <= 0
-  ) {
+  const headRange = await readRemoteRangeBuffer(
+    sourceUrl,
+    0,
+    REMOTE_PROBE_BYTES - 1,
+    REMOTE_PROBE_BYTES
+  );
+  if (!isLikelyIsoBmffVideoBuffer(headRange.buffer)) {
     throw new HttpsError(
       "failed-precondition",
       "Unable to read generated video duration."
     );
   }
-  return durationSec;
+
+  const headDuration = parseIsoBmffDurationSeconds(headRange.buffer);
+  if (
+    headDuration !== null &&
+    Number.isFinite(headDuration) &&
+    headDuration > 0
+  ) {
+    return headDuration;
+  }
+
+  const totalBytes = headRange.totalBytes;
+  if (totalBytes !== null && totalBytes > REMOTE_PROBE_BYTES) {
+    const tailStart = Math.max(0, totalBytes - REMOTE_PROBE_BYTES);
+    if (tailStart > 0) {
+      const tailRange = await readRemoteRangeBuffer(
+        sourceUrl,
+        tailStart,
+        totalBytes - 1,
+        REMOTE_PROBE_BYTES
+      );
+      const tailDuration = parseIsoBmffDurationSeconds(tailRange.buffer);
+      if (
+        tailDuration !== null &&
+        Number.isFinite(tailDuration) &&
+        tailDuration > 0
+      ) {
+        return tailDuration;
+      }
+    }
+  }
+
+  throw new HttpsError(
+    "failed-precondition",
+    "Unable to read generated video duration."
+  );
 }
 
 async function reconcileReferenceJobBilling(
@@ -919,21 +1241,7 @@ async function reconcileReferenceJobBilling(
       const uid = pickString(job.uid);
       if (!uid) return false;
 
-      const userRef = db.collection("users").doc(uid);
-      const userSnap = await tx.get(userRef);
-      const userData = (userSnap.data() as UserDoc | undefined) || {};
-      const hasCreditsBalance = (
-        typeof userData.creditsBalance === "number" &&
-        Number.isFinite(userData.creditsBalance)
-      );
-      const currentCredits = hasCreditsBalance ?
-        userData.creditsBalance as number :
-        INITIAL_CREDITS;
-
-      tx.set(userRef, {
-        creditsBalance: currentCredits + refundAmount,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, {merge: true});
+      await addCreditsToUserInTransaction(tx, uid, refundAmount);
 
       updates["refund.applied"] = true;
       updates["refund.amount"] = refundAmount;
@@ -1716,6 +2024,8 @@ async function finalizePreparedJob(params: {
     );
   }
 
+  await assertUploadedPhotoIsValid(inputImagePath);
+
   const inputImageUrl = await ensureStorageDownloadUrl(inputImagePath);
   const uploadedReferenceVideoUrl = referenceVideoPath ?
     await ensureStorageDownloadUrl(referenceVideoPath) :
@@ -1724,7 +2034,7 @@ async function finalizePreparedJob(params: {
   const uploadedReferenceDurationSec = (
     referenceVideoPath && uploadedReferenceVideoUrl
   ) ?
-    await probeReferenceVideoDurationSeconds(referenceVideoPath) :
+    await assertUploadedReferenceVideoIsValid(referenceVideoPath) :
     null;
 
   return await db.runTransaction(async (tx) => {
@@ -1784,13 +2094,7 @@ async function finalizePreparedJob(params: {
     const userRef = db.collection("users").doc(uid);
     const userSnap = await tx.get(userRef);
     const userData = (userSnap.data() as UserDoc | undefined) || {};
-    const hasCreditsBalance = (
-      typeof userData.creditsBalance === "number" &&
-      Number.isFinite(userData.creditsBalance)
-    );
-    const currentCredits = hasCreditsBalance ?
-      userData.creditsBalance as number :
-      INITIAL_CREDITS;
+    const currentCredits = effectiveCreditsBalance(userData);
 
     if (currentCredits < costCredits) {
       throw new HttpsError(
@@ -1934,13 +2238,7 @@ async function grantCreditsForAdmin(params: {
       throw new HttpsError("not-found", "User not found.");
     }
     const userData = (userSnap.data() as UserDoc | undefined) || {};
-    const hasCreditsBalance = (
-      typeof userData.creditsBalance === "number" &&
-      Number.isFinite(userData.creditsBalance)
-    );
-    previousBalance = hasCreditsBalance ?
-      userData.creditsBalance as number :
-      INITIAL_CREDITS;
+    previousBalance = effectiveCreditsBalance(userData);
     newBalance = previousBalance + amount;
 
     tx.set(userRef, {
@@ -2083,12 +2381,13 @@ export const createJob = onCall(
     memory: "512MiB",
     minInstances: 0,
     maxInstances: 120,
-    concurrency: 80,
+    concurrency: 16,
   },
   async (req) => {
     const uid = requireAuthUid(req);
 
     if (req.data?.supportProfile === true) {
+      await enforceCreateJobRateLimit(uid, "support_profile");
       const supportCode = await ensureSupportCodeForUid(uid);
       return {
         uid,
@@ -2117,6 +2416,7 @@ export const createJob = onCall(
 
     const upsertAttributionInput = req.data?.upsertAttribution;
     if (upsertAttributionInput && typeof upsertAttributionInput === "object") {
+      await enforceCreateJobRateLimit(uid, "upsert_attribution");
       return await upsertAttributionForUser(
         uid,
         upsertAttributionInput as AttributionPayloadInput
@@ -2129,6 +2429,7 @@ export const createJob = onCall(
       if (!prepareDownloadJobId || !/^[\w-]+$/.test(prepareDownloadJobId)) {
         throw new HttpsError("invalid-argument", "Invalid jobId");
       }
+      await enforceCreateJobRateLimit(uid, "prepare_download");
       return await prepareOwnedJobDownload({
         uid,
         jobId: prepareDownloadJobId,
@@ -2141,6 +2442,7 @@ export const createJob = onCall(
       if (!refreshJobId || !/^[\w-]+$/.test(refreshJobId)) {
         throw new HttpsError("invalid-argument", "Invalid jobId");
       }
+      await enforceCreateJobRateLimit(uid, "refresh");
       return await refreshOwnedJobStatus(uid, refreshJobId);
     }
 
@@ -2159,6 +2461,7 @@ export const createJob = onCall(
         );
       }
 
+      await enforceCreateJobRateLimit(uid, "finalize");
       return await finalizePreparedJob({
         uid,
         jobId: finalizeJobId,
@@ -2174,6 +2477,7 @@ export const createJob = onCall(
     if (!/^[\w-]+$/.test(templateId)) {
       throw new HttpsError("invalid-argument", "Invalid templateId");
     }
+    await enforceCreateJobRateLimit(uid, "prepare");
     const selectionKind = normalizeSelectionKind(req.data?.selectionKind);
     const clientRequestId = normalizeClientRequestId(req.data?.clientRequestId);
 
@@ -2285,39 +2589,6 @@ export const onUserDocCreated = onDocumentCreated(
       creditsBalance: INITIAL_CREDITS,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }, {merge: true});
-  }
-);
-
-export const processJobTrigger001 = onDocumentUpdated(
-  {document: "jobs/{jobId}", secrets: [klingAccessKey, klingSecretKey]},
-  async (event) => {
-    const before = (event.data?.before.data() as JobDoc | undefined) || {};
-    const afterSnap = event.data?.after;
-    const after = (afterSnap?.data() as JobDoc | undefined) || {};
-    if (!afterSnap?.exists) return;
-
-    const inputAdded = !before.inputImageUrl && !!after.inputImageUrl;
-    if (!inputAdded || after.status !== "queued") return;
-
-    const jobRef = afterSnap.ref;
-    await db.runTransaction(async (tx) => {
-      const snap = await tx.get(jobRef);
-      const current = (snap.data() as JobDoc | undefined) || {};
-      if (current.status !== "queued" || !current.inputImageUrl) return;
-      if (pickString(current.kling?.taskId)) return;
-      if (timestampMs(current.kling?.submitQueuedAt) !== null) return;
-
-      tx.update(jobRef, {
-        "status": "processing" as JobStatus,
-        "kling.state": "submitting",
-        "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
-      });
-      enqueueQueueTaskInTransaction(tx, {
-        type: "kling_submit",
-        uid: pickString(current.uid) || "",
-        jobId: afterSnap.id,
-      });
-    });
   }
 );
 
@@ -2615,7 +2886,7 @@ export const processKlingPollQueueTask = onDocumentCreated(
     secrets: [klingAccessKey, klingSecretKey],
     memory: "512MiB",
     maxInstances: 20,
-    concurrency: 10,
+    concurrency: 4,
   },
   async (event) => {
     const taskRef = event.data?.ref;
@@ -2654,6 +2925,35 @@ export const processQueueTaskLegacy = onDocumentCreated(
   }
 );
 
+async function scanJobsInPages(
+  makeQuery: (
+    lastDoc: admin.firestore.QueryDocumentSnapshot | null
+  ) => admin.firestore.Query,
+  onJobDoc: (
+    jobDoc: admin.firestore.QueryDocumentSnapshot
+  ) => Promise<void>
+): Promise<number> {
+  let scanned = 0;
+  let lastDoc: admin.firestore.QueryDocumentSnapshot | null = null;
+  let hasMore = true;
+
+  while (hasMore) {
+    const jobsQuery = makeQuery(lastDoc).limit(200);
+    const jobsSnap = await jobsQuery.get();
+    if (jobsSnap.empty) break;
+
+    scanned += jobsSnap.size;
+    for (const jobDoc of jobsSnap.docs) {
+      await onJobDoc(jobDoc);
+    }
+
+    lastDoc = jobsSnap.docs[jobsSnap.docs.length - 1];
+    hasMore = jobsSnap.size === 200;
+  }
+
+  return scanned;
+}
+
 export const cleanupInputsHourly = onSchedule(
   {schedule: "every 24 hours"},
   async () => {
@@ -2673,152 +2973,164 @@ export const cleanupStaleJobsQuarterHourly = onSchedule(
     const nowMs = Date.now();
     const awaitingUploadCutoffMs = nowMs - AWAITING_UPLOAD_TTL_MS;
     const legacyQueuedCutoffMs = nowMs - LEGACY_QUEUED_WITHOUT_UPLOAD_TTL_MS;
-    const scanCutoffTs = admin.firestore.Timestamp.fromMillis(
-      Math.min(awaitingUploadCutoffMs, legacyQueuedCutoffMs)
+    const processingCutoffMs = nowMs - PROCESSING_TTL_MS;
+    const awaitingUploadCutoffTs = admin.firestore.Timestamp.fromMillis(
+      awaitingUploadCutoffMs
+    );
+    const legacyQueuedCutoffTs = admin.firestore.Timestamp.fromMillis(
+      legacyQueuedCutoffMs
+    );
+    const processingCutoffTs = admin.firestore.Timestamp.fromMillis(
+      processingCutoffMs
     );
 
-    let scanned = 0;
+    let awaitingUploadScanned = 0;
+    let legacyQueuedScanned = 0;
+    let processingScanned = 0;
     let awaitingUploadFailed = 0;
     let legacyQueuedFailed = 0;
     let legacyQueuedRefunded = 0;
-    let lastDoc:
-      | admin.firestore.QueryDocumentSnapshot
-      | null = null;
+    let processingFailed = 0;
+    let processingRefunded = 0;
 
-    let hasMore = true;
-    while (hasMore) {
-      let jobsQuery = db.collection("jobs")
-        .where("createdAt", "<=", scanCutoffTs)
-        .orderBy("createdAt", "asc")
-        .limit(200);
-      if (lastDoc) {
-        jobsQuery = jobsQuery.startAfter(lastDoc);
-      }
+    awaitingUploadScanned = await scanJobsInPages(
+      (lastDoc) => {
+        let query = db.collection("jobs")
+          .where("status", "==", "awaiting_upload")
+          .where("createdAt", "<=", awaitingUploadCutoffTs)
+          .orderBy("createdAt", "asc");
+        if (lastDoc) query = query.startAfter(lastDoc);
+        return query;
+      },
+      async (jobDoc) => {
+        const markedFailed = await db.runTransaction(async (tx) => {
+          const snap = await tx.get(jobDoc.ref);
+          if (!snap.exists) return false;
+          const current = (snap.data() as JobDoc | undefined) || {};
+          if (current.status !== "awaiting_upload") return false;
+          if (pickString(current.inputImageUrl)) return false;
 
-      const jobsSnap = await jobsQuery.get();
-      if (jobsSnap.empty) {
-        hasMore = false;
-        continue;
-      }
-
-      scanned += jobsSnap.size;
-
-      for (const jobDoc of jobsSnap.docs) {
-        const job = (jobDoc.data() as JobDoc | undefined) || {};
-        const createdAtMs = timestampMs(job.createdAt);
-        if (createdAtMs === null) continue;
-
-        const hasInputImage = !!pickString(job.inputImageUrl);
-        const status = pickString(job.status) || "";
-
-        if (
-          status === "awaiting_upload" &&
-          !hasInputImage &&
-          createdAtMs <= awaitingUploadCutoffMs
-        ) {
-          const markedFailed = await db.runTransaction(async (tx) => {
-            const snap = await tx.get(jobDoc.ref);
-            if (!snap.exists) return false;
-            const current = (snap.data() as JobDoc | undefined) || {};
-            if (current.status !== "awaiting_upload") return false;
-            if (pickString(current.inputImageUrl)) return false;
-
-            tx.update(jobDoc.ref, {
-              "status": "failed" as JobStatus,
-              "kling.state": "failed",
-              "kling.error": "Upload timed out before finalize.",
-              "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
-            });
-            return true;
+          tx.update(jobDoc.ref, {
+            "status": "failed" as JobStatus,
+            "kling.state": "failed",
+            "kling.error": "Upload timed out before finalize.",
+            "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
           });
-          if (markedFailed) awaitingUploadFailed += 1;
-          continue;
-        }
+          return true;
+        });
+        if (markedFailed) awaitingUploadFailed += 1;
+      }
+    );
 
-        if (
-          status === "queued" &&
-          !hasInputImage &&
-          createdAtMs <= legacyQueuedCutoffMs
-        ) {
-          const canAutoRefund =
-            createdAtMs >= LEGACY_QUEUED_AUTO_REFUND_FROM_MS;
-          const result = await db.runTransaction(async (tx) => {
-            const snap = await tx.get(jobDoc.ref);
-            if (!snap.exists) {
-              return {failed: false, refunded: false};
-            }
-            const current = (snap.data() as JobDoc | undefined) || {};
-            if (
-              current.status !== "queued" ||
-              pickString(current.inputImageUrl)
-            ) {
-              return {failed: false, refunded: false};
-            }
-
-            let refunded = false;
-            if (canAutoRefund && current.refund?.applied !== true) {
-              const uid = pickString(current.uid);
-              const refundAmount = await resolveRefundAmountForJobInTransaction(
-                tx,
-                current
-              );
-              if (uid && refundAmount !== null) {
-                const userRef = db.collection("users").doc(uid);
-                const userSnap = await tx.get(userRef);
-                const userData = (userSnap.data() as UserDoc | undefined) || {};
-                const hasCreditsBalance = (
-                  typeof userData.creditsBalance === "number" &&
-                  Number.isFinite(userData.creditsBalance)
-                );
-                const currentCredits = hasCreditsBalance ?
-                  userData.creditsBalance as number :
-                  INITIAL_CREDITS;
-
-                tx.set(userRef, {
-                  creditsBalance: currentCredits + refundAmount,
-                  updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-                }, {merge: true});
-
-                tx.update(jobDoc.ref, {
-                  "refund.applied": true,
-                  "refund.amount": refundAmount,
-                  "refund.reason": "legacy_upload_timeout",
-                  "refund.refundedAt":
-                    admin.firestore.FieldValue.serverTimestamp(),
-                });
-                refunded = true;
-              }
-            }
-
-            tx.update(jobDoc.ref, {
-              "status": "failed" as JobStatus,
-              "kling.state": "failed",
-              "kling.error": "Upload timed out before finalize.",
-              "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
-            });
-            return {failed: true, refunded};
-          });
-
-          if (result.failed) {
-            legacyQueuedFailed += 1;
-            if (result.refunded) {
-              legacyQueuedRefunded += 1;
-            }
+    legacyQueuedScanned = await scanJobsInPages(
+      (lastDoc) => {
+        let query = db.collection("jobs")
+          .where("status", "==", "queued")
+          .where("createdAt", "<=", legacyQueuedCutoffTs)
+          .orderBy("createdAt", "asc");
+        if (lastDoc) query = query.startAfter(lastDoc);
+        return query;
+      },
+      async (jobDoc) => {
+        const result = await db.runTransaction(async (tx) => {
+          const snap = await tx.get(jobDoc.ref);
+          if (!snap.exists) {
+            return {failed: false, refunded: false};
           }
+          const current = (snap.data() as JobDoc | undefined) || {};
+          const currentCreatedAtMs = timestampMs(current.createdAt);
+          if (
+            current.status !== "queued" ||
+            pickString(current.inputImageUrl) ||
+            currentCreatedAtMs === null ||
+            currentCreatedAtMs > legacyQueuedCutoffMs
+          ) {
+            return {failed: false, refunded: false};
+          }
+
+          let refunded = false;
+          if (currentCreatedAtMs >= LEGACY_QUEUED_AUTO_REFUND_FROM_MS) {
+            refunded = await refundJobIfNeededInTransaction(
+              tx,
+              jobDoc.ref,
+              current,
+              "legacy_upload_timeout"
+            );
+          }
+
+          tx.update(jobDoc.ref, {
+            "status": "failed" as JobStatus,
+            "kling.state": "failed",
+            "kling.error": "Upload timed out before finalize.",
+            "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+          });
+          return {failed: true, refunded};
+        });
+
+        if (result.failed) {
+          legacyQueuedFailed += 1;
+          if (result.refunded) legacyQueuedRefunded += 1;
         }
       }
+    );
 
-      lastDoc = jobsSnap.docs[jobsSnap.docs.length - 1];
-      if (jobsSnap.size < 200) {
-        hasMore = false;
+    processingScanned = await scanJobsInPages(
+      (lastDoc) => {
+        let query = db.collection("jobs")
+          .where("status", "==", "processing")
+          .where("updatedAt", "<=", processingCutoffTs)
+          .orderBy("updatedAt", "asc");
+        if (lastDoc) query = query.startAfter(lastDoc);
+        return query;
+      },
+      async (jobDoc) => {
+        const result = await db.runTransaction(async (tx) => {
+          const snap = await tx.get(jobDoc.ref);
+          if (!snap.exists) {
+            return {failed: false, refunded: false};
+          }
+          const current = (snap.data() as JobDoc | undefined) || {};
+          const updatedAtMs = timestampMs(current.updatedAt);
+          if (
+            current.status !== "processing" ||
+            updatedAtMs === null ||
+            updatedAtMs > processingCutoffMs
+          ) {
+            return {failed: false, refunded: false};
+          }
+
+          const refunded = await refundJobIfNeededInTransaction(
+            tx,
+            jobDoc.ref,
+            current,
+            "processing_timeout"
+          );
+
+          tx.update(jobDoc.ref, {
+            "status": "failed" as JobStatus,
+            "kling.state": "failed",
+            "kling.error": "Processing timed out.",
+            "updatedAt": admin.firestore.FieldValue.serverTimestamp(),
+          });
+          return {failed: true, refunded};
+        });
+
+        if (result.failed) {
+          processingFailed += 1;
+          if (result.refunded) processingRefunded += 1;
+        }
       }
-    }
+    );
 
     logger.info("cleanupStaleJobsQuarterHourly finished", {
-      scanned,
+      awaitingUploadScanned,
+      legacyQueuedScanned,
+      processingScanned,
       awaitingUploadFailed,
       legacyQueuedFailed,
       legacyQueuedRefunded,
+      processingFailed,
+      processingRefunded,
     });
   }
 );
@@ -2964,3 +3276,55 @@ export const cleanupJobRequestsDaily = onSchedule(
     });
   }
 );
+
+export const cleanupRateLimitsDaily = onSchedule(
+  {schedule: "every 24 hours"},
+  async () => {
+    const cutoffTs = admin.firestore.Timestamp.now();
+    let deleted = 0;
+    let scanned = 0;
+    let lastDoc: admin.firestore.QueryDocumentSnapshot | null = null;
+
+    let hasMore = true;
+    while (hasMore) {
+      let queryRef = db.collection(RATE_LIMITS_COLLECTION)
+        .where("expiresAt", "<=", cutoffTs)
+        .orderBy("expiresAt", "asc")
+        .limit(300);
+      if (lastDoc) {
+        queryRef = queryRef.startAfter(lastDoc);
+      }
+
+      const snap = await queryRef.get();
+      if (snap.empty) {
+        hasMore = false;
+        continue;
+      }
+      scanned += snap.size;
+
+      const batch = db.batch();
+      for (const docSnap of snap.docs) {
+        batch.delete(docSnap.ref);
+        deleted += 1;
+      }
+      await batch.commit();
+
+      lastDoc = snap.docs[snap.docs.length - 1];
+      hasMore = snap.size === 300;
+    }
+
+    logger.info("cleanupRateLimitsDaily finished", {
+      scanned,
+      deleted,
+    });
+  }
+);
+
+export const __test = {
+  INITIAL_CREDITS,
+  effectiveCreditsBalance,
+  buildProbeRanges,
+  isLikelyJpegBuffer,
+  isLikelyIsoBmffVideoBuffer,
+  parseIsoBmffDurationSeconds,
+};

@@ -23,6 +23,7 @@ import {
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   getFirestore,
   limit,
@@ -3672,6 +3673,17 @@ onAuthStateChanged(auth, async (user) => {
   $("supportBtn").style.display = "inline-flex";
   $("userLine").textContent = user.email || "Signed in";
 
+  const userRef = doc(db, "users", user.uid);
+  let wasExistingAppUser = true;
+  try {
+    const existingUserSnap = await getDoc(userRef);
+    wasExistingAppUser = existingUserSnap.exists();
+  } catch {
+    // If we cannot verify safely, suppress the promo success instead of
+    // risking a false "new user" gift message for an existing account.
+    wasExistingAppUser = true;
+  }
+
   if (analytics) {
     try {
       setUserId(analytics, user.uid);
@@ -3681,7 +3693,7 @@ onAuthStateChanged(auth, async (user) => {
     }
   }
 
-  await setDoc(doc(db, "users", user.uid), {
+  await setDoc(userRef, {
     email: user.email,
     updatedAt: serverTimestamp(),
   }, {merge: true});
@@ -3698,9 +3710,11 @@ onAuthStateChanged(auth, async (user) => {
 
   if (getStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, sessionStorage)) {
     setStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, false, sessionStorage);
-    void showNoticeModal({
-      message: "🎁 You've received 5 free credits!",
-      buttonText: "OK",
-    });
+    if (!wasExistingAppUser) {
+      void showNoticeModal({
+        message: "🎁 You've received 5 free credits!",
+        buttonText: "OK",
+      });
+    }
   }
 });

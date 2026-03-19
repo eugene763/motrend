@@ -9,7 +9,6 @@ import {
   GoogleAuthProvider,
   browserSessionPersistence,
   createUserWithEmailAndPassword,
-  getAdditionalUserInfo,
   getRedirectResult,
   getAuth,
   onAuthStateChanged,
@@ -21,28 +20,10 @@ import {
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  getFirestore,
-  limit,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  setDoc,
-  where,
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-import {
   getStorage,
   ref,
   uploadBytesResumable,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
-import {
-  getFunctions,
-  httpsCallable,
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 
 const runtimeHost = window.location.hostname.toLowerCase();
 const sameSiteAuthDomains = new Set([
@@ -65,13 +46,7 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
 const storage = getStorage(app);
-const functionsTarget = (
-  runtimeHost === "localhost" || runtimeHost === "127.0.0.1"
-) ? "us-central1" : window.location.origin;
-const functions = getFunctions(app, functionsTarget);
-const createJob = httpsCallable(functions, "createJob");
 
 let analytics = null;
 try {
@@ -90,6 +65,60 @@ function track(name, params = {}) {
 }
 
 const $ = (id) => document.getElementById(id);
+const PLATFORM_API_ORIGIN_OVERRIDE_KEY = "motrend_platform_api_origin_v1";
+const MOTREND_TEST_GIFT_CREDITS = 20;
+
+function normalizeOriginCandidate(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  try {
+    return new URL(trimmed).origin;
+  } catch {
+    return "";
+  }
+}
+
+function resolvePlatformApiOrigin() {
+  const url = new URL(window.location.href);
+  const queryOverride = normalizeOriginCandidate(
+    url.searchParams.get("platformApi") || ""
+  );
+  if (queryOverride) {
+    try {
+      localStorage.setItem(PLATFORM_API_ORIGIN_OVERRIDE_KEY, queryOverride);
+    } catch {
+      // no-op
+    }
+    return queryOverride;
+  }
+
+  try {
+    const storedOverride = normalizeOriginCandidate(
+      localStorage.getItem(PLATFORM_API_ORIGIN_OVERRIDE_KEY) || ""
+    );
+    if (storedOverride) {
+      return storedOverride;
+    }
+  } catch {
+    // no-op
+  }
+
+  if (runtimeHost === "localhost" || runtimeHost === "127.0.0.1") {
+    return "http://localhost:8080";
+  }
+
+  if (runtimeHost.endsWith(".moads.agency")) {
+    return "https://api.moads.agency";
+  }
+
+  return "";
+}
+
+const platformApiOrigin = resolvePlatformApiOrigin();
+const platformApiBaseUrl = platformApiOrigin.replace(/\/+$/, "");
+const platformApiEnabled = Boolean(platformApiBaseUrl);
 
 function shouldUseRedirectLogin() {
   const ua = navigator.userAgent || "";
@@ -229,7 +258,6 @@ function setUploadSafetyHint(message = "", visible = false) {
 const ATTRIBUTION_STORAGE_KEY = "motrend_attribution_v1";
 const ATTRIBUTION_SYNC_PREFIX = "motrend_attribution_sync_v1_";
 const AUTH_GIFT_PROMO_SEEN_KEY = "motrend_auth_gift_prompt_seen_v1";
-const AUTH_GIFT_SUCCESS_PENDING_KEY = "motrend_auth_gift_success_pending_v1";
 const ATTRIBUTION_UTM_KEYS = [
   "utm_source",
   "utm_medium",
@@ -423,7 +451,7 @@ function lastAttributionSyncKey(uid) {
 
 async function syncAttributionForUser(uid) {
   const payload = buildAttributionSyncPayload();
-  if (!payload) return;
+  if (!payload || !platformApiEnabled || !uid) return;
   const signature = attributionSignature(payload);
   if (!signature) return;
 
@@ -435,10 +463,10 @@ async function syncAttributionForUser(uid) {
     // no-op
   }
 
-  await callCreateJob(
-    {upsertAttribution: payload},
-    {retryable: false, maxAttempts: 1}
-  );
+  await platformAnalyticsRequest("/analytics/attribution", {
+    method: "POST",
+    body: payload,
+  });
 
   try {
     localStorage.setItem(storageKey, signature);
@@ -638,7 +666,7 @@ function openAuth(message = "") {
   if (!currentUser && !getStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY)) {
     setStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY, true);
     void showNoticeModal({
-      message: "🎁 New users: sign up now and get 5 free credits!",
+      message: `🎁 New users: sign up now and get ${MOTREND_TEST_GIFT_CREDITS} free credits!`,
       buttonText: "OK",
       onConfirm: () => openAuth(message),
     });
@@ -675,6 +703,251 @@ function closeAuth() {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "none";
   clearAuthError();
+}
+
+function buildPlatformUrl(path) {
+  if (!platformApiBaseUrl) return "";
+  if (typeof path !== "string" || !path) return platformApiBaseUrl;
+  return `${platformApiBaseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function createPlatformRequestError(message, payload = null, status = 0, code = "") {
+  const error = new Error(message || "Platform request failed.");
+  error.platformPayload = payload;
+  error.platformStatus = status;
+  error.code = code;
+  error.details = payload?.error?.details || payload?.details || null;
+  return error;
+}
+
+async function platformRequest(path, options = {}) {
+  if (!platformApiEnabled) {
+    throw createPlatformRequestError("Platform API is not configured.");
+  }
+
+  const headers = {
+    Accept: "application/json",
+    ...(options.headers || {}),
+  };
+  let body = options.body;
+  if (body !== undefined && body !== null && !(body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(body);
+  }
+
+  const response = await fetch(buildPlatformUrl(path), {
+    method: options.method || "GET",
+    credentials: "include",
+    headers,
+    body,
+  });
+
+  if (response.status === 204) {
+    return null;
+  }
+
+  const rawText = await response.text();
+  let payload = null;
+  if (rawText) {
+    try {
+      payload = JSON.parse(rawText);
+    } catch {
+      payload = rawText;
+    }
+  }
+
+  if (!response.ok) {
+    const message = payload?.error?.message ||
+      payload?.message ||
+      `Platform request failed (${response.status}).`;
+    const code = payload?.error?.code || payload?.code || "";
+    throw createPlatformRequestError(message, payload, response.status, code);
+  }
+
+  return payload;
+}
+
+function clearPlatformSessionState() {
+  currentPlatformBootstrap = null;
+  currentPlatformSession = null;
+  currentPlatformMotrendProfile = null;
+}
+
+function buildBootstrapMotrendProfile(bootstrap = currentPlatformBootstrap) {
+  if (!bootstrap || typeof bootstrap !== "object") {
+    return null;
+  }
+
+  const supportCode = typeof bootstrap?.supportCode === "string" ?
+    bootstrap.supportCode.trim() :
+    "";
+  const creditsBalance = Number(bootstrap?.wallet?.balance);
+  const walletId = typeof bootstrap?.wallet?.walletId === "string" ?
+    bootstrap.wallet.walletId :
+    "";
+
+  if (!supportCode && !Number.isFinite(creditsBalance) && !walletId) {
+    return null;
+  }
+
+  return {
+    supportCode,
+    creditsBalance: Number.isFinite(creditsBalance) ? creditsBalance : 0,
+    walletId,
+    country: null,
+    language: null,
+    isAdmin: false,
+  };
+}
+
+async function bootstrapPlatformSession(user) {
+  if (!user || !platformApiEnabled) {
+    clearPlatformSessionState();
+    return null;
+  }
+
+  const bootstrapUid = typeof user.uid === "string" ? user.uid : "";
+  const idToken = await user.getIdToken();
+  if (!bootstrapUid || !currentUser || currentUser.uid !== bootstrapUid) {
+    return null;
+  }
+
+  const bootstrap = await platformRequest("/auth/session-login", {
+    method: "POST",
+    body: {idToken},
+  });
+  if (!currentUser || currentUser.uid !== bootstrapUid) {
+    return null;
+  }
+
+  currentPlatformBootstrap = bootstrap;
+
+  const [sessionResult, motrendProfileResult] = await Promise.allSettled([
+    platformRequest("/auth/me"),
+    platformRequest("/motrend/me"),
+  ]);
+  if (!currentUser || currentUser.uid !== bootstrapUid) {
+    return null;
+  }
+
+  currentPlatformSession = sessionResult.status === "fulfilled" ?
+    sessionResult.value :
+    null;
+  currentPlatformMotrendProfile = motrendProfileResult.status === "fulfilled" ?
+    motrendProfileResult.value :
+    buildBootstrapMotrendProfile(bootstrap);
+
+  if (sessionResult.status === "rejected") {
+    console.warn("platform auth/me failed", sessionResult.reason);
+  }
+  if (motrendProfileResult.status === "rejected") {
+    console.warn("platform motrend/me failed", motrendProfileResult.reason);
+  }
+
+  return {
+    bootstrap,
+    session: currentPlatformSession,
+    motrendProfile: currentPlatformMotrendProfile,
+  };
+}
+
+async function logoutPlatformSession() {
+  if (!platformApiEnabled) {
+    clearPlatformSessionState();
+    return;
+  }
+
+  try {
+    await platformRequest("/auth/session-logout", {
+      method: "POST",
+    });
+  } catch (error) {
+    console.warn("platform session logout failed", error);
+  } finally {
+    clearPlatformSessionState();
+  }
+}
+
+function getErrorDetails(error) {
+  const directDetails = error?.details;
+  if (directDetails && typeof directDetails === "object") {
+    return directDetails;
+  }
+
+  const payloadDetails = error?.platformPayload?.error?.details ||
+    error?.platformPayload?.details;
+  if (payloadDetails && typeof payloadDetails === "object") {
+    return payloadDetails;
+  }
+
+  return null;
+}
+
+function isPlatformAuthError(error) {
+  const code = typeof error?.code === "string" ? error.code.toLowerCase() : "";
+  const status = Number(error?.platformStatus);
+  return (
+    status === 401 ||
+    code === "unauthenticated" ||
+    code === "identity_not_bootstrapped"
+  );
+}
+
+async function ensurePlatformMotrendSession({force = false} = {}) {
+  if (!platformApiEnabled) return false;
+  if (!currentUser) {
+    throw createPlatformRequestError("Please sign in first.", null, 401, "unauthenticated");
+  }
+  if (!force && currentPlatformBootstrap) {
+    return true;
+  }
+
+  const bootstrap = await bootstrapPlatformSession(currentUser);
+  return !!bootstrap?.bootstrap;
+}
+
+async function platformAuthenticatedRequest(path, options = {}, {allowReauth = true} = {}) {
+  await ensurePlatformMotrendSession();
+
+  try {
+    return await platformRequest(path, options);
+  } catch (error) {
+    if (!allowReauth || !isPlatformAuthError(error)) {
+      throw error;
+    }
+
+    await ensurePlatformMotrendSession({force: true});
+    return await platformRequest(path, options);
+  }
+}
+
+async function platformMotrendRequest(path, options = {}, extra = {}) {
+  return await platformAuthenticatedRequest(path, options, extra);
+}
+
+async function platformAdminRequest(path, options = {}, extra = {}) {
+  return await platformAuthenticatedRequest(path, options, extra);
+}
+
+async function platformAnalyticsRequest(path, options = {}, extra = {}) {
+  return await platformAuthenticatedRequest(path, options, extra);
+}
+
+async function listPlatformTemplatesRequest() {
+  return await platformRequest("/motrend/templates");
+}
+
+async function lookupAdminSupportCodeRequest(supportCode) {
+  return await platformAdminRequest(
+    `/admin/support/${encodeURIComponent(supportCode)}`
+  );
+}
+
+async function grantAdminWalletCreditsRequest(payload) {
+  return await platformAdminRequest("/admin/wallet-grants", {
+    method: "POST",
+    body: payload,
+  });
 }
 
 function safeUrl(value) {
@@ -738,20 +1011,47 @@ function callableErrorMessage(error) {
     }
     return message || "Not enough credits for this generation.";
   }
+  if (code.includes("insufficient_credits")) {
+    return message || "Not enough credits for this generation.";
+  }
   if (code.includes("unauthenticated")) {
     return "Please sign in first.";
   }
   if (code.includes("failed-precondition")) {
     return message || "Template is unavailable. Pick another one.";
   }
+  if (code.includes("active_job_exists")) {
+    return message || "Finish your current upload or generation before starting a new trend.";
+  }
+  if (code.includes("template_inactive")) {
+    return message || "Template is unavailable. Pick another one.";
+  }
+  if (code.includes("input_image_missing")) {
+    return message || "Uploaded photo was not found. Please upload it again.";
+  }
+  if (code.includes("reference_video_missing")) {
+    return message || "Uploaded reference video was not found. Please upload it again.";
+  }
+  if (code.includes("invalid_input_image_path")) {
+    return message || "Uploaded photo is no longer valid. Please upload it again.";
+  }
+  if (code.includes("job_not_ready")) {
+    return message || "Trend is not ready yet.";
+  }
+  if (code.includes("download_source_missing")) {
+    return message || "Generated output is not available yet.";
+  }
   if (code.includes("permission-denied")) {
     return message || "You have no access to this trend.";
+  }
+  if (code.includes("product_membership_required")) {
+    return message || "You do not have access to MoTrend yet.";
   }
   return message || "Something went wrong. Try again.";
 }
 
 function extractShortfallCredits(error) {
-  const details = error?.details;
+  const details = getErrorDetails(error);
   if (!details || typeof details !== "object") return null;
 
   const shortfall = Number(details.shortfallCredits);
@@ -774,16 +1074,18 @@ function extractShortfallCredits(error) {
 
 function extractActiveJobConflict(error) {
   const code = typeof error?.code === "string" ? error.code.toLowerCase() : "";
-  if (!code.includes("failed-precondition")) return null;
+  if (!code.includes("failed-precondition") && code !== "active_job_exists") {
+    return null;
+  }
 
-  const details = error?.details;
+  const details = getErrorDetails(error);
   if (!details || typeof details !== "object") return null;
 
   const activeJobId = typeof details.activeJobId === "string" ?
     details.activeJobId :
     "";
   const activeStatus = typeof details.activeStatus === "string" ?
-    details.activeStatus :
+    details.activeStatus.toLowerCase() :
     "";
 
   if (!activeJobId || !activeStatus) return null;
@@ -808,6 +1110,50 @@ function renderCreditsBadge(balance) {
   creditsEl.textContent = `${normalizedBalance} credits`;
   creditsEl.classList.toggle("isPositive", normalizedBalance > 0);
   creditsEl.classList.toggle("isZero", normalizedBalance <= 0);
+}
+
+function renderLocaleFields(country = "", language = "") {
+  $("country").textContent = (
+    typeof country === "string" && country.trim()
+  ) ? country.trim() : "—";
+  $("lang").textContent = (
+    typeof language === "string" && language.trim()
+  ) ? language.trim() : "—";
+}
+
+function applyPlatformProfileToUi(profile = currentPlatformMotrendProfile) {
+  if (!profile || typeof profile !== "object") return;
+
+  const creditsBalance = Number(profile.creditsBalance);
+  if (Number.isFinite(creditsBalance)) {
+    renderCreditsBadge(creditsBalance);
+  }
+
+  if (typeof profile.supportCode === "string" && profile.supportCode.trim()) {
+    setSupportCodeUi(profile.supportCode);
+  }
+
+  renderLocaleFields(profile.country, profile.language);
+  isAdminUser = profile?.isAdmin === true;
+  setAdminCardVisible(isAdminUser);
+}
+
+async function refreshPlatformMotrendProfile({silent = true} = {}) {
+  if (!platformApiEnabled || !currentUser) {
+    return null;
+  }
+
+  try {
+    const profile = await platformMotrendRequest("/motrend/me");
+    currentPlatformMotrendProfile = profile;
+    applyPlatformProfileToUi(profile);
+    return profile;
+  } catch (error) {
+    if (!silent) {
+      console.warn("platform motrend/me refresh failed", error);
+    }
+    return null;
+  }
 }
 
 function setSupportCodeUi(supportCode = "") {
@@ -896,7 +1242,7 @@ function renderAdminLookupResult(payload) {
     "";
   const grantWrap = $("adminGrantWrap");
   if (grantWrap) {
-    grantWrap.style.display = adminSelectedUid ? "block" : "none";
+    grantWrap.style.display = adminSelectedSupportCode ? "block" : "none";
   }
 }
 
@@ -961,11 +1307,8 @@ function ensureAdminCard() {
       lookupBtn.disabled = true;
       lookupBtn.textContent = "Finding…";
       try {
-        const response = await callCreateJob(
-          {findSupportCode: supportCode},
-          {retryable: false}
-        );
-        renderAdminLookupResult(response?.data || {});
+        const response = await lookupAdminSupportCodeRequest(supportCode);
+        renderAdminLookupResult(response || {});
       } catch (error) {
         setAdminLookupError(callableErrorMessage(error));
       } finally {
@@ -979,7 +1322,7 @@ function ensureAdminCard() {
   if (grantBtn) {
     grantBtn.onclick = async () => {
       setAdminLookupError("");
-      if (!adminSelectedUid) {
+      if (!adminSelectedSupportCode) {
         setAdminLookupError("Find a user first.");
         return;
       }
@@ -993,22 +1336,19 @@ function ensureAdminCard() {
       grantBtn.disabled = true;
       grantBtn.textContent = "Granting…";
       try {
-        const response = await callCreateJob({
-          grantCredits: true,
-          uid: adminSelectedUid,
+        const response = await grantAdminWalletCreditsRequest({
+          supportCode: adminSelectedSupportCode,
           amount: Math.ceil(amountValue),
           reason: reasonValue,
-        }, {retryable: false});
-        const balanceAfter = Number(response?.data?.balanceAfter || 0);
+        });
+        const balanceAfter = Number(response?.balanceAfter || 0);
+        const lookupResponse = await lookupAdminSupportCodeRequest(adminSelectedSupportCode);
+        renderAdminLookupResult(lookupResponse || {});
+        void refreshPlatformMotrendProfile({silent: true});
         await showNoticeModal({
           message: `Credits granted. New balance: ${balanceAfter}.`,
           buttonText: "OK",
         });
-        const lookupResponse = await callCreateJob(
-          {findSupportCode: adminSelectedSupportCode},
-          {retryable: false}
-        );
-        renderAdminLookupResult(lookupResponse?.data || {});
       } catch (error) {
         setAdminLookupError(callableErrorMessage(error));
       } finally {
@@ -1030,6 +1370,9 @@ function setAdminCardVisible(visible) {
 }
 
 let currentUser = null;
+let currentPlatformBootstrap = null;
+let currentPlatformSession = null;
+let currentPlatformMotrendProfile = null;
 let selectedTemplate = null;
 let selectedReferenceVideoFile = null;
 let selectedReferenceVideoName = "";
@@ -1057,7 +1400,6 @@ let isAdminUser = false;
 let adminSelectedUid = "";
 let adminSelectedSupportCode = "";
 let availableTemplates = [];
-let unsubscribeUserDoc = null;
 let unsubscribeJobs = null;
 let latestJobs = [];
 const refreshingJobIds = new Set();
@@ -1665,13 +2007,13 @@ async function ensureReferenceVideoUploadContext() {
   }
 
   const clientRequestId = createClientRequestId("gen");
-  const response = await callCreateJob({
+  const response = await prepareMotrendJobRequest({
     templateId: selectedTemplate.id,
     selectionKind: TREND_SELECTION_REFERENCE,
     clientRequestId,
   });
-  const jobId = response?.data?.jobId || "";
-  const uploadPath = response?.data?.uploadPath || "";
+  const jobId = response?.jobId || "";
+  const uploadPath = response?.uploadPath || "";
   if (!jobId || !uploadPath) {
     throw new Error("Unable to prepare reference upload.");
   }
@@ -2207,74 +2549,135 @@ function prepareReferenceVideoInput(file) {
   };
 }
 
-function shouldRetryCreateJob(error) {
-  const code = typeof error?.code === "string" ?
-    error.code.toLowerCase() :
-    "";
-  const message = typeof error?.message === "string" ?
-    error.message.toLowerCase() :
-    "";
-
-  if (
-    code.includes("unauthenticated") ||
-    code.includes("permission-denied") ||
-    code.includes("invalid-argument")
-  ) {
-    return false;
-  }
-  if (code.includes("failed-precondition")) {
-    return false;
-  }
-
-  if (code.includes("resource-exhausted")) {
-    return (
-      message.includes("no available instance") ||
-      message.includes("temporarily unavailable")
-    );
-  }
-
-  if (
-    code.includes("unavailable") ||
-    code.includes("internal") ||
-    code.includes("aborted") ||
-    code.includes("deadline-exceeded")
-  ) {
-    return true;
-  }
-
-  return (
-    message.includes("no available instance") ||
-    message.includes("temporarily unavailable")
+function normalizePlatformJobRecord(job) {
+  const refundCredits = Number(job?.refundCredits);
+  const outputUrl = safeUrl(
+    typeof job?.providerOutputUrl === "string" ? job.providerOutputUrl : ""
   );
+  const errorText = typeof job?.reconciliationError === "string" ?
+    job.reconciliationError :
+    "";
+
+  return {
+    id: typeof job?.id === "string" ? job.id : "",
+    data: {
+      status: typeof job?.status === "string" ? job.status : "pending",
+      selectionKind: job?.selectionKind === TREND_SELECTION_REFERENCE ?
+        TREND_SELECTION_REFERENCE :
+        TREND_SELECTION_TEMPLATE,
+      templateId: typeof job?.templateId === "string" ? job.templateId : "",
+      inputImagePath: typeof job?.inputImagePath === "string" ? job.inputImagePath : "",
+      referenceVideoPath: typeof job?.referenceVideoPath === "string" ? job.referenceVideoPath : "",
+      debitedCredits: Number.isFinite(Number(job?.debitedCredits)) ?
+        Number(job.debitedCredits) :
+        null,
+      finalCostCredits: Number.isFinite(Number(job?.finalCostCredits)) ?
+        Number(job.finalCostCredits) :
+        null,
+      refundCredits: Number.isFinite(refundCredits) ? refundCredits : null,
+      providerState: typeof job?.providerState === "string" ? job.providerState : "",
+      kling: {
+        outputUrl,
+        error: errorText,
+      },
+      refund: Number.isFinite(refundCredits) && refundCredits > 0 ?
+        {
+          applied: true,
+          amount: refundCredits,
+        } :
+        {
+          applied: false,
+          amount: 0,
+        },
+      createdAt: job?.createdAt || null,
+      updatedAt: job?.updatedAt || null,
+    },
+  };
 }
 
-async function callCreateJob(payload, options = {}) {
-  const retryable = options.retryable !== false;
-  const maxAttempts = retryable ?
-    Math.max(1, options.maxAttempts || 4) :
-    1;
-  let lastError = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      return await createJob(payload);
-    } catch (error) {
-      lastError = error;
-      if (attempt >= maxAttempts || !shouldRetryCreateJob(error)) {
-        throw error;
-      }
+function normalizePlatformTemplateRecord(template) {
+  const preview = template?.preview && typeof template.preview === "object" ?
+    template.preview :
+    {};
 
-      const waitMs = Math.min(4000, 400 * (2 ** (attempt - 1)));
-      await sleep(waitMs);
-    }
-  }
+  return {
+    id: typeof template?.id === "string" && template.id.trim() ?
+      template.id.trim() :
+      (typeof template?.code === "string" ? template.code.trim() : ""),
+    code: typeof template?.code === "string" ? template.code.trim() : "",
+    title: typeof template?.title === "string" && template.title.trim() ?
+      template.title.trim() :
+      (typeof template?.name === "string" && template.name.trim() ?
+        template.name.trim() :
+        "Template"),
+    name: typeof template?.name === "string" ? template.name.trim() : "",
+    durationSec: Number.isFinite(Number(template?.durationSec)) ?
+      Number(template.durationSec) :
+      null,
+    modeDefault: typeof template?.modeDefault === "string" &&
+      template.modeDefault.trim() ?
+      template.modeDefault.trim() :
+      "std",
+    costCredits: Number.isFinite(Number(template?.costCredits)) ?
+      Number(template.costCredits) :
+      null,
+    referenceVideoUrl: typeof template?.referenceVideoUrl === "string" ?
+      template.referenceVideoUrl :
+      "",
+    preview: {
+      thumbnailUrl: typeof preview?.thumbnailUrl === "string" ?
+        preview.thumbnailUrl :
+        "",
+      previewVideoUrl: typeof preview?.previewVideoUrl === "string" ?
+        preview.previewVideoUrl :
+        "",
+    },
+  };
+}
 
-  throw lastError || new Error("createJob failed");
+async function prepareMotrendJobRequest(payload) {
+  return await platformMotrendRequest("/motrend/jobs/prepare", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+async function finalizeMotrendJobRequest(payload) {
+  const response = await platformMotrendRequest("/motrend/jobs/finalize", {
+    method: "POST",
+    body: payload,
+  });
+  await refreshPlatformMotrendProfile();
+  return response;
+}
+
+async function refreshMotrendJobRequest(jobId) {
+  const response = await platformMotrendRequest(`/motrend/jobs/${encodeURIComponent(jobId)}/refresh`, {
+    method: "POST",
+  });
+  await refreshPlatformMotrendProfile();
+  return response;
+}
+
+async function prepareMotrendDownloadRequest(jobId) {
+  const response = await platformMotrendRequest(`/motrend/jobs/${encodeURIComponent(jobId)}/prepare-download`, {
+    method: "POST",
+  });
+  await refreshPlatformMotrendProfile();
+  return response;
+}
+
+async function listMotrendJobsRequest() {
+  const response = await platformMotrendRequest("/motrend/jobs");
+  const jobs = Array.isArray(response?.jobs) ? response.jobs : [];
+  return {
+    jobs: jobs.map((job) => normalizePlatformJobRecord(job)),
+  };
 }
 
 async function prepareDownloadLink(jobId) {
   for (let attempt = 0; attempt < PREPARE_DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
-    const response = await callCreateJob({prepareDownloadJobId: jobId});
-    const payload = response?.data || {};
+    const payload = await prepareMotrendDownloadRequest(jobId);
     const inlineUrl = safeUrl(
       typeof payload.inlineUrl === "string" ? payload.inlineUrl : ""
     );
@@ -2311,8 +2714,8 @@ async function syncSupportProfile() {
   }
 
   try {
-    const response = await callCreateJob({supportProfile: true});
-    const payload = response?.data || {};
+    const payload = currentPlatformMotrendProfile ||
+      await refreshPlatformMotrendProfile({silent: false});
     const supportCode = typeof payload?.supportCode === "string" ?
       payload.supportCode :
       "";
@@ -2356,10 +2759,7 @@ $("btnEmailSignUp").onclick = async () => {
 
   try {
     track("signup_click", {method: "email"});
-    const credential = await createUserWithEmailAndPassword(auth, email, pass);
-    if (credential?.user?.uid) {
-      setStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, true, sessionStorage);
-    }
+    await createUserWithEmailAndPassword(auth, email, pass);
   } catch (error) {
     showAuthError(callableErrorMessage(error));
   }
@@ -2384,10 +2784,7 @@ $("btnLogin").onclick = async () => {
       await signInWithRedirect(auth, provider);
       return;
     }
-    const result = await signInWithPopup(auth, provider);
-    if (result && getAdditionalUserInfo(result)?.isNewUser) {
-      setStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, true, sessionStorage);
-    }
+    await signInWithPopup(auth, provider);
   } catch (error) {
     const code = typeof error?.code === "string" ? error.code : "";
     const popupFailed = [
@@ -2413,6 +2810,7 @@ $("btnLogin").onclick = async () => {
 };
 
 $("btnLogout").onclick = async () => {
+  await logoutPlatformSession();
   await signOut(auth);
 };
 
@@ -2729,18 +3127,10 @@ async function loadTemplates() {
     '<div class="templatesLoading"><span class="spinner"></span>Loading templates…</div>';
 
   try {
-    const qy = query(
-      collection(db, "templates"),
-      where("isActive", "==", true),
-      orderBy("order", "asc"),
-      limit(30)
-    );
-
-    const snap = await getDocs(qy);
-    availableTemplates = snap.docs.map((docSnap) => ({
-      id: docSnap.id,
-      ...docSnap.data(),
-    }));
+    const response = await listPlatformTemplatesRequest();
+    availableTemplates = Array.isArray(response?.templates) ?
+      response.templates.map((template) => normalizePlatformTemplateRecord(template)) :
+      [];
 
     if (
       selectedTemplate &&
@@ -2763,7 +3153,7 @@ async function loadTemplates() {
 
     container.innerHTML = "";
 
-    if (snap.empty) {
+    if (!availableTemplates.length) {
       availableTemplates = [];
       const empty = document.createElement("div");
       empty.className = "templatesLoading muted";
@@ -2784,18 +3174,6 @@ async function loadTemplates() {
       '<div class="templatesLoading muted">Failed to load templates.</div>';
     console.warn(error);
   }
-}
-
-function watchUserDoc(uid) {
-  return onSnapshot(doc(db, "users", uid), (snap) => {
-    const data = snap.data() || {};
-    renderCreditsBadge(data.creditsBalance ?? 0);
-    $("country").textContent = data.country ?? "—";
-    $("lang").textContent = data.language ?? "—";
-    if (typeof data.supportCode === "string" && data.supportCode.trim()) {
-      setSupportCodeUi(data.supportCode);
-    }
-  });
 }
 
 function statusLabel(status) {
@@ -3239,8 +3617,7 @@ function renderJobsList() {
         renderJobsList();
 
         try {
-          const response = await callCreateJob({refreshJobId: item.id});
-          const payload = response?.data || {};
+          const payload = await refreshMotrendJobRequest(item.id);
           const queuedForRefresh = payload?.queuedForRefresh === true;
           if (queuedForRefresh) {
             const retryAfterMs = (
@@ -3255,9 +3632,15 @@ function renderJobsList() {
             const status = typeof payload.status === "string" ?
               payload.status :
               latestJobs[idx].data?.status;
-            const kling = payload.kling && typeof payload.kling === "object" ?
-              payload.kling :
-              latestJobs[idx].data?.kling;
+            const outputUrl = safeUrl(
+              typeof payload?.providerOutputUrl === "string" ?
+                payload.providerOutputUrl :
+                latestJobs[idx].data?.kling?.outputUrl || ""
+            );
+            const kling = {
+              ...(latestJobs[idx].data?.kling || {}),
+              outputUrl,
+            };
 
             latestJobs[idx] = {
               ...latestJobs[idx],
@@ -3311,41 +3694,78 @@ function renderJobsList() {
   updateLatestJobUI(latest.id, latest.data);
 }
 
-function watchLatestJobs(uid) {
-  const qy = query(
-    collection(db, "jobs"),
-    where("uid", "==", uid),
-    orderBy("createdAt", "desc"),
-    limit(MAX_WATCH_JOBS)
-  );
+function watchLatestJobsPlatform() {
+  let cancelled = false;
+  let pollTimer = null;
 
-  return onSnapshot(qy, (snap) => {
-    if (snap.empty) {
-      latestJobs = [];
-      preparedDownloadByJobId.clear();
-      preparingDownloadJobIds.clear();
-      clearPendingResumeUpload();
-      renderJobsList();
-      return;
-    }
+  const scheduleNextPoll = (delayMs) => {
+    if (cancelled) return;
+    pollTimer = setTimeout(() => {
+      void poll();
+    }, delayMs);
+  };
 
-    latestJobs = snap.docs.map((docSnap) => ({
-      id: docSnap.id,
-      data: docSnap.data() || {},
-    }));
-    if (pendingResumeUpload) {
-      const pendingJob = latestJobs.find((entry) => entry.id === pendingResumeUpload.jobId);
-      if (!pendingJob || pendingJob.data?.status !== "awaiting_upload") {
+  const poll = async () => {
+    if (cancelled || !currentUser) return;
+
+    try {
+      const response = await listMotrendJobsRequest();
+      if (cancelled) return;
+
+      latestJobs = response?.jobs || [];
+      if (!latestJobs.length) {
+        preparedDownloadByJobId.clear();
+        preparingDownloadJobIds.clear();
         clearPendingResumeUpload();
+        renderJobsList();
+        scheduleNextPoll(10_000);
+        return;
       }
+
+      if (pendingResumeUpload) {
+        const pendingJob = latestJobs.find((entry) => entry.id === pendingResumeUpload.jobId);
+        if (!pendingJob || pendingJob.data?.status !== "awaiting_upload") {
+          clearPendingResumeUpload();
+        }
+      }
+
+      prunePreparedDownloadState();
+      renderJobsList();
+
+      const latestFailed = latestJobs.find((item) => item.data?.status === "failed");
+      if (latestFailed) {
+        void maybeShowJobFailureNotice(latestFailed.id, latestFailed.data);
+      }
+
+      const hasActiveJob = latestJobs.some((item) => {
+        const status = item?.data?.status || "";
+        return (
+          status === "awaiting_upload" ||
+          status === "queued" ||
+          status === "processing"
+        );
+      });
+      scheduleNextPoll(hasActiveJob ? 2500 : 10_000);
+    } catch (error) {
+      if (cancelled) return;
+      console.warn("platform jobs poll failed", error);
+      scheduleNextPoll(isPlatformAuthError(error) ? 2500 : 5000);
     }
-    prunePreparedDownloadState();
-    renderJobsList();
-    const latestFailed = latestJobs.find((item) => item.data?.status === "failed");
-    if (latestFailed) {
-      maybeShowJobFailureNotice(latestFailed.id, latestFailed.data);
+  };
+
+  void poll();
+
+  return () => {
+    cancelled = true;
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
     }
-  });
+  };
+}
+
+function watchLatestJobs() {
+  return watchLatestJobsPlatform();
 }
 
 $("btnGenerate").onclick = async () => {
@@ -3426,13 +3846,13 @@ $("btnGenerate").onclick = async () => {
       uploadPath = pendingResumeUpload.uploadPath;
     } else if (selectedTrendKind !== TREND_SELECTION_REFERENCE) {
       const clientRequestId = createClientRequestId("gen");
-      const response = await callCreateJob({
+      const response = await prepareMotrendJobRequest({
         templateId: selectedTemplate.id,
         selectionKind: selectedTrendKind,
         clientRequestId,
       });
-      jobId = response.data?.jobId || "";
-      uploadPath = response.data?.uploadPath || "";
+      jobId = response?.jobId || "";
+      uploadPath = response?.uploadPath || "";
       setPendingResumeUpload(jobId, {
         templateId: selectedTemplate.id,
         inputImagePath: uploadPath,
@@ -3441,7 +3861,7 @@ $("btnGenerate").onclick = async () => {
     }
 
     if (!jobId || !uploadPath) {
-      throw new Error("createJob returned empty payload");
+      throw new Error("prepare job returned empty payload");
     }
     attachEstimatedProgressJob(jobId);
     setStatus("Uploading files… 0%");
@@ -3488,8 +3908,8 @@ $("btnGenerate").onclick = async () => {
     );
 
     setStatus("Finalizing upload…");
-    await callCreateJob({
-      finalizeJobId: jobId,
+    await finalizeMotrendJobRequest({
+      jobId,
       inputImagePath: uploadPath,
       referenceVideoPath: referenceVideoPath || undefined,
     });
@@ -3587,10 +4007,7 @@ if (fileInput) {
 }
 
 try {
-  const redirectResult = await getRedirectResult(auth);
-  if (redirectResult && getAdditionalUserInfo(redirectResult)?.isNewUser) {
-    setStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, true, sessionStorage);
-  }
+  await getRedirectResult(auth);
 } catch (error) {
   const code = typeof error?.code === "string" ? error.code : "";
   if (isTelegramInAppBrowser() && code.includes("invalid-action-code")) {
@@ -3603,10 +4020,6 @@ try {
 }
 
 onAuthStateChanged(auth, async (user) => {
-  if (typeof unsubscribeUserDoc === "function") {
-    unsubscribeUserDoc();
-    unsubscribeUserDoc = null;
-  }
   if (typeof unsubscribeJobs === "function") {
     unsubscribeJobs();
     unsubscribeJobs = null;
@@ -3616,10 +4029,10 @@ onAuthStateChanged(auth, async (user) => {
   $("app").style.display = "block";
 
   if (!user) {
+    clearPlatformSessionState();
     $("userLine").textContent = "Guest";
     renderCreditsBadge(0);
-    $("country").textContent = "—";
-    $("lang").textContent = "—";
+    renderLocaleFields();
     selectedTemplate = null;
     selectedTrendKind = TREND_SELECTION_TEMPLATE;
     availableTemplates = [];
@@ -3665,6 +4078,7 @@ onAuthStateChanged(auth, async (user) => {
 
   closeAuth();
   stopEstimatedProgress();
+  clearPlatformSessionState();
   currentCreditsBalance = Number.NaN;
   $("userCard").style.display = "block";
   $("jobsCard").style.display = "block";
@@ -3672,17 +4086,13 @@ onAuthStateChanged(auth, async (user) => {
   $("btnLogout").style.display = "inline-block";
   $("supportBtn").style.display = "inline-flex";
   $("userLine").textContent = user.email || "Signed in";
+  renderLocaleFields();
 
-  const userRef = doc(db, "users", user.uid);
-  let wasExistingAppUser = true;
-  try {
-    const existingUserSnap = await getDoc(userRef);
-    wasExistingAppUser = existingUserSnap.exists();
-  } catch {
-    // If we cannot verify safely, suppress the promo success instead of
-    // risking a false "new user" gift message for an existing account.
-    wasExistingAppUser = true;
-  }
+  const platformBootstrapPromise = bootstrapPlatformSession(user).catch((error) => {
+    console.warn("platform session bootstrap failed", error);
+    clearPlatformSessionState();
+    return null;
+  });
 
   if (analytics) {
     try {
@@ -3693,28 +4103,36 @@ onAuthStateChanged(auth, async (user) => {
     }
   }
 
-  await setDoc(userRef, {
-    email: user.email,
-    updatedAt: serverTimestamp(),
-  }, {merge: true});
+  const platformBootstrap = await platformBootstrapPromise;
+  await loadTemplates();
+  if (
+    currentUser &&
+    currentUser.uid === user.uid &&
+    platformBootstrap?.motrendProfile
+  ) {
+    applyPlatformProfileToUi(platformBootstrap.motrendProfile);
+  }
+
+  if (!platformBootstrap?.bootstrap) {
+    console.warn("platform session bootstrap missing");
+    return;
+  }
+
+  await syncSupportProfile();
 
   void syncAttributionForUser(user.uid).catch((error) => {
     console.warn("attribution sync failed", error);
   });
 
-  await syncSupportProfile();
-
-  await loadTemplates();
-  unsubscribeUserDoc = watchUserDoc(user.uid);
-  unsubscribeJobs = watchLatestJobs(user.uid);
-
-  if (getStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, sessionStorage)) {
-    setStoredFlag(AUTH_GIFT_SUCCESS_PENDING_KEY, false, sessionStorage);
-    if (!wasExistingAppUser) {
-      void showNoticeModal({
-        message: "🎁 You've received 5 free credits!",
-        buttonText: "OK",
-      });
-    }
+  unsubscribeJobs = watchLatestJobs();
+  if (
+    currentUser &&
+    currentUser.uid === user.uid &&
+    platformBootstrap?.bootstrap?.grantedTestCredits === true
+  ) {
+    void showNoticeModal({
+      message: `🎁 You've received ${MOTREND_TEST_GIFT_CREDITS} free credits!`,
+      buttonText: "OK",
+    });
   }
 });

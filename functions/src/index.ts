@@ -1,5 +1,5 @@
 /* eslint-disable require-jsdoc */
-import {defineSecret} from "firebase-functions/params";
+import {defineSecret, defineString} from "firebase-functions/params";
 import {
   onDocumentCreated,
 } from "firebase-functions/v2/firestore";
@@ -18,6 +18,9 @@ const db = admin.firestore();
 
 const klingAccessKey = defineSecret("KLING_ACCESS_KEY");
 const klingSecretKey = defineSecret("KLING_SECRET_KEY");
+const legacyRuntimeMode = defineString("LEGACY_RUNTIME_MODE", {
+  default: "standby",
+});
 
 const INITIAL_CREDITS = 20;
 const INPUT_TTL_MS = 6 * 60 * 60 * 1000;
@@ -60,6 +63,24 @@ const corsAllowedOrigins = [
   /^https:\/\/www\.trend\.moads\.agency$/,
   /^https?:\/\/localhost(:\d+)?$/,
 ];
+
+function isLegacyRuntimeStandby(): boolean {
+  return legacyRuntimeMode.value().trim().toLowerCase() !== "active";
+}
+
+function assertLegacyRuntimeActive(): void {
+  if (isLegacyRuntimeStandby()) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Legacy runtime is disabled.",
+      {code: "legacy_runtime_disabled"}
+    );
+  }
+}
+
+function logLegacyRuntimeStandby(functionName: string): void {
+  logger.info(`${functionName} skipped: legacy runtime in standby mode`);
+}
 
 type JobStatus =
   | "awaiting_upload"
@@ -2384,6 +2405,7 @@ export const createJob = onCall(
     concurrency: 16,
   },
   async (req) => {
+    assertLegacyRuntimeActive();
     const uid = requireAuthUid(req);
 
     if (req.data?.supportProfile === true) {
@@ -2571,6 +2593,10 @@ export const createJob = onCall(
 export const onUserDocCreated = onDocumentCreated(
   "users/{uid}",
   async (event) => {
+    if (isLegacyRuntimeStandby()) {
+      logLegacyRuntimeStandby("onUserDocCreated");
+      return;
+    }
     const userRef = event.data?.ref;
     if (!userRef) return;
     const uid = event.params.uid || userRef.id;
@@ -2874,6 +2900,10 @@ export const processKlingSubmitQueueTask = onDocumentCreated(
     concurrency: 4,
   },
   async (event) => {
+    if (isLegacyRuntimeStandby()) {
+      logLegacyRuntimeStandby("processKlingSubmitQueueTask");
+      return;
+    }
     const taskRef = event.data?.ref;
     if (!taskRef) return;
     await processQueueTaskRef(taskRef, "kling_submit");
@@ -2889,6 +2919,10 @@ export const processKlingPollQueueTask = onDocumentCreated(
     concurrency: 4,
   },
   async (event) => {
+    if (isLegacyRuntimeStandby()) {
+      logLegacyRuntimeStandby("processKlingPollQueueTask");
+      return;
+    }
     const taskRef = event.data?.ref;
     if (!taskRef) return;
     await processQueueTaskRef(taskRef, "kling_poll");
@@ -2904,6 +2938,10 @@ export const processDownloadPrepareQueueTask = onDocumentCreated(
     concurrency: 2,
   },
   async (event) => {
+    if (isLegacyRuntimeStandby()) {
+      logLegacyRuntimeStandby("processDownloadPrepareQueueTask");
+      return;
+    }
     const taskRef = event.data?.ref;
     if (!taskRef) return;
     await processQueueTaskRef(taskRef, "download_prepare");
@@ -2919,6 +2957,10 @@ export const processQueueTaskLegacy = onDocumentCreated(
     concurrency: 1,
   },
   async (event) => {
+    if (isLegacyRuntimeStandby()) {
+      logLegacyRuntimeStandby("processQueueTaskLegacy");
+      return;
+    }
     const taskRef = event.data?.ref;
     if (!taskRef) return;
     await processQueueTaskRef(taskRef, null);
@@ -2957,6 +2999,10 @@ async function scanJobsInPages(
 export const cleanupInputsHourly = onSchedule(
   {schedule: "every 24 hours"},
   async () => {
+    if (isLegacyRuntimeStandby()) {
+      logLegacyRuntimeStandby("cleanupInputsHourly");
+      return;
+    }
     logger.info(
       "cleanupInputsHourly skipped: managed by bucket lifecycle policy",
       {
@@ -2970,6 +3016,10 @@ export const cleanupInputsHourly = onSchedule(
 export const cleanupStaleJobsQuarterHourly = onSchedule(
   {schedule: "every 15 minutes"},
   async () => {
+    if (isLegacyRuntimeStandby()) {
+      logLegacyRuntimeStandby("cleanupStaleJobsQuarterHourly");
+      return;
+    }
     const nowMs = Date.now();
     const awaitingUploadCutoffMs = nowMs - AWAITING_UPLOAD_TTL_MS;
     const legacyQueuedCutoffMs = nowMs - LEGACY_QUEUED_WITHOUT_UPLOAD_TTL_MS;
@@ -3138,6 +3188,10 @@ export const cleanupStaleJobsQuarterHourly = onSchedule(
 export const cleanupDownloadsQuarterHourly = onSchedule(
   {schedule: "every 15 minutes"},
   async () => {
+    if (isLegacyRuntimeStandby()) {
+      logLegacyRuntimeStandby("cleanupDownloadsQuarterHourly");
+      return;
+    }
     const nowTs = admin.firestore.Timestamp.now();
 
     let deletedFiles = 0;
@@ -3231,6 +3285,10 @@ export const cleanupDownloadsQuarterHourly = onSchedule(
 export const cleanupJobRequestsDaily = onSchedule(
   {schedule: "every 24 hours"},
   async () => {
+    if (isLegacyRuntimeStandby()) {
+      logLegacyRuntimeStandby("cleanupJobRequestsDaily");
+      return;
+    }
     const cutoffTs = admin.firestore.Timestamp.fromMillis(
       Date.now() - JOB_REQUEST_TTL_MS
     );
@@ -3280,6 +3338,10 @@ export const cleanupJobRequestsDaily = onSchedule(
 export const cleanupRateLimitsDaily = onSchedule(
   {schedule: "every 24 hours"},
   async () => {
+    if (isLegacyRuntimeStandby()) {
+      logLegacyRuntimeStandby("cleanupRateLimitsDaily");
+      return;
+    }
     const cutoffTs = admin.firestore.Timestamp.now();
     let deleted = 0;
     let scanned = 0;

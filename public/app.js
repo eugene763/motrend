@@ -67,6 +67,19 @@ function track(name, params = {}) {
 const $ = (id) => document.getElementById(id);
 const PLATFORM_API_ORIGIN_OVERRIDE_KEY = "motrend_platform_api_origin_v1";
 const MOTREND_TEST_GIFT_CREDITS = 20;
+const PLATFORM_REQUEST_TIMEOUT_MS = 30_000;
+const PLATFORM_LOGOUT_TIMEOUT_MS = 5_000;
+const PLATFORM_POLL_AUTH_RETRY_MS = 2_500;
+const PLATFORM_POLL_ERROR_RETRY_MS = 5_000;
+const PLATFORM_POLL_MAX_BACKOFF_MS = 60_000;
+const PLATFORM_API_ALLOWED_ORIGINS = new Set([
+  "https://api.moads.agency",
+  "https://api-dev.moads.agency",
+  "http://localhost:8080",
+  "http://127.0.0.1:8080",
+]);
+const GIFT_CREDITS_PENDING_KEY = "motrend_gift_credits_pending_v1";
+const GIFT_CREDITS_AMOUNT_KEY = "motrend_gift_credits_amount_v1";
 
 function normalizeOriginCandidate(value) {
   if (typeof value !== "string") return "";
@@ -80,27 +93,54 @@ function normalizeOriginCandidate(value) {
   }
 }
 
+function clearStoredPlatformApiOriginOverride() {
+  try {
+    localStorage.removeItem(PLATFORM_API_ORIGIN_OVERRIDE_KEY);
+  } catch {
+    // no-op
+  }
+}
+
+function stripPlatformApiQueryParam() {
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("platformApi")) return;
+    url.searchParams.delete("platformApi");
+    window.history.replaceState(null, "", url.toString());
+  } catch {
+    // no-op
+  }
+}
+
+function isAllowedPlatformApiOrigin(origin) {
+  return PLATFORM_API_ALLOWED_ORIGINS.has(origin);
+}
+
 function resolvePlatformApiOrigin() {
   const url = new URL(window.location.href);
   const queryOverride = normalizeOriginCandidate(
     url.searchParams.get("platformApi") || ""
   );
   if (queryOverride) {
-    try {
-      localStorage.setItem(PLATFORM_API_ORIGIN_OVERRIDE_KEY, queryOverride);
-    } catch {
-      // no-op
+    stripPlatformApiQueryParam();
+    if (isAllowedPlatformApiOrigin(queryOverride)) {
+      try {
+        localStorage.setItem(PLATFORM_API_ORIGIN_OVERRIDE_KEY, queryOverride);
+      } catch {
+        // no-op
+      }
+      return queryOverride;
     }
-    return queryOverride;
   }
 
   try {
     const storedOverride = normalizeOriginCandidate(
       localStorage.getItem(PLATFORM_API_ORIGIN_OVERRIDE_KEY) || ""
     );
-    if (storedOverride) {
+    if (storedOverride && isAllowedPlatformApiOrigin(storedOverride)) {
       return storedOverride;
     }
+    clearStoredPlatformApiOriginOverride();
   } catch {
     // no-op
   }
@@ -109,7 +149,11 @@ function resolvePlatformApiOrigin() {
     return "http://localhost:8080";
   }
 
-  if (runtimeHost.endsWith(".moads.agency")) {
+  if (
+    runtimeHost.endsWith(".moads.agency") ||
+    runtimeHost.endsWith(".web.app") ||
+    runtimeHost.endsWith(".firebaseapp.com")
+  ) {
     return "https://api.moads.agency";
   }
 
@@ -215,6 +259,28 @@ function setStoredFlag(key, value = true, storage = localStorage) {
   try {
     if (value) {
       storage.setItem(key, "1");
+    } else {
+      storage.removeItem(key);
+    }
+  } catch {
+    // no-op
+  }
+}
+
+function getStoredNumber(key, storage = localStorage) {
+  try {
+    const value = storage.getItem(key);
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function setStoredNumber(key, value, storage = localStorage) {
+  try {
+    if (Number.isFinite(value)) {
+      storage.setItem(key, String(value));
     } else {
       storage.removeItem(key);
     }
@@ -735,12 +801,31 @@ async function platformRequest(path, options = {}) {
     body = JSON.stringify(body);
   }
 
-  const response = await fetch(buildPlatformUrl(path), {
-    method: options.method || "GET",
-    credentials: "include",
-    headers,
-    body,
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PLATFORM_REQUEST_TIMEOUT_MS);
+  let response;
+
+  try {
+    response = await fetch(buildPlatformUrl(path), {
+      method: options.method || "GET",
+      credentials: "include",
+      headers,
+      body,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw createPlatformRequestError(
+        "Platform request timed out.",
+        null,
+        0,
+        "platform_timeout"
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (response.status === 204) {
     return null;
@@ -771,6 +856,9 @@ function clearPlatformSessionState() {
   currentPlatformBootstrap = null;
   currentPlatformSession = null;
   currentPlatformMotrendProfile = null;
+  platformBootstrapPromise = null;
+  platformBootstrapPromiseUid = "";
+  platformReauthPromise = null;
 }
 
 function buildBootstrapMotrendProfile(bootstrap = currentPlatformBootstrap) {
@@ -902,7 +990,25 @@ async function ensurePlatformMotrendSession({force = false} = {}) {
     return true;
   }
 
-  const bootstrap = await bootstrapPlatformSession(currentUser);
+  if (
+    platformBootstrapPromise &&
+    currentUser.uid === platformBootstrapPromiseUid
+  ) {
+    const bootstrap = await platformBootstrapPromise;
+    return !!bootstrap?.bootstrap;
+  }
+
+  const bootstrapPromise = bootstrapPlatformSession(currentUser)
+    .finally(() => {
+      if (platformBootstrapPromise === bootstrapPromise) {
+        platformBootstrapPromise = null;
+        platformBootstrapPromiseUid = "";
+      }
+    });
+
+  platformBootstrapPromise = bootstrapPromise;
+  platformBootstrapPromiseUid = currentUser.uid;
+  const bootstrap = await bootstrapPromise;
   return !!bootstrap?.bootstrap;
 }
 
@@ -916,7 +1022,13 @@ async function platformAuthenticatedRequest(path, options = {}, {allowReauth = t
       throw error;
     }
 
-    await ensurePlatformMotrendSession({force: true});
+    if (!platformReauthPromise) {
+      platformReauthPromise = ensurePlatformMotrendSession({force: true})
+        .finally(() => {
+          platformReauthPromise = null;
+        });
+    }
+    await platformReauthPromise;
     return await platformRequest(path, options);
   }
 }
@@ -1016,6 +1128,9 @@ function callableErrorMessage(error) {
   }
   if (code.includes("unauthenticated")) {
     return "Please sign in first.";
+  }
+  if (code.includes("platform_timeout")) {
+    return "Connection timed out. Please try again.";
   }
   if (code.includes("failed-precondition")) {
     return message || "Template is unavailable. Pick another one.";
@@ -1373,6 +1488,9 @@ let currentUser = null;
 let currentPlatformBootstrap = null;
 let currentPlatformSession = null;
 let currentPlatformMotrendProfile = null;
+let platformBootstrapPromise = null;
+let platformBootstrapPromiseUid = "";
+let platformReauthPromise = null;
 let selectedTemplate = null;
 let selectedReferenceVideoFile = null;
 let selectedReferenceVideoName = "";
@@ -1431,7 +1549,7 @@ const PHOTO_HINT_KEY = "motrend_photo_hint_v1";
 const VIDEO_HINT_KEY = "motrend_video_hint_v1";
 const PHOTO_HINT_MESSAGE =
   "For best results, choose a high-quality photo with clear facial features, visible hands, and a body position that matches the selected reference. Formats: .jpg / .jpeg / .png\n" +
-  "File size: ≤10MB.\n" +
+  "File size: ≤40MB.\n" +
   "Dimensions: 300px ~ 65536px";
 const VIDEO_HINT_MESSAGE =
   "Supported formats: .mp4 / .mov, file size: ≤100MB, dimensions: 340px ~ 3850px.";
@@ -2810,7 +2928,12 @@ $("btnLogin").onclick = async () => {
 };
 
 $("btnLogout").onclick = async () => {
-  await logoutPlatformSession();
+  await Promise.race([
+    logoutPlatformSession(),
+    new Promise((resolve) => {
+      setTimeout(resolve, PLATFORM_LOGOUT_TIMEOUT_MS);
+    }),
+  ]);
   await signOut(auth);
 };
 
@@ -3625,7 +3748,11 @@ function renderJobsList() {
               payload.retryAfterMs > 0
             ) ? payload.retryAfterMs : 2000;
             const retryAfterSec = Math.max(1, Math.ceil(retryAfterMs / 1000));
-            setStatus(`Refresh queued. Check again in ~${retryAfterSec}s.`);
+            setStatus(
+              payload?.dispatchDeferred === true ?
+                `Refresh queued, but background dispatch is delayed. Check again in ~${retryAfterSec}s.` :
+                `Refresh queued. Check again in ~${retryAfterSec}s.`
+            );
           }
           const idx = latestJobs.findIndex((entry) => entry.id === item.id);
           if (idx >= 0 && payload && typeof payload === "object") {
@@ -3697,6 +3824,8 @@ function renderJobsList() {
 function watchLatestJobsPlatform() {
   let cancelled = false;
   let pollTimer = null;
+  let pollInFlight = false;
+  let pollErrorCount = 0;
 
   const scheduleNextPoll = (delayMs) => {
     if (cancelled) return;
@@ -3706,11 +3835,13 @@ function watchLatestJobsPlatform() {
   };
 
   const poll = async () => {
-    if (cancelled || !currentUser) return;
+    if (cancelled || !currentUser || pollInFlight) return;
+    pollInFlight = true;
 
     try {
       const response = await listMotrendJobsRequest();
       if (cancelled) return;
+      pollErrorCount = 0;
 
       latestJobs = response?.jobs || [];
       if (!latestJobs.length) {
@@ -3749,7 +3880,17 @@ function watchLatestJobsPlatform() {
     } catch (error) {
       if (cancelled) return;
       console.warn("platform jobs poll failed", error);
-      scheduleNextPoll(isPlatformAuthError(error) ? 2500 : 5000);
+      pollErrorCount += 1;
+      const baseDelayMs = isPlatformAuthError(error) ?
+        PLATFORM_POLL_AUTH_RETRY_MS :
+        PLATFORM_POLL_ERROR_RETRY_MS;
+      const backoffMs = Math.min(
+        Math.round(baseDelayMs * Math.pow(1.5, pollErrorCount - 1)),
+        PLATFORM_POLL_MAX_BACKOFF_MS
+      );
+      scheduleNextPoll(backoffMs);
+    } finally {
+      pollInFlight = false;
     }
   };
 
@@ -3908,7 +4049,7 @@ $("btnGenerate").onclick = async () => {
     );
 
     setStatus("Finalizing upload…");
-    await finalizeMotrendJobRequest({
+    const finalizePayload = await finalizeMotrendJobRequest({
       jobId,
       inputImagePath: uploadPath,
       referenceVideoPath: referenceVideoPath || undefined,
@@ -3921,6 +4062,9 @@ $("btnGenerate").onclick = async () => {
 
     startEstimatedProgress("Generating your trend…");
     attachEstimatedProgressJob(jobId);
+    if (finalizePayload?.dispatchDeferred === true) {
+      setStatus("Upload finished. Background queue is retrying — generation may start a bit later.");
+    }
     if (
       useReferenceVideo &&
       referenceVideoWasPendingAtGenerate &&
@@ -4030,6 +4174,8 @@ onAuthStateChanged(auth, async (user) => {
 
   if (!user) {
     clearPlatformSessionState();
+    setStoredFlag(GIFT_CREDITS_PENDING_KEY, false, sessionStorage);
+    setStoredNumber(GIFT_CREDITS_AMOUNT_KEY, Number.NaN, sessionStorage);
     $("userLine").textContent = "Guest";
     renderCreditsBadge(0);
     renderLocaleFields();
@@ -4088,11 +4234,20 @@ onAuthStateChanged(auth, async (user) => {
   $("userLine").textContent = user.email || "Signed in";
   renderLocaleFields();
 
-  const platformBootstrapPromise = bootstrapPlatformSession(user).catch((error) => {
-    console.warn("platform session bootstrap failed", error);
-    clearPlatformSessionState();
-    return null;
-  });
+  const bootstrapPromise = bootstrapPlatformSession(user)
+    .catch((error) => {
+      console.warn("platform session bootstrap failed", error);
+      clearPlatformSessionState();
+      return null;
+    })
+    .finally(() => {
+      if (platformBootstrapPromise === bootstrapPromise) {
+        platformBootstrapPromise = null;
+        platformBootstrapPromiseUid = "";
+      }
+    });
+  platformBootstrapPromise = bootstrapPromise;
+  platformBootstrapPromiseUid = user.uid;
 
   if (analytics) {
     try {
@@ -4103,7 +4258,7 @@ onAuthStateChanged(auth, async (user) => {
     }
   }
 
-  const platformBootstrap = await platformBootstrapPromise;
+  const platformBootstrap = await bootstrapPromise;
   await loadTemplates();
   if (
     currentUser &&
@@ -4115,7 +4270,24 @@ onAuthStateChanged(auth, async (user) => {
 
   if (!platformBootstrap?.bootstrap) {
     console.warn("platform session bootstrap missing");
+    setStatus("Connection error. Please refresh the page.");
+    setStatusHintVisible(false);
+    unsubscribeJobs = watchLatestJobs();
     return;
+  }
+
+  if (platformBootstrap?.bootstrap?.grantedTestCredits === true) {
+    const grantedCreditsAmount = Number(
+      platformBootstrap.bootstrap.grantedTestCreditsAmount
+    );
+    setStoredFlag(GIFT_CREDITS_PENDING_KEY, true, sessionStorage);
+    setStoredNumber(
+      GIFT_CREDITS_AMOUNT_KEY,
+      Number.isFinite(grantedCreditsAmount) && grantedCreditsAmount > 0 ?
+        grantedCreditsAmount :
+        MOTREND_TEST_GIFT_CREDITS,
+      sessionStorage
+    );
   }
 
   await syncSupportProfile();
@@ -4128,10 +4300,19 @@ onAuthStateChanged(auth, async (user) => {
   if (
     currentUser &&
     currentUser.uid === user.uid &&
-    platformBootstrap?.bootstrap?.grantedTestCredits === true
+    getStoredFlag(GIFT_CREDITS_PENDING_KEY, sessionStorage)
   ) {
+    const grantedCreditsAmount =
+      getStoredNumber(GIFT_CREDITS_AMOUNT_KEY, sessionStorage) ??
+      Number(platformBootstrap?.bootstrap?.grantedTestCreditsAmount);
+    setStoredFlag(GIFT_CREDITS_PENDING_KEY, false, sessionStorage);
+    setStoredNumber(GIFT_CREDITS_AMOUNT_KEY, Number.NaN, sessionStorage);
     void showNoticeModal({
-      message: `🎁 You've received ${MOTREND_TEST_GIFT_CREDITS} free credits!`,
+      message: `🎁 You've received ${
+        Number.isFinite(grantedCreditsAmount) && grantedCreditsAmount > 0 ?
+          grantedCreditsAmount :
+          MOTREND_TEST_GIFT_CREDITS
+      } free credits!`,
       buttonText: "OK",
     });
   }

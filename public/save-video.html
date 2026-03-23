@@ -41,7 +41,7 @@
   <div class="wrap">
     <div class="card">
       <a class="brandLink" href="/?utm_source=motend_2_nd_page_save"><h1>MoTrend©</h1></a>
-      <div class="muted">Want to generate your own video? <a class="inlineLink" href="/?utm_source=motend_2_nd_page_save">Open the MoTrend home page</a>.</div>
+      <div class="muted">Click <a class="inlineLink" href="/?utm_source=motend_2_nd_page_save">here</a> to make your own video.</div>
       <div id="error" class="error" style="display:none;margin-top:12px"></div>
       <div class="videoWrap" id="videoWrap" style="display:none">
         <video id="video" controls playsinline></video>
@@ -51,7 +51,7 @@
         <button id="btnCopy" class="btnGhost" type="button">Copy URL</button>
         <button id="btnShare" class="btnGhost" type="button">Share</button>
       </div>
-      <div class="note">If the video does not download immediately, tap <b>Copy URL</b> and open the link in Safari, Chrome, or another browser.</div>
+      <div class="note">If download does not start, tap <b>Copy URL</b> and open it in another browser.</div>
     </div>
   </div>
 
@@ -148,7 +148,7 @@
           localStorage.setItem('motrend-save-video-tip-shown', '1');
           setTimeout(function() {
             window.alert(
-              'If the video does not download immediately, tap Copy URL and open the link in Safari, Chrome, or another browser.'
+              'If download does not start, tap Copy URL and open it in another browser.'
             );
           }, 180);
         }

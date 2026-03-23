@@ -722,8 +722,8 @@ function setSupportButtonMessage(supportCode = "") {
     supportCode.trim().toUpperCase() :
     "";
   const text = cleanCode ?
-    `Hello, I am having an issue with the MoTrend© app. Support ID: ${cleanCode}.` :
-    "Hello, I am having an issue with the MoTrend© app.";
+    `Hi, I need help with MoTrend. Support ID: ${cleanCode}.` :
+    "Hi, I need help with MoTrend.";
 
   btn.href = `${baseUrl}?text=${encodeURIComponent(text)}`;
 }
@@ -732,7 +732,7 @@ function openAuth(message = "") {
   if (!currentUser && !getStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY)) {
     setStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY, true);
     void showNoticeModal({
-      message: `🎁 New users: sign up now and get ${MOTREND_TEST_GIFT_CREDITS} free credits!`,
+      message: `🎁 Sign up and get ${MOTREND_TEST_GIFT_CREDITS} free credits!`,
       buttonText: "OK",
       onConfirm: () => openAuth(message),
     });
@@ -1119,7 +1119,7 @@ function callableErrorMessage(error) {
       normalized.includes("temporarily unavailable") ||
       normalized.includes("too many requests")
     ) {
-      return "Server is temporarily busy. Please try again in a few seconds.";
+      return "Server busy. Try again in a few seconds.";
     }
     return message || "Not enough credits for this generation.";
   }
@@ -1136,31 +1136,31 @@ function callableErrorMessage(error) {
     return message || "Template is unavailable. Pick another one.";
   }
   if (code.includes("active_job_exists")) {
-    return message || "Finish your current upload or generation before starting a new trend.";
+    return message || "Finish your current upload or generation first.";
   }
   if (code.includes("template_inactive")) {
     return message || "Template is unavailable. Pick another one.";
   }
   if (code.includes("input_image_missing")) {
-    return message || "Uploaded photo was not found. Please upload it again.";
+    return message || "Photo missing. Upload it again.";
   }
   if (code.includes("reference_video_missing")) {
-    return message || "Uploaded reference video was not found. Please upload it again.";
+    return message || "Video missing. Upload it again.";
   }
   if (code.includes("invalid_input_image_path")) {
-    return message || "Uploaded photo is no longer valid. Please upload it again.";
+    return message || "Photo expired. Upload it again.";
   }
   if (code.includes("job_not_ready")) {
     return message || "Trend is not ready yet.";
   }
   if (code.includes("download_source_missing")) {
-    return message || "Generated output is not available yet.";
+    return message || "Video is not ready yet.";
   }
   if (code.includes("permission-denied")) {
     return message || "You have no access to this trend.";
   }
   if (code.includes("product_membership_required")) {
-    return message || "You do not have access to MoTrend yet.";
+    return message || "MoTrend access required.";
   }
   return message || "Something went wrong. Try again.";
 }
@@ -1749,7 +1749,7 @@ function completeEstimatedProgress() {
   estimatedProgressStartedAtMs = 0;
   estimatedProgressLabel = "Generating your trend…";
   setStatusHintText(PROGRESS_HINT_TEXT);
-  setStatus("Done. Download is ready. 100%");
+  setStatus("Done. Download ready. 100%");
   setStatusHintVisible(false);
   setUploadSafetyHint("", false);
 }
@@ -3250,7 +3250,7 @@ function renderTemplateCard(template) {
 async function loadTemplates() {
   const container = $("templates");
   container.innerHTML =
-    '<div class="templatesLoading"><span class="spinner"></span>Loading templates…</div>';
+    '<div class="templatesLoading"><span class="spinner"></span>Loading...</div>';
 
   try {
     const response = await listPlatformTemplatesRequest();
@@ -3283,7 +3283,7 @@ async function loadTemplates() {
       availableTemplates = [];
       const empty = document.createElement("div");
       empty.className = "templatesLoading muted";
-      empty.textContent = "No templates available.";
+      empty.textContent = "No templates yet.";
       container.appendChild(empty);
       container.appendChild(renderReferenceVideoCard());
       syncTrendSelectionUi();
@@ -3378,9 +3378,9 @@ async function maybeShowJobFailureNotice(jobId, job) {
 
   let message = "";
   if (refunded) {
-    message = `An error occurred. ${refundAmount} credits were returned.`;
+    message = `Failed. ${refundAmount} credits returned.`;
   } else if (uploadTimedOut && !(Number(job?.debitedCredits || 0) > 0)) {
-    message = "An error occurred during upload. Credits were not charged.";
+    message = "Upload failed. No credits charged.";
   }
 
   if (!message) return;
@@ -3418,7 +3418,7 @@ function updateLatestJobUI(jobId, job) {
     if (trackedCurrentJob) {
       completeEstimatedProgress();
     } else {
-      setStatus("Done. Download is ready.");
+      setStatus("Done. Download ready.");
       setStatusHintVisible(false);
     }
     return;
@@ -3500,10 +3500,10 @@ async function handleResumeUpload(jobId) {
   scrollToPhotoUploadField();
 
   const message = resumeSelectionKind === TREND_SELECTION_REFERENCE ?
-    "Please upload your reference video and photo again, then tap Generate. Credits have not been charged yet." :
+    "Upload your video and photo again, then tap Generate. No credits charged." :
     resumeSelectionKind === TREND_SELECTION_TEMPLATE ?
-      "Please upload your photo again, then tap Generate. Credits have not been charged yet." :
-      "Please continue your upload. If you were using your own video, upload it again first with the Upload button, then choose your photo and tap Generate. Credits have not been charged yet.";
+      "Upload your photo again, then tap Generate. No credits charged." :
+      "Upload your files again, then tap Generate. No credits charged.";
 
   await showNoticeModal({
     message,
@@ -3540,8 +3540,8 @@ function renderAwaitingUploadActions(jobId) {
   const hint = document.createElement("div");
   hint.className = "muted jobsHint";
   hint.textContent = resumeDelayMs > 0 ?
-    `Upload can take a few minutes. Resume will appear in ~${formatRemainingMinutes(resumeDelayMs)} if needed.` :
-    "Upload was interrupted. Resume to continue without charging credits.";
+    `Resume appears in ~${formatRemainingMinutes(resumeDelayMs)} if needed.` :
+    "Upload interrupted. Resume with no extra charge.";
   wrapper.appendChild(hint);
 
   return wrapper;
@@ -4273,7 +4273,7 @@ onAuthStateChanged(auth, async (user) => {
 
   if (!platformBootstrap?.bootstrap) {
     console.warn("platform session bootstrap missing");
-    setStatus("Connection error. Please refresh the page.");
+    setStatus("Connection error. Refresh.");
     setStatusHintVisible(false);
     unsubscribeJobs = watchLatestJobs();
     return;
@@ -4311,7 +4311,7 @@ onAuthStateChanged(auth, async (user) => {
     setStoredFlag(GIFT_CREDITS_PENDING_KEY, false, sessionStorage);
     setStoredNumber(GIFT_CREDITS_AMOUNT_KEY, Number.NaN, sessionStorage);
     void showNoticeModal({
-      message: `🎁 You've received ${
+      message: `🎁 You got ${
         Number.isFinite(grantedCreditsAmount) && grantedCreditsAmount > 0 ?
           grantedCreditsAmount :
           MOTREND_TEST_GIFT_CREDITS

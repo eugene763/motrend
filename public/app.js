@@ -1771,9 +1771,13 @@ function selectTrendCard(cardEl) {
 function buildTemplateSelectionLabel(template) {
   if (!template) return "";
   const title = template.title || "Template";
-  const durationSec = template.durationSec ?? "—";
-  const mode = template.modeDefault || "std";
-  return `${title} (${durationSec}s ${mode})`;
+  const costLabel = buildTemplateCostLabel(template);
+  return `${title} (${costLabel})`;
+}
+
+function buildTemplateCostLabel(template) {
+  const costCredits = getTemplateCostCredits(template);
+  return `${costCredits ?? "—"} credits`;
 }
 
 function updateSelectedTrendField() {
@@ -3135,7 +3139,6 @@ function renderTemplateCard(template) {
 
   const thumbUrl = safeUrl(template.preview?.thumbnailUrl || "");
   const videoUrl = safeUrl(template.preview?.previewVideoUrl || "");
-  const mode = template.modeDefault || "std";
   const titleText = template.title || "Template";
 
   const media = document.createElement("div");
@@ -3167,7 +3170,7 @@ function renderTemplateCard(template) {
 
   const meta = document.createElement("div");
   meta.className = "muted";
-  meta.textContent = `${template.durationSec ?? "—"}s • ${mode}`;
+  meta.textContent = buildTemplateCostLabel(template);
 
   const useBtn = document.createElement("button");
   useBtn.className = "btn tplUse";

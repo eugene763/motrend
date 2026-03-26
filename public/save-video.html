@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -33,6 +33,7 @@
     .btn,.btnGhost{width:100%;min-height:54px;border-radius:12px;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:32px;line-height:1;font-weight:700;padding:0 12px;border:0;cursor:pointer}
     .btn{background:var(--accent);color:#000;border:1px solid #6edc97}
     .btnGhost{background:#2a2a2a;color:#fff}
+    .btn:disabled,.btnGhost:disabled{opacity:.55;cursor:not-allowed}
     .note{margin-top:10px;font-size:18px;opacity:.78}
     .error{color:#f87171;font-size:18px}
   </style>
@@ -86,11 +87,15 @@
       var btnCopy = document.getElementById('btnCopy');
 
       var pageUrl = window.location.href;
-      var copyTargetUrl = downloadUrl || videoUrl || pageUrl;
+      var copyTargetUrl = downloadUrl || videoUrl;
 
       if (!videoUrl && !downloadUrl) {
         errorEl.textContent = 'Video URL is missing or invalid.';
         errorEl.style.display = 'block';
+        actions.style.display = 'flex';
+        btnSaveFile.style.display = 'none';
+        btnShare.style.display = 'none';
+        btnCopy.disabled = true;
         return;
       }
 
@@ -131,17 +136,21 @@
         }, delay);
       }
 
-      btnCopy.addEventListener('click', async function() {
-        try {
-          await navigator.clipboard.writeText(copyTargetUrl);
-          showTemporaryButtonState(btnCopy, 'URL copied', 'Copy URL', 500);
-        } catch {
-          btnCopy.textContent = 'Copy failed';
-          setTimeout(function() {
-            btnCopy.textContent = 'Copy URL';
-          }, 800);
-        }
-      });
+      if (copyTargetUrl) {
+        btnCopy.addEventListener('click', async function() {
+          try {
+            await navigator.clipboard.writeText(copyTargetUrl);
+            showTemporaryButtonState(btnCopy, 'URL copied', 'Copy URL', 500);
+          } catch {
+            btnCopy.textContent = 'Copy failed';
+            setTimeout(function() {
+              btnCopy.textContent = 'Copy URL';
+            }, 800);
+          }
+        });
+      } else {
+        btnCopy.disabled = true;
+      }
 
       try {
         if (!localStorage.getItem('motrend-save-video-tip-shown')) {

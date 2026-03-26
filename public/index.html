@@ -1,7 +1,8 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8"/>
+  <meta name="description" content="Turn your photo into a viral trending video — MoTrend©"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>MoTrend©</title>
   <link rel="icon" href="/favicon.ico" sizes="any"/>
@@ -315,6 +316,81 @@ a{color:#fff}
   font-size:19px;
   line-height:1.35;
 }
+.walletModal{
+  position:fixed;
+  inset:0;
+  z-index:2080;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:16px;
+  background:rgba(0,0,0,.72);
+}
+.walletCard{
+  width:100%;
+  max-width:720px;
+  max-height:min(86vh, 900px);
+  overflow:auto;
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:16px;
+  padding:16px;
+}
+.walletHeader{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:12px;
+  margin-bottom:14px;
+}
+.walletGrid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));
+  gap:12px;
+}
+.walletPack{
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:14px;
+  display:grid;
+  gap:8px;
+}
+.walletPackName{
+  font-weight:700;
+}
+.walletPackMeta,.walletOrderMeta{
+  color:var(--muted);
+  font-size:14px;
+}
+.walletPackPrice{
+  font-size:22px;
+  font-weight:700;
+}
+.walletOrders{
+  margin-top:16px;
+  display:grid;
+  gap:10px;
+}
+.walletOrderItem{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:12px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:12px 14px;
+}
+.walletOrderName,.walletOrderPrice{
+  font-weight:700;
+}
+.walletOrderRight{
+  text-align:right;
+}
+.walletOrderStatus{
+  color:var(--muted);
+  text-transform:capitalize;
+  font-size:14px;
+}
 
   .brandTitle{font-size:46px;}
   .brandSubtitle{font-size:18px;line-height:1.22;}
@@ -465,6 +541,25 @@ a{color:#fff}
     </div>
   </div>
 
-  <script type="module" src="/app.js?v=20260317a"></script>
+  <div id="walletModal" class="walletModal" role="dialog" aria-modal="true" aria-labelledby="walletTitle">
+    <div class="walletCard">
+      <div class="walletHeader">
+        <div>
+          <div id="walletTitle" style="font-weight:700;font-size:22px">Buy credits</div>
+          <div id="walletState" class="muted">Choose a pack.</div>
+        </div>
+        <button id="btnWalletClose" class="btn2">Close</button>
+      </div>
+
+      <div id="walletPacks" class="walletGrid"></div>
+
+      <div class="walletOrders">
+        <div style="font-weight:700">Recent orders</div>
+        <div id="walletOrders" class="muted">No recent orders.</div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js?v=20260323a"></script>
 </body>
 </html>

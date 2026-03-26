@@ -1045,8 +1045,27 @@ async function platformAnalyticsRequest(path, options = {}, extra = {}) {
   return await platformAuthenticatedRequest(path, options, extra);
 }
 
+async function platformBillingRequest(path, options = {}, extra = {}) {
+  return await platformAuthenticatedRequest(path, options, extra);
+}
+
 async function listPlatformTemplatesRequest() {
   return await platformRequest("/motrend/templates");
+}
+
+async function listBillingCreditPacksRequest() {
+  return await platformBillingRequest("/billing/credit-packs");
+}
+
+async function listBillingOrdersRequest() {
+  return await platformBillingRequest("/billing/orders");
+}
+
+async function createBillingCheckoutOrderRequest(payload) {
+  return await platformBillingRequest("/billing/orders/checkout", {
+    method: "POST",
+    body: payload,
+  });
 }
 
 async function lookupAdminSupportCodeRequest(supportCode) {
@@ -1210,9 +1229,230 @@ function extractActiveJobConflict(error) {
   };
 }
 
-function openWallet() {
-  setStatus("Wallet is coming soon.");
-  setStatusHintVisible(false);
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function formatCurrencyMinor(amountMinor, currencyCode = "USD") {
+  const amount = Number(amountMinor);
+  if (!Number.isFinite(amount)) {
+    return "—";
+  }
+
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: currencyCode,
+      maximumFractionDigits: 2,
+    }).format(amount / 100);
+  } catch {
+    return `${(amount / 100).toFixed(2)} ${currencyCode}`;
+  }
+}
+
+function formatWalletOrderTimestamp(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date);
+  } catch {
+    return date.toLocaleString();
+  }
+}
+
+function closeWalletModal() {
+  const modal = $("walletModal");
+  if (modal) {
+    modal.style.display = "none";
+  }
+}
+
+function renderWalletModal() {
+  const stateEl = $("walletState");
+  const packsEl = $("walletPacks");
+  const ordersEl = $("walletOrders");
+
+  if (!stateEl || !packsEl || !ordersEl) {
+    return;
+  }
+
+  if (walletLoading) {
+    stateEl.textContent = "Loading credit packs…";
+    packsEl.innerHTML = "";
+    ordersEl.innerHTML = "";
+    return;
+  }
+
+  if (walletLoadError) {
+    stateEl.textContent = walletLoadError;
+  } else if (walletOffers.length === 0) {
+    stateEl.textContent = "Credit packs are not ready yet.";
+  } else {
+    stateEl.textContent = "Choose a pack.";
+  }
+
+  if (walletOffers.length === 0) {
+    packsEl.innerHTML = '<div class="muted">No credit packs yet.</div>';
+  } else {
+    packsEl.innerHTML = walletOffers.map((pack) => {
+      const disabled = !pack.checkoutConfigured || walletCheckoutInFlightPriceId === pack.priceId;
+      const buttonLabel = walletCheckoutInFlightPriceId === pack.priceId ?
+        "Opening…" :
+        pack.checkoutConfigured ?
+          "Continue" :
+          "Unavailable";
+
+      return `
+        <div class="walletPack">
+          <div class="walletPackName">${escapeHtml(pack.name)}</div>
+          <div class="walletPackMeta">${escapeHtml(`${pack.creditsAmount} credits`)}</div>
+          <div class="walletPackPrice">${escapeHtml(formatCurrencyMinor(pack.amountMinor, pack.currencyCode))}</div>
+          <button
+            class="btn walletPackAction"
+            data-wallet-price-id="${escapeHtml(pack.priceId)}"
+            ${disabled ? "disabled" : ""}
+          >${escapeHtml(buttonLabel)}</button>
+        </div>
+      `;
+    }).join("");
+
+    packsEl.querySelectorAll("[data-wallet-price-id]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const priceId = button.getAttribute("data-wallet-price-id") || "";
+        if (!priceId) return;
+        void beginWalletCheckout(priceId);
+      });
+    });
+  }
+
+  if (walletOrders.length === 0) {
+    ordersEl.innerHTML = '<div class="muted">No recent orders.</div>';
+    return;
+  }
+
+  ordersEl.innerHTML = walletOrders.map((order) => {
+    const createdAt = formatWalletOrderTimestamp(order.createdAt);
+    return `
+      <div class="walletOrderItem">
+        <div>
+          <div class="walletOrderName">${escapeHtml(order.billingProductName)}</div>
+          <div class="walletOrderMeta">
+            ${escapeHtml(`${order.creditsAmount} credits`)}
+            ${createdAt ? ` • ${escapeHtml(createdAt)}` : ""}
+          </div>
+        </div>
+        <div class="walletOrderRight">
+          <div class="walletOrderPrice">${escapeHtml(formatCurrencyMinor(order.amountMinor, order.currencyCode))}</div>
+          <div class="walletOrderStatus">${escapeHtml(order.status)}</div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function loadWalletModalData() {
+  const loadToken = ++walletLoadToken;
+  walletLoading = true;
+  walletLoadError = "";
+  renderWalletModal();
+
+  try {
+    const [packsResponse, ordersResponse] = await Promise.all([
+      listBillingCreditPacksRequest(),
+      listBillingOrdersRequest(),
+    ]);
+
+    if (loadToken !== walletLoadToken) {
+      return;
+    }
+
+    walletOffers = Array.isArray(packsResponse?.packs) ? packsResponse.packs : [];
+    walletOrders = Array.isArray(ordersResponse?.orders) ? ordersResponse.orders : [];
+  } catch (error) {
+    if (loadToken !== walletLoadToken) {
+      return;
+    }
+
+    console.warn("wallet data load failed", error);
+    walletOffers = [];
+    walletOrders = [];
+    walletLoadError = "Wallet is unavailable right now.";
+  } finally {
+    if (loadToken === walletLoadToken) {
+      walletLoading = false;
+      renderWalletModal();
+    }
+  }
+}
+
+async function beginWalletCheckout(priceId) {
+  if (!priceId) return;
+
+  walletCheckoutInFlightPriceId = priceId;
+  renderWalletModal();
+
+  try {
+    const checkout = await createBillingCheckoutOrderRequest({priceId});
+    const redirectUrl = safeUrl(checkout?.redirectUrl);
+
+    if (!redirectUrl) {
+      throw createPlatformRequestError(
+        "Checkout is not ready for this pack yet.",
+        {error: {code: "billing_checkout_unavailable"}},
+        409,
+        "billing_checkout_unavailable",
+      );
+    }
+
+    setStatus("Opening checkout…");
+    window.location.assign(redirectUrl);
+  } catch (error) {
+    if (error?.code === "billing_checkout_unavailable") {
+      await showNoticeModal({
+        message: "Checkout is not ready for this pack yet.",
+      });
+    } else {
+      await showNoticeModal({
+        message: getPlatformErrorMessage(error, "Failed to open checkout."),
+      });
+    }
+  } finally {
+    walletCheckoutInFlightPriceId = "";
+    renderWalletModal();
+  }
+}
+
+async function openWallet() {
+  if (!currentUser) {
+    openAuth("Sign in to buy credits.");
+    return;
+  }
+
+  if (!platformApiEnabled) {
+    await showNoticeModal({
+      message: "Wallet is unavailable right now.",
+    });
+    return;
+  }
+
+  const modal = $("walletModal");
+  if (modal) {
+    modal.style.display = "flex";
+  }
+  void loadWalletModalData();
 }
 
 function renderCreditsBadge(balance) {
@@ -1537,6 +1777,12 @@ let activeUploadHintOkHandler = null;
 let activeNoticeResolver = null;
 let activeNoticeOkHandler = null;
 let activeNoticeConfirmAction = null;
+let walletOffers = [];
+let walletOrders = [];
+let walletLoading = false;
+let walletLoadError = "";
+let walletLoadToken = 0;
+let walletCheckoutInFlightPriceId = "";
 const JOB_NOTICE_SEEN_PREFIX = "motrend_job_notice_";
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
 const MAX_UPLOAD_IMAGE_BYTES = 40 * 1024 * 1024;
@@ -2985,6 +3231,20 @@ $("btnForgotPassword").onclick = async () => {
 $("btnWallet").onclick = () => {
   openWallet();
 };
+
+if ($("btnWalletClose")) {
+  $("btnWalletClose").onclick = () => {
+    closeWalletModal();
+  };
+}
+
+if ($("walletModal")) {
+  $("walletModal").addEventListener("click", (event) => {
+    if (event.target === $("walletModal")) {
+      closeWalletModal();
+    }
+  });
+}
 
 function stopAllTemplateVideos(exceptEl = null) {
   document.querySelectorAll(".tplVideo").forEach((video) => {

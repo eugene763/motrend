@@ -1045,9 +1045,7 @@ async function platformAnalyticsRequest(path, options = {}, extra = {}) {
   return await platformAuthenticatedRequest(path, options, extra);
 }
 
-async function platformBillingRequest(path, options = {}, extra = {}) {
-  return await platformAuthenticatedRequest(path, options, extra);
-}
+const platformBillingRequest = platformAuthenticatedRequest;
 
 async function listPlatformTemplatesRequest() {
   return await platformRequest("/motrend/templates");
@@ -1092,6 +1090,27 @@ function safeUrl(value) {
       return "";
     }
     return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+const BILLING_ALLOWED_HOST_SUFFIXES = [
+  "fastspring.com",
+  "onfastspring.com",
+];
+
+function safeCheckoutUrl(value) {
+  const url = safeUrl(value);
+  if (!url) return "";
+
+  try {
+    const {hostname} = new URL(url);
+    const normalizedHost = hostname.trim().toLowerCase();
+    const isAllowed = BILLING_ALLOWED_HOST_SUFFIXES.some((suffix) => {
+      return normalizedHost === suffix || normalizedHost.endsWith(`.${suffix}`);
+    });
+    return isAllowed ? url : "";
   } catch {
     return "";
   }
@@ -1406,7 +1425,7 @@ async function beginWalletCheckout(priceId) {
 
   try {
     const checkout = await createBillingCheckoutOrderRequest({priceId});
-    const redirectUrl = safeUrl(checkout?.redirectUrl);
+    const redirectUrl = safeCheckoutUrl(checkout?.redirectUrl);
 
     if (!redirectUrl) {
       throw createPlatformRequestError(
@@ -1426,7 +1445,7 @@ async function beginWalletCheckout(priceId) {
       });
     } else {
       await showNoticeModal({
-        message: getPlatformErrorMessage(error, "Failed to open checkout."),
+        message: callableErrorMessage(error) || "Failed to open checkout.",
       });
     }
   } finally {
@@ -3238,9 +3257,10 @@ if ($("btnWalletClose")) {
   };
 }
 
-if ($("walletModal")) {
-  $("walletModal").addEventListener("click", (event) => {
-    if (event.target === $("walletModal")) {
+const walletModalEl = $("walletModal");
+if (walletModalEl) {
+  walletModalEl.addEventListener("click", (event) => {
+    if (event.target === walletModalEl) {
       closeWalletModal();
     }
   });

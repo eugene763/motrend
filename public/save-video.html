@@ -95,7 +95,7 @@
         actions.style.display = 'flex';
         btnSaveFile.style.display = 'none';
         btnShare.style.display = 'none';
-        btnCopy.disabled = true;
+        btnCopy.style.display = 'none';
         return;
       }
 
@@ -149,7 +149,7 @@
           }
         });
       } else {
-        btnCopy.disabled = true;
+        btnCopy.style.display = 'none';
       }
 
       try {

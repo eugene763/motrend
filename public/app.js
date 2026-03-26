@@ -1033,18 +1033,9 @@ async function platformAuthenticatedRequest(path, options = {}, {allowReauth = t
   }
 }
 
-async function platformMotrendRequest(path, options = {}, extra = {}) {
-  return await platformAuthenticatedRequest(path, options, extra);
-}
-
-async function platformAdminRequest(path, options = {}, extra = {}) {
-  return await platformAuthenticatedRequest(path, options, extra);
-}
-
-async function platformAnalyticsRequest(path, options = {}, extra = {}) {
-  return await platformAuthenticatedRequest(path, options, extra);
-}
-
+const platformMotrendRequest = platformAuthenticatedRequest;
+const platformAdminRequest = platformAuthenticatedRequest;
+const platformAnalyticsRequest = platformAuthenticatedRequest;
 const platformBillingRequest = platformAuthenticatedRequest;
 
 async function listPlatformTemplatesRequest() {
@@ -1326,8 +1317,9 @@ function renderWalletModal() {
   if (walletOffers.length === 0) {
     packsEl.innerHTML = '<div class="muted">No credit packs yet.</div>';
   } else {
+    const walletCheckoutInFlight = !!walletCheckoutInFlightPriceId;
     packsEl.innerHTML = walletOffers.map((pack) => {
-      const disabled = !pack.checkoutConfigured || walletCheckoutInFlightPriceId === pack.priceId;
+      const disabled = !pack.checkoutConfigured || walletCheckoutInFlight;
       const buttonLabel = walletCheckoutInFlightPriceId === pack.priceId ?
         "Opening…" :
         pack.checkoutConfigured ?
@@ -1418,7 +1410,7 @@ async function loadWalletModalData() {
 }
 
 async function beginWalletCheckout(priceId) {
-  if (!priceId) return;
+  if (!priceId || walletCheckoutInFlightPriceId) return;
 
   walletCheckoutInFlightPriceId = priceId;
   renderWalletModal();
@@ -1471,7 +1463,10 @@ async function openWallet() {
   if (modal) {
     modal.style.display = "flex";
   }
-  void loadWalletModalData();
+  void Promise.all([
+    loadWalletModalData(),
+    refreshPlatformMotrendProfile({silent: true}),
+  ]);
 }
 
 function renderCreditsBadge(balance) {
@@ -2541,20 +2536,11 @@ async function maybeStartReferenceVideoAutoUpload(fileToken) {
   if (!currentUser || !selectedReferenceVideoFile) return;
 
   try {
-    const expectedCostCredits = await getSelectedTrendCostCredits();
-    if (
-      Number.isFinite(expectedCostCredits) &&
-      expectedCostCredits > 0 &&
-      currentCreditsBalance < expectedCostCredits
-    ) {
-      const shortfallCredits = Math.ceil(expectedCostCredits - currentCreditsBalance);
-      await showNoticeModal({
-        message: `You are short ${shortfallCredits} credits`,
-        buttonText: "OK",
-        onConfirm: () => {
-          openWallet();
-        },
-      });
+    const creditsReady = await ensureSelectedTrendCreditsReady({
+      notifyUnknownCost: false,
+      notifyUnknownBalance: false,
+    });
+    if (!creditsReady) {
       return;
     }
 
@@ -2779,6 +2765,61 @@ async function getSelectedTrendCostCredits() {
   }
 
   return getTemplateCostCredits(selectedTemplate);
+}
+
+async function resolveAvailableCreditsBalance() {
+  if (Number.isFinite(currentCreditsBalance)) {
+    return currentCreditsBalance;
+  }
+
+  const profile = await refreshPlatformMotrendProfile({silent: true});
+  const refreshedBalance = Number(profile?.creditsBalance);
+  return Number.isFinite(refreshedBalance) ? refreshedBalance : Number.NaN;
+}
+
+async function ensureSelectedTrendCreditsReady({
+  notifyUnknownCost = true,
+  notifyUnknownBalance = true,
+} = {}) {
+  let expectedCostCredits = null;
+  try {
+    expectedCostCredits = await getSelectedTrendCostCredits();
+  } catch {
+    if (notifyUnknownCost && selectedTrendKind === TREND_SELECTION_REFERENCE) {
+      await showNoticeModal({
+        message: "We couldn't read your video length. Re-upload it and try again.",
+      });
+    }
+    return false;
+  }
+
+  if (!Number.isFinite(expectedCostCredits) || expectedCostCredits <= 0) {
+    return true;
+  }
+
+  const availableCredits = await resolveAvailableCreditsBalance();
+  if (!Number.isFinite(availableCredits)) {
+    if (notifyUnknownBalance) {
+      await showNoticeModal({
+        message: "We couldn't load your balance yet. Please try again in a moment.",
+      });
+    }
+    return false;
+  }
+
+  if (availableCredits < expectedCostCredits) {
+    const shortfallCredits = Math.ceil(expectedCostCredits - availableCredits);
+    await showNoticeModal({
+      message: `You are short ${shortfallCredits} credits`,
+      buttonText: "OK",
+      onConfirm: () => {
+        openWallet();
+      },
+    });
+    return false;
+  }
+
+  return true;
 }
 
 function sleep(ms) {
@@ -4225,25 +4266,8 @@ $("btnGenerate").onclick = async () => {
     return;
   }
 
-  let expectedCostCredits = null;
-  try {
-    expectedCostCredits = await getSelectedTrendCostCredits();
-  } catch {
-    expectedCostCredits = null;
-  }
-  if (
-    Number.isFinite(expectedCostCredits) &&
-    expectedCostCredits > 0 &&
-    currentCreditsBalance < expectedCostCredits
-  ) {
-    const shortfallCredits = Math.ceil(expectedCostCredits - currentCreditsBalance);
-    await showNoticeModal({
-      message: `You are short ${shortfallCredits} credits`,
-      buttonText: "OK",
-      onConfirm: () => {
-        openWallet();
-      },
-    });
+  const creditsReady = await ensureSelectedTrendCreditsReady();
+  if (!creditsReady) {
     return;
   }
 

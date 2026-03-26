@@ -1768,6 +1768,7 @@ const TREND_SELECTION_TEMPLATE = "template";
 const TREND_SELECTION_REFERENCE = "reference";
 let selectedTrendKind = TREND_SELECTION_TEMPLATE;
 let currentCreditsBalance = Number.NaN;
+let currentCreditsBalanceRefreshPromise = null;
 let isAdminUser = false;
 let adminSelectedUid = "";
 let adminSelectedSupportCode = "";
@@ -2772,7 +2773,14 @@ async function resolveAvailableCreditsBalance() {
     return currentCreditsBalance;
   }
 
-  const profile = await refreshPlatformMotrendProfile({silent: true});
+  if (!currentCreditsBalanceRefreshPromise) {
+    currentCreditsBalanceRefreshPromise = refreshPlatformMotrendProfile({silent: true})
+      .finally(() => {
+        currentCreditsBalanceRefreshPromise = null;
+      });
+  }
+
+  const profile = await currentCreditsBalanceRefreshPromise;
   const refreshedBalance = Number(profile?.creditsBalance);
   return Number.isFinite(refreshedBalance) ? refreshedBalance : Number.NaN;
 }
@@ -2785,9 +2793,11 @@ async function ensureSelectedTrendCreditsReady({
   try {
     expectedCostCredits = await getSelectedTrendCostCredits();
   } catch {
-    if (notifyUnknownCost && selectedTrendKind === TREND_SELECTION_REFERENCE) {
+    if (notifyUnknownCost) {
       await showNoticeModal({
-        message: "We couldn't read your video length. Re-upload it and try again.",
+        message: selectedTrendKind === TREND_SELECTION_REFERENCE ?
+          "We couldn't read your video length. Re-upload it and try again." :
+          "We couldn't verify the credit cost right now. Please try again.",
       });
     }
     return false;

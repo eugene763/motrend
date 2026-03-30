@@ -987,6 +987,25 @@ function buildBootstrapMotrendProfile(bootstrap = currentPlatformBootstrap) {
   };
 }
 
+function resolveKnownSupportCode(profile = null) {
+  const candidates = [
+    profile?.supportCode,
+    currentPlatformMotrendProfile?.supportCode,
+    currentPlatformBootstrap?.supportCode,
+    currentSupportCode,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const normalized = candidate.trim().toUpperCase();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return "";
+}
+
 async function bootstrapPlatformSession(user) {
   if (!user || !platformApiEnabled) {
     clearPlatformSessionState();
@@ -1620,8 +1639,9 @@ function applyPlatformProfileToUi(profile = currentPlatformMotrendProfile) {
     renderCreditsBadge(creditsBalance);
   }
 
-  if (typeof profile.supportCode === "string" && profile.supportCode.trim()) {
-    setSupportCodeUi(profile.supportCode);
+  const supportCode = resolveKnownSupportCode(profile);
+  if (supportCode) {
+    setSupportCodeUi(supportCode);
   }
 
   renderLocaleFields(profile.country, profile.language);
@@ -3593,9 +3613,7 @@ async function syncSupportProfile() {
   try {
     const payload = currentPlatformMotrendProfile ||
       await refreshPlatformMotrendProfile({silent: false});
-    const supportCode = typeof payload?.supportCode === "string" ?
-      payload.supportCode :
-      "";
+    const supportCode = resolveKnownSupportCode(payload);
     isAdminUser = payload?.isAdmin === true;
     setSupportCodeUi(supportCode);
     setAdminCardVisible(isAdminUser);

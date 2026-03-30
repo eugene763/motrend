@@ -87,6 +87,8 @@ const PLATFORM_API_ALLOWED_ORIGINS = new Set([
 ]);
 const GIFT_CREDITS_PENDING_KEY = "motrend_gift_credits_pending_v1";
 const GIFT_CREDITS_AMOUNT_KEY = "motrend_gift_credits_amount_v1";
+const WALLET_PENDING_CHECKOUT_KEY = "motrend_wallet_pending_checkout_v1";
+const WALLET_PENDING_CHECKOUT_MAX_AGE_MS = 72 * 60 * 60 * 1000;
 
 function normalizeOriginCandidate(value) {
   if (typeof value !== "string") return "";
@@ -309,6 +311,28 @@ function setStoredNumber(key, value, storage = localStorage) {
     } else {
       storage.removeItem(key);
     }
+  } catch {
+    // no-op
+  }
+}
+
+function getStoredJson(key, storage = localStorage) {
+  try {
+    const raw = storage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function setStoredJson(key, value, storage = localStorage) {
+  try {
+    if (value == null) {
+      storage.removeItem(key);
+      return;
+    }
+    storage.setItem(key, JSON.stringify(value));
   } catch {
     // no-op
   }
@@ -1214,6 +1238,49 @@ async function createBillingCheckoutOrderRequest(payload) {
   });
 }
 
+function readPendingWalletCheckout() {
+  const raw = getStoredJson(WALLET_PENDING_CHECKOUT_KEY);
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const startedAtMs = Number(raw.startedAtMs);
+  const orderId = typeof raw.orderId === "string" ? raw.orderId.trim() : "";
+  const uid = typeof raw.uid === "string" ? raw.uid.trim() : "";
+  const email = typeof raw.email === "string" ? raw.email.trim() : "";
+  const priceId = typeof raw.priceId === "string" ? raw.priceId.trim() : "";
+  const creditsAmount = Number(raw.creditsAmount);
+  const baselineCredits = Number(raw.baselineCredits);
+
+  if (!orderId || !Number.isFinite(startedAtMs) || startedAtMs <= 0) {
+    setStoredJson(WALLET_PENDING_CHECKOUT_KEY, null);
+    return null;
+  }
+
+  if (Date.now() - startedAtMs > WALLET_PENDING_CHECKOUT_MAX_AGE_MS) {
+    setStoredJson(WALLET_PENDING_CHECKOUT_KEY, null);
+    return null;
+  }
+
+  return {
+    orderId,
+    priceId,
+    uid,
+    email,
+    startedAtMs,
+    creditsAmount: Number.isFinite(creditsAmount) && creditsAmount > 0 ? creditsAmount : null,
+    baselineCredits: Number.isFinite(baselineCredits) ? baselineCredits : null,
+  };
+}
+
+function writePendingWalletCheckout(payload) {
+  setStoredJson(WALLET_PENDING_CHECKOUT_KEY, payload);
+}
+
+function clearPendingWalletCheckout() {
+  setStoredJson(WALLET_PENDING_CHECKOUT_KEY, null);
+}
+
 async function lookupAdminSupportCodeRequest(supportCode) {
   return await platformAdminRequest(
     `/admin/support/${encodeURIComponent(supportCode)}`
@@ -1572,6 +1639,112 @@ async function loadWalletModalData() {
   }
 }
 
+async function maybeResumePendingWalletCheckout() {
+  if (walletCheckoutResumePromise) {
+    return await walletCheckoutResumePromise;
+  }
+
+  walletCheckoutResumePromise = (async () => {
+  const pending = readPendingWalletCheckout();
+  if (!pending || (!currentUser && !hasPlatformCabinetSession())) {
+    return false;
+  }
+
+  if (
+    currentUser &&
+    pending.uid &&
+    currentUser.uid &&
+    pending.uid !== currentUser.uid
+  ) {
+    clearPendingWalletCheckout();
+    return false;
+  }
+
+  if (
+    currentUser &&
+    pending.email &&
+    currentUser.email &&
+    pending.email.toLowerCase() !== currentUser.email.toLowerCase()
+  ) {
+    clearPendingWalletCheckout();
+    return false;
+  }
+
+  const getOrders = async () => {
+    const ordersResponse = await listBillingOrdersRequest();
+    walletOrders = Array.isArray(ordersResponse?.orders) ? ordersResponse.orders : [];
+    renderWalletModal();
+    return walletOrders;
+  };
+
+  const resolveCompletedOrder = async () => {
+    const orders = await getOrders();
+    const matchingOrder = orders.find((order) => order?.orderId === pending.orderId);
+    const status = typeof matchingOrder?.status === "string" ?
+      matchingOrder.status.toLowerCase() :
+      "";
+
+    if (status === "paid") {
+      await refreshPlatformMotrendProfile({silent: true});
+      clearPendingWalletCheckout();
+      const creditsAdded =
+        Number(matchingOrder?.creditsAmount) ||
+        pending.creditsAmount ||
+        null;
+      await showNoticeModal({
+        message: Number.isFinite(creditsAdded) && creditsAdded > 0 ?
+          `Added ${creditsAdded} credits.` :
+          "Credits added.",
+        buttonText: "OK",
+      });
+      return true;
+    }
+
+    if (
+      pending.baselineCredits != null &&
+      Number.isFinite(currentCreditsBalance) &&
+      currentCreditsBalance > pending.baselineCredits
+    ) {
+      clearPendingWalletCheckout();
+      await showNoticeModal({
+        message: "Credits added.",
+        buttonText: "OK",
+      });
+      return true;
+    }
+
+    if (status === "failed" || status === "canceled" || status === "refunded") {
+      clearPendingWalletCheckout();
+      return false;
+    }
+
+    return false;
+  };
+
+  if (await resolveCompletedOrder()) {
+    return true;
+  }
+
+  const recentEnough = Date.now() - pending.startedAtMs < 20 * 60 * 1000;
+  if (!recentEnough) {
+    return false;
+  }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await sleep(2500);
+    if (await resolveCompletedOrder()) {
+      return true;
+    }
+  }
+
+  return false;
+  })().finally(() => {
+    walletCheckoutResumePromise = null;
+  });
+
+  return await walletCheckoutResumePromise;
+}
+
 async function beginWalletCheckout(priceId) {
   if (!priceId || walletCheckoutInFlightPriceId) return;
 
@@ -1579,7 +1752,11 @@ async function beginWalletCheckout(priceId) {
   renderWalletModal();
 
   try {
-    const checkout = await createBillingCheckoutOrderRequest({priceId});
+    const selectedPack = walletOffers.find((pack) => pack.priceId === priceId) || null;
+    const checkout = await createBillingCheckoutOrderRequest({
+      priceId,
+      attribution: buildAttributionSyncPayload() || undefined,
+    });
     const redirectUrl = safeCheckoutUrl(checkout?.redirectUrl);
 
     if (!redirectUrl) {
@@ -1591,9 +1768,19 @@ async function beginWalletCheckout(priceId) {
       );
     }
 
+    writePendingWalletCheckout({
+      orderId: typeof checkout?.orderId === "string" ? checkout.orderId : "",
+      priceId,
+      uid: currentUser?.uid || "",
+      email: currentUser?.email || "",
+      creditsAmount: Number(selectedPack?.creditsAmount) || null,
+      baselineCredits: Number.isFinite(currentCreditsBalance) ? currentCreditsBalance : null,
+      startedAtMs: Date.now(),
+    });
     setStatus("Opening checkout…");
     window.location.assign(redirectUrl);
   } catch (error) {
+    clearPendingWalletCheckout();
     if (error?.code === "billing_checkout_unavailable") {
       await showNoticeModal({
         message: "Checkout is not ready for this pack yet.",
@@ -1998,6 +2185,7 @@ let walletLoading = false;
 let walletLoadError = "";
 let walletLoadToken = 0;
 let walletCheckoutInFlightPriceId = "";
+let walletCheckoutResumePromise = null;
 const JOB_NOTICE_SEEN_PREFIX = "motrend_job_notice_";
 const REFERENCE_UPLOAD_RESUME_PREFIX = "motrend_reference_upload_resume_v1_";
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
@@ -5216,6 +5404,10 @@ onAuthStateChanged(auth, async (user) => {
   }
 
   await syncSupportProfile();
+
+  void maybeResumePendingWalletCheckout().catch((error) => {
+    console.warn("wallet checkout resume failed", error);
+  });
 
   void syncAttributionForUser(user.uid).catch((error) => {
     console.warn("attribution sync failed", error);

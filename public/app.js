@@ -10,6 +10,7 @@ import {
   GoogleAuthProvider,
   browserSessionPersistence,
   createUserWithEmailAndPassword,
+  fetchSignInMethodsForEmail,
   getRedirectResult,
   getAuth,
   indexedDBLocalPersistence,
@@ -252,6 +253,51 @@ function clearFormError() {
   if (!el) return;
   el.textContent = "";
   el.style.display = "none";
+}
+
+async function describeEmailSignInFailure(email, error) {
+  const fallback = callableErrorMessage(error);
+  const code = typeof error?.code === "string" ? error.code : "";
+  if (
+    !code.includes("auth/invalid-credential") &&
+    !code.includes("auth/wrong-password") &&
+    !code.includes("auth/user-not-found")
+  ) {
+    return fallback;
+  }
+
+  const normalizedEmail = typeof email === "string" ? email.trim() : "";
+  if (!normalizedEmail) {
+    return fallback;
+  }
+
+  try {
+    const methods = await fetchSignInMethodsForEmail(auth, normalizedEmail);
+    const hasGoogle = methods.includes("google.com");
+    const hasPassword = methods.includes("password");
+
+    if (hasGoogle && !hasPassword) {
+      return isTelegramInAppBrowser() ?
+        "This account uses Google sign-in. Open this page in Safari or Chrome, then tap Continue with Google." :
+        "This account uses Google sign-in. Tap Continue with Google.";
+    }
+
+    if (hasGoogle && hasPassword) {
+      return "Wrong password. You can also tap Continue with Google.";
+    }
+
+    if (hasPassword) {
+      return "Wrong email or password.";
+    }
+
+    if (!methods.length) {
+      return "No account found for this email. Sign up first or use the correct sign-in method.";
+    }
+  } catch (lookupError) {
+    console.warn("email sign-in method lookup failed", lookupError);
+  }
+
+  return fallback;
 }
 
 function getStoredFlag(key, storage = localStorage) {
@@ -3645,7 +3691,7 @@ $("btnEmailSignIn").onclick = async () => {
     await ensurePreferredAuthPersistence();
     await signInWithEmailAndPassword(auth, email, pass);
   } catch (error) {
-    showAuthError(callableErrorMessage(error));
+    showAuthError(await describeEmailSignInFailure(email, error));
   }
 };
 

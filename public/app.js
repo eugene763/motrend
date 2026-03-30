@@ -331,6 +331,9 @@ function setUploadSafetyHint(message = "", visible = false) {
 const ATTRIBUTION_STORAGE_KEY = "motrend_attribution_v1";
 const ATTRIBUTION_SYNC_PREFIX = "motrend_attribution_sync_v1_";
 const AUTH_GIFT_PROMO_SEEN_KEY = "motrend_auth_gift_prompt_seen_v1";
+const AUTH_ATTEMPT_COOKIE_KEY = "motrend_auth_attempted_v1";
+const AUTH_SUCCESS_COOKIE_KEY = "motrend_auth_success_v1";
+const AUTH_STATE_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const ATTRIBUTION_UTM_KEYS = [
   "utm_source",
   "utm_medium",
@@ -368,6 +371,51 @@ function readCookie(name) {
   } catch {
     return match[1];
   }
+}
+
+function writeCookie(name, value, {
+  maxAgeSeconds = AUTH_STATE_COOKIE_MAX_AGE_SECONDS,
+  path = "/",
+} = {}) {
+  if (!name) return;
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie =
+    `${encodeURIComponent(name)}=${encodeURIComponent(value || "")}; Path=${path}; Max-Age=${Math.max(0, Number(maxAgeSeconds) || 0)}; SameSite=Lax${secure}`;
+}
+
+function clearCookie(name) {
+  if (!name) return;
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie =
+    `${encodeURIComponent(name)}=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
+}
+
+function hasAuthAttemptCookie() {
+  return readCookie(AUTH_ATTEMPT_COOKIE_KEY) === "1";
+}
+
+function hasAuthSuccessCookie() {
+  return readCookie(AUTH_SUCCESS_COOKIE_KEY) === "1";
+}
+
+function markAuthAttemptCookie() {
+  writeCookie(AUTH_ATTEMPT_COOKIE_KEY, "1");
+}
+
+function clearAuthAttemptCookie() {
+  clearCookie(AUTH_ATTEMPT_COOKIE_KEY);
+}
+
+function markAuthSuccessCookie() {
+  writeCookie(AUTH_SUCCESS_COOKIE_KEY, "1");
+}
+
+function clearAuthSuccessCookie() {
+  clearCookie(AUTH_SUCCESS_COOKIE_KEY);
+}
+
+function shouldKeepAuthOpenAfterAttempt() {
+  return hasAuthAttemptCookie() && !hasAuthSuccessCookie();
 }
 
 function parseGaClientId(cookieValue) {
@@ -735,13 +783,13 @@ function setSupportButtonMessage(supportCode = "") {
   btn.href = `${baseUrl}?text=${encodeURIComponent(text)}`;
 }
 
-function openAuth(message = "") {
-  if (!currentUser && !getStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY)) {
+function openAuth(message = "", {skipPromo = false} = {}) {
+  if (!skipPromo && !currentUser && !getStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY)) {
     setStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY, true);
     void showNoticeModal({
       message: `🎁 Sign up and get ${MOTREND_TEST_GIFT_CREDITS} free credits!`,
       buttonText: "OK",
-      onConfirm: () => openAuth(message),
+      onConfirm: () => openAuth(message, {skipPromo}),
     });
     return;
   }
@@ -1038,19 +1086,23 @@ function isPlatformAuthError(error) {
   );
 }
 
+function hasPlatformCabinetSession() {
+  return Boolean(currentPlatformSession && currentPlatformMotrendProfile);
+}
+
 async function ensurePlatformMotrendSession({force = false} = {}) {
   if (!platformApiEnabled) return false;
-  if (!currentUser) {
-    throw createPlatformRequestError("Please sign in first.", null, 401, "unauthenticated");
-  }
   if (
     !force &&
     (
       currentPlatformBootstrap ||
-      (currentPlatformSession && currentPlatformMotrendProfile)
+      hasPlatformCabinetSession()
     )
   ) {
     return true;
+  }
+  if (!currentUser) {
+    throw createPlatformRequestError("Please sign in first.", null, 401, "unauthenticated");
   }
 
   if (
@@ -1516,8 +1568,10 @@ async function beginWalletCheckout(priceId) {
 }
 
 async function openWallet() {
-  if (!(await ensureSignedInForAction("Sign in to buy credits."))) {
-    return;
+  if (!currentUser && !hasPlatformCabinetSession()) {
+    if (!(await ensureSignedInForAction("Sign in to buy credits."))) {
+      return;
+    }
   }
 
   if (!platformApiEnabled) {
@@ -1576,7 +1630,7 @@ function applyPlatformProfileToUi(profile = currentPlatformMotrendProfile) {
 }
 
 async function refreshPlatformMotrendProfile({silent = true} = {}) {
-  if (!platformApiEnabled || !currentUser) {
+  if (!platformApiEnabled || (!currentUser && !hasPlatformCabinetSession())) {
     return null;
   }
 
@@ -1591,6 +1645,35 @@ async function refreshPlatformMotrendProfile({silent = true} = {}) {
     }
     return null;
   }
+}
+
+async function restoreGuestCabinetFromCookie() {
+  if (!platformApiEnabled || currentUser) {
+    return false;
+  }
+
+  const restored = await restorePlatformSessionFromCookie(null);
+  if (!restored?.session || !restored?.motrendProfile) {
+    return false;
+  }
+
+  markAuthSuccessCookie();
+  clearAuthAttemptCookie();
+  $("userCard").style.display = "block";
+  $("jobsCard").style.display = "block";
+  $("btnWallet").style.display = "inline-block";
+  $("btnLogout").style.display = "inline-block";
+  $("supportBtn").style.display = "inline-flex";
+  $("userLine").textContent =
+    restored.session?.user?.email ||
+    restored.session?.user?.displayName ||
+    "Signed in";
+  applyPlatformProfileToUi(restored.motrendProfile);
+  renderLocaleFields(
+    restored.motrendProfile?.country,
+    restored.motrendProfile?.language,
+  );
+  return true;
 }
 
 function setSupportCodeUi(supportCode = "") {
@@ -3539,6 +3622,7 @@ $("btnEmailSignIn").onclick = async () => {
   const pass = $("authPass").value;
 
   try {
+    markAuthAttemptCookie();
     track("login_click", {method: "email"});
     await ensurePreferredAuthPersistence();
     await signInWithEmailAndPassword(auth, email, pass);
@@ -3553,6 +3637,7 @@ $("btnEmailSignUp").onclick = async () => {
   const pass = $("authPass").value;
 
   try {
+    markAuthAttemptCookie();
     track("signup_click", {method: "email"});
     await ensurePreferredAuthPersistence();
     await createUserWithEmailAndPassword(auth, email, pass);
@@ -3573,6 +3658,7 @@ $("btnLogin").onclick = async () => {
   }
 
   try {
+    markAuthAttemptCookie();
     track("login_click", {method: "google"});
     await ensurePreferredAuthPersistence();
     if (forceRedirect) {
@@ -3606,6 +3692,8 @@ $("btnLogin").onclick = async () => {
 };
 
 $("btnLogout").onclick = async () => {
+  clearAuthAttemptCookie();
+  clearAuthSuccessCookie();
   await Promise.race([
     logoutPlatformSession(),
     new Promise((resolve) => {
@@ -4311,7 +4399,7 @@ function prunePreparedDownloadState() {
 }
 
 async function handlePrepareDownload(jobId) {
-  if (!currentUser || !jobId || preparingDownloadJobIds.has(jobId)) return;
+  if ((!currentUser && !hasPlatformCabinetSession()) || !jobId || preparingDownloadJobIds.has(jobId)) return;
 
   clearFormError();
   preparingDownloadJobIds.add(jobId);
@@ -4501,7 +4589,7 @@ function renderJobsList() {
       }
 
       refreshBtn.onclick = async () => {
-        if (!currentUser || refreshingJobIds.has(item.id)) return;
+        if ((!currentUser && !hasPlatformCabinetSession()) || refreshingJobIds.has(item.id)) return;
         clearFormError();
         refreshingJobIds.add(item.id);
         renderJobsList();
@@ -4603,7 +4691,7 @@ function watchLatestJobsPlatform() {
   };
 
   const poll = async () => {
-    if (cancelled || !currentUser || pollInFlight) return;
+    if (cancelled || (!currentUser && !hasPlatformCabinetSession()) || pollInFlight) return;
     pollInFlight = true;
 
     try {
@@ -4966,7 +5054,22 @@ onAuthStateChanged(auth, async (user) => {
     $("btnWallet").style.display = "none";
     $("btnLogout").style.display = "none";
     $("supportBtn").style.display = "none";
-    closeAuth();
+    const restoredGuestCabinet = await restoreGuestCabinetFromCookie();
+    if (restoredGuestCabinet) {
+      closeAuth();
+      updateAuthInAppActions();
+      setStatus("");
+      await loadTemplates();
+      $("jobs").textContent = "Loading trends…";
+      unsubscribeJobs = watchLatestJobs();
+      return;
+    }
+
+    if (shouldKeepAuthOpenAfterAttempt()) {
+      openAuth("", {skipPromo: true});
+    } else {
+      closeAuth();
+    }
     updateAuthInAppActions();
     setStatus("");
     latestJobs = [];
@@ -4982,6 +5085,8 @@ onAuthStateChanged(auth, async (user) => {
   }
 
   closeAuth();
+  markAuthSuccessCookie();
+  clearAuthAttemptCookie();
   stopEstimatedProgress();
   clearPlatformSessionState();
   selectedReferenceVideoFile = null;

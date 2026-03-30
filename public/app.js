@@ -10,7 +10,6 @@ import {
   GoogleAuthProvider,
   browserSessionPersistence,
   createUserWithEmailAndPassword,
-  fetchSignInMethodsForEmail,
   getRedirectResult,
   getAuth,
   indexedDBLocalPersistence,
@@ -266,38 +265,11 @@ async function describeEmailSignInFailure(email, error) {
     return fallback;
   }
 
-  const normalizedEmail = typeof email === "string" ? email.trim() : "";
-  if (!normalizedEmail) {
-    return fallback;
+  if (isTelegramInAppBrowser()) {
+    return "Wrong email or password. If you use Google sign-in, open this page in Safari or Chrome and tap Continue with Google.";
   }
 
-  try {
-    const methods = await fetchSignInMethodsForEmail(auth, normalizedEmail);
-    const hasGoogle = methods.includes("google.com");
-    const hasPassword = methods.includes("password");
-
-    if (hasGoogle && !hasPassword) {
-      return isTelegramInAppBrowser() ?
-        "This account uses Google sign-in. Open this page in Safari or Chrome, then tap Continue with Google." :
-        "This account uses Google sign-in. Tap Continue with Google.";
-    }
-
-    if (hasGoogle && hasPassword) {
-      return "Wrong password. You can also tap Continue with Google.";
-    }
-
-    if (hasPassword) {
-      return "Wrong email or password.";
-    }
-
-    if (!methods.length) {
-      return "No account found for this email. Sign up first or use the correct sign-in method.";
-    }
-  } catch (lookupError) {
-    console.warn("email sign-in method lookup failed", lookupError);
-  }
-
-  return fallback;
+  return "Wrong email or password. If you signed up with Google, tap Continue with Google.";
 }
 
 function getStoredFlag(key, storage = localStorage) {
@@ -379,7 +351,8 @@ const ATTRIBUTION_SYNC_PREFIX = "motrend_attribution_sync_v1_";
 const AUTH_GIFT_PROMO_SEEN_KEY = "motrend_auth_gift_prompt_seen_v1";
 const AUTH_ATTEMPT_COOKIE_KEY = "motrend_auth_attempted_v1";
 const AUTH_SUCCESS_COOKIE_KEY = "motrend_auth_success_v1";
-const AUTH_STATE_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+const AUTH_ATTEMPT_COOKIE_MAX_AGE_SECONDS = 72 * 60 * 60;
+const AUTH_SUCCESS_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const ATTRIBUTION_UTM_KEYS = [
   "utm_source",
   "utm_medium",
@@ -420,7 +393,7 @@ function readCookie(name) {
 }
 
 function writeCookie(name, value, {
-  maxAgeSeconds = AUTH_STATE_COOKIE_MAX_AGE_SECONDS,
+  maxAgeSeconds = AUTH_SUCCESS_COOKIE_MAX_AGE_SECONDS,
   path = "/",
 } = {}) {
   if (!name) return;
@@ -445,7 +418,9 @@ function hasAuthSuccessCookie() {
 }
 
 function markAuthAttemptCookie() {
-  writeCookie(AUTH_ATTEMPT_COOKIE_KEY, "1");
+  writeCookie(AUTH_ATTEMPT_COOKIE_KEY, "1", {
+    maxAgeSeconds: AUTH_ATTEMPT_COOKIE_MAX_AGE_SECONDS,
+  });
 }
 
 function clearAuthAttemptCookie() {
@@ -453,7 +428,9 @@ function clearAuthAttemptCookie() {
 }
 
 function markAuthSuccessCookie() {
-  writeCookie(AUTH_SUCCESS_COOKIE_KEY, "1");
+  writeCookie(AUTH_SUCCESS_COOKIE_KEY, "1", {
+    maxAgeSeconds: AUTH_SUCCESS_COOKIE_MAX_AGE_SECONDS,
+  });
 }
 
 function clearAuthSuccessCookie() {

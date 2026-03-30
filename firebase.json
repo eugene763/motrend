@@ -25,6 +25,13 @@
   ],
   "hosting": {
     "public": "public",
+    "redirects": [
+      {
+        "source": "/v/:slug",
+        "destination": "https://api.moads.agency/public/motrend/v/:slug",
+        "type": 302
+      }
+    ],
     "ignore": [
       "firebase.json",
       "**/.*",

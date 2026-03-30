@@ -6,11 +6,13 @@ import {
   setUserProperties,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
 import {
+  browserLocalPersistence,
   GoogleAuthProvider,
   browserSessionPersistence,
   createUserWithEmailAndPassword,
   getRedirectResult,
   getAuth,
+  indexedDBLocalPersistence,
   onAuthStateChanged,
   sendPasswordResetEmail,
   setPersistence,
@@ -47,6 +49,11 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const storage = getStorage(app);
+const AUTH_PERSISTENCE_CANDIDATES = [
+  indexedDBLocalPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence,
+];
 
 let analytics = null;
 try {
@@ -859,6 +866,50 @@ function clearPlatformSessionState() {
   platformBootstrapPromise = null;
   platformBootstrapPromiseUid = "";
   platformReauthPromise = null;
+  publicShareByJobId.clear();
+  publicSharePromiseByJobId.clear();
+}
+
+async function restorePlatformSessionFromCookie(user = currentUser) {
+  if (!platformApiEnabled) {
+    return null;
+  }
+
+  try {
+    const [session, motrendProfile] = await Promise.all([
+      platformRequest("/auth/me"),
+      platformRequest("/motrend/me"),
+    ]);
+
+    const sessionFirebaseUid = typeof session?.user?.firebaseUid === "string" ?
+      session.user.firebaseUid :
+      "";
+    if (user?.uid && sessionFirebaseUid && sessionFirebaseUid !== user.uid) {
+      try {
+        await platformRequest("/auth/session-logout", {
+          method: "POST",
+        });
+      } catch {
+        // no-op
+      }
+      clearPlatformSessionState();
+      return null;
+    }
+
+    currentPlatformSession = session;
+    currentPlatformMotrendProfile = motrendProfile;
+    return {
+      bootstrap: null,
+      session,
+      motrendProfile,
+      restoredFromCookie: true,
+    };
+  } catch (error) {
+    if (!isPlatformAuthError(error) && Number(error?.platformStatus || 0) !== 401) {
+      console.warn("platform cookie restore failed", error);
+    }
+    return null;
+  }
 }
 
 function buildBootstrapMotrendProfile(bootstrap = currentPlatformBootstrap) {
@@ -895,10 +946,16 @@ async function bootstrapPlatformSession(user) {
   }
 
   const bootstrapUid = typeof user.uid === "string" ? user.uid : "";
-  const idToken = await user.getIdToken();
   if (!bootstrapUid || !currentUser || currentUser.uid !== bootstrapUid) {
     return null;
   }
+
+  const restored = await restorePlatformSessionFromCookie(user);
+  if (restored) {
+    return restored;
+  }
+
+  const idToken = await user.getIdToken();
 
   const bootstrap = await platformRequest("/auth/session-login", {
     method: "POST",
@@ -986,7 +1043,13 @@ async function ensurePlatformMotrendSession({force = false} = {}) {
   if (!currentUser) {
     throw createPlatformRequestError("Please sign in first.", null, 401, "unauthenticated");
   }
-  if (!force && currentPlatformBootstrap) {
+  if (
+    !force &&
+    (
+      currentPlatformBootstrap ||
+      (currentPlatformSession && currentPlatformMotrendProfile)
+    )
+  ) {
     return true;
   }
 
@@ -1161,6 +1224,9 @@ function callableErrorMessage(error) {
   if (code.includes("platform_timeout")) {
     return "Connection timed out. Please try again.";
   }
+  if (code.includes("upload_stalled")) {
+    return "Video upload stalled. Try again.";
+  }
   if (code.includes("failed-precondition")) {
     return message || "Template is unavailable. Pick another one.";
   }
@@ -1184,6 +1250,9 @@ function callableErrorMessage(error) {
   }
   if (code.includes("download_source_missing")) {
     return message || "Video is not ready yet.";
+  }
+  if (code.includes("job_not_shareable")) {
+    return message || "Video is not ready to share yet.";
   }
   if (code.includes("permission-denied")) {
     return message || "You have no access to this trend.";
@@ -1447,8 +1516,7 @@ async function beginWalletCheckout(priceId) {
 }
 
 async function openWallet() {
-  if (!currentUser) {
-    openAuth("Sign in to buy credits.");
+  if (!(await ensureSignedInForAction("Sign in to buy credits."))) {
     return;
   }
 
@@ -1745,6 +1813,9 @@ let currentPlatformMotrendProfile = null;
 let platformBootstrapPromise = null;
 let platformBootstrapPromiseUid = "";
 let platformReauthPromise = null;
+let authPersistenceReadyPromise = null;
+let authRestoreReady = false;
+let authRestoreReadyResolver = null;
 let selectedTemplate = null;
 let selectedReferenceVideoFile = null;
 let selectedReferenceVideoName = "";
@@ -1764,6 +1835,7 @@ let selectedReferenceVideoUploadedInputPath = "";
 let selectedReferenceVideoUploadedReferencePath = "";
 let pendingResumeUpload = null;
 let referenceVideoScrollAfterPick = false;
+let referenceUploadStallTimer = null;
 const TREND_SELECTION_TEMPLATE = "template";
 const TREND_SELECTION_REFERENCE = "reference";
 let selectedTrendKind = TREND_SELECTION_TEMPLATE;
@@ -1778,6 +1850,8 @@ let latestJobs = [];
 const refreshingJobIds = new Set();
 const preparingDownloadJobIds = new Set();
 const preparedDownloadByJobId = new Map();
+const publicShareByJobId = new Map();
+const publicSharePromiseByJobId = new Map();
 let showOlderJobs = false;
 let generateSubmissionInFlight = false;
 let estimatedProgressActive = false;
@@ -1799,6 +1873,7 @@ let walletLoadError = "";
 let walletLoadToken = 0;
 let walletCheckoutInFlightPriceId = "";
 const JOB_NOTICE_SEEN_PREFIX = "motrend_job_notice_";
+const REFERENCE_UPLOAD_RESUME_PREFIX = "motrend_reference_upload_resume_v1_";
 const PREPARE_DOWNLOAD_MAX_ATTEMPTS = 8;
 const MAX_UPLOAD_IMAGE_BYTES = 40 * 1024 * 1024;
 const TARGET_UPLOAD_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -1826,6 +1901,162 @@ const PROGRESS_STAGE_D_MS = 120000; // 90-97
 const PROGRESS_STAGE_E_MS = 240000; // 97-99
 const RESUME_UPLOAD_DELAY_MS = 5 * 60 * 1000;
 const LARGE_REFERENCE_VIDEO_HINT_BYTES = 20 * 1024 * 1024;
+const REFERENCE_UPLOAD_STALL_TIMEOUT_MS = 60_000;
+const authRestoreReadyPromise = new Promise((resolve) => {
+  authRestoreReadyResolver = resolve;
+});
+
+function markAuthRestoreReady() {
+  if (authRestoreReady) return;
+  authRestoreReady = true;
+  if (typeof authRestoreReadyResolver === "function") {
+    authRestoreReadyResolver();
+  }
+}
+
+async function waitForInitialAuthRestore() {
+  if (authRestoreReady) return;
+  await authRestoreReadyPromise;
+}
+
+async function ensurePreferredAuthPersistence() {
+  if (!authPersistenceReadyPromise) {
+    authPersistenceReadyPromise = (async () => {
+      for (const candidate of AUTH_PERSISTENCE_CANDIDATES) {
+        try {
+          await setPersistence(auth, candidate);
+          return true;
+        } catch (error) {
+          console.warn("firebase auth persistence unavailable", error);
+        }
+      }
+      return false;
+    })();
+  }
+
+  return await authPersistenceReadyPromise;
+}
+
+async function ensureSignedInForAction(message) {
+  await waitForInitialAuthRestore();
+  if (currentUser) {
+    return true;
+  }
+
+  openAuth(message);
+  return false;
+}
+
+function getReferenceUploadResumeKey(uid = "") {
+  const cleanUid = typeof uid === "string" ? uid.trim() : "";
+  return cleanUid ?
+    `${REFERENCE_UPLOAD_RESUME_PREFIX}${cleanUid}` :
+    `${REFERENCE_UPLOAD_RESUME_PREFIX}guest`;
+}
+
+function clearReferenceUploadResumeState(uid = currentUser?.uid || "") {
+  try {
+    sessionStorage.removeItem(getReferenceUploadResumeKey(uid));
+  } catch {
+    // no-op
+  }
+}
+
+function persistReferenceUploadResumeState(uid = currentUser?.uid || "") {
+  const cleanUid = typeof uid === "string" ? uid.trim() : "";
+  if (!cleanUid) return;
+
+  const hasPendingReferenceUpload = !!pendingResumeUpload &&
+    pendingResumeUpload.selectionKind === TREND_SELECTION_REFERENCE;
+  const hasUploadedReference = Boolean(
+    selectedReferenceVideoUploadedJobId &&
+    selectedReferenceVideoUploadedInputPath &&
+    selectedReferenceVideoUploadedReferencePath
+  );
+
+  if (!hasPendingReferenceUpload && !hasUploadedReference) {
+    clearReferenceUploadResumeState(cleanUid);
+    return;
+  }
+
+  const payload = {
+    pendingResumeUpload: hasPendingReferenceUpload ? pendingResumeUpload : null,
+    uploadedJobId: selectedReferenceVideoUploadedJobId || "",
+    uploadedInputPath: selectedReferenceVideoUploadedInputPath || "",
+    uploadedReferencePath: selectedReferenceVideoUploadedReferencePath || "",
+    referenceVideoName: selectedReferenceVideoName || "",
+    updatedAtMs: Date.now(),
+  };
+
+  try {
+    sessionStorage.setItem(
+      getReferenceUploadResumeKey(cleanUid),
+      JSON.stringify(payload),
+    );
+  } catch {
+    // no-op
+  }
+}
+
+function readReferenceUploadResumeState(uid = currentUser?.uid || "") {
+  const cleanUid = typeof uid === "string" ? uid.trim() : "";
+  if (!cleanUid) return null;
+
+  try {
+    const raw = sessionStorage.getItem(getReferenceUploadResumeKey(cleanUid));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+
+    const pending = parsed.pendingResumeUpload;
+    const pendingResume = pending && typeof pending === "object" ? {
+      jobId: typeof pending.jobId === "string" ? pending.jobId.trim() : "",
+      uploadPath: typeof pending.uploadPath === "string" ? pending.uploadPath.trim() : "",
+      templateId: typeof pending.templateId === "string" ? pending.templateId.trim() : "",
+      selectionKind: pending.selectionKind === TREND_SELECTION_REFERENCE ?
+        TREND_SELECTION_REFERENCE :
+        pending.selectionKind === TREND_SELECTION_TEMPLATE ?
+          TREND_SELECTION_TEMPLATE :
+          "unknown",
+    } : null;
+
+    return {
+      pendingResumeUpload:
+        pendingResume?.jobId && pendingResume?.uploadPath && pendingResume?.templateId ?
+          pendingResume :
+          null,
+      uploadedJobId: typeof parsed.uploadedJobId === "string" ? parsed.uploadedJobId.trim() : "",
+      uploadedInputPath: typeof parsed.uploadedInputPath === "string" ? parsed.uploadedInputPath.trim() : "",
+      uploadedReferencePath: typeof parsed.uploadedReferencePath === "string" ? parsed.uploadedReferencePath.trim() : "",
+      referenceVideoName: typeof parsed.referenceVideoName === "string" ? parsed.referenceVideoName.trim() : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearReferenceUploadStallTimer() {
+  if (!referenceUploadStallTimer) return;
+  clearTimeout(referenceUploadStallTimer);
+  referenceUploadStallTimer = null;
+}
+
+function scheduleReferenceUploadStallTimer(expectedFileToken) {
+  clearReferenceUploadStallTimer();
+  referenceUploadStallTimer = setTimeout(() => {
+    if (
+      expectedFileToken !== selectedReferenceVideoFileToken ||
+      selectedReferenceVideoUploadState !== "uploading"
+    ) {
+      return;
+    }
+
+    selectedReferenceVideoUploadState = "error";
+    refreshReferenceVideoCardUi();
+    setStatus("");
+    showFormError("Video upload stalled. Try uploading it again.");
+  }, REFERENCE_UPLOAD_STALL_TIMEOUT_MS);
+}
 
 function createClientRequestId(prefix = "req") {
   if (
@@ -2059,7 +2290,7 @@ function updateSelectedTrendField() {
 function syncTrendSelectionUi() {
   if (
     selectedTrendKind === TREND_SELECTION_REFERENCE &&
-    selectedReferenceVideoFile
+    (selectedReferenceVideoFile || selectedReferenceVideoUploadedReferencePath)
   ) {
     const referenceCard = document.querySelector(
       ".tplCard[data-trend-role='reference']"
@@ -2067,6 +2298,7 @@ function syncTrendSelectionUi() {
     if (referenceCard) {
       selectTrendCard(referenceCard);
       updateSelectedTrendField();
+      refreshGenerateButtonState();
       return;
     }
   }
@@ -2081,12 +2313,38 @@ function syncTrendSelectionUi() {
     if (selectedCard) {
       selectTrendCard(selectedCard);
       updateSelectedTrendField();
+      refreshGenerateButtonState();
       return;
     }
   }
 
   clearTrendSelectionUi();
   updateSelectedTrendField();
+  refreshGenerateButtonState();
+}
+
+function hasUploadedReferenceVideo() {
+  return Boolean(
+    selectedReferenceVideoUploadState === "uploaded" &&
+    selectedReferenceVideoUploadedJobId &&
+    selectedReferenceVideoUploadedInputPath &&
+    selectedReferenceVideoUploadedReferencePath
+  );
+}
+
+function refreshGenerateButtonState() {
+  const btn = $("btnGenerate");
+  if (!btn) return;
+
+  const referencePending = (
+    selectedTrendKind === TREND_SELECTION_REFERENCE &&
+    !hasUploadedReferenceVideo()
+  );
+
+  btn.disabled = generateSubmissionInFlight || referencePending;
+  btn.title = referencePending ?
+    "Wait for the reference video upload to finish." :
+    "";
 }
 
 function getReferenceVideoMetaPresentation() {
@@ -2233,6 +2491,9 @@ function refreshReferenceVideoCardUi() {
   const estimate = document.querySelector(
     ".tplCard[data-trend-role='reference'] .refCostEstimate"
   );
+  const actionBtn = document.querySelector(
+    ".tplCard[data-trend-role='reference'] .tplUse"
+  );
   refreshReferenceVideoCardMediaUi();
   if (meta) {
     const presentation = getReferenceVideoMetaPresentation();
@@ -2248,11 +2509,24 @@ function refreshReferenceVideoCardUi() {
     estimate.title = estimatePresentation.title;
     estimate.classList.toggle("isVisible", estimatePresentation.visible);
   }
+
+  if (actionBtn) {
+    if (selectedReferenceVideoUploadState === "uploading") {
+      actionBtn.textContent = "Uploading…";
+    } else if (selectedReferenceVideoUploadState === "uploaded") {
+      actionBtn.textContent = "Change video";
+    } else if (selectedReferenceVideoUploadState === "error") {
+      actionBtn.textContent = "Retry upload";
+    } else {
+      actionBtn.textContent = "Upload";
+    }
+  }
+
+  refreshGenerateButtonState();
 }
 
 async function openReferenceVideoPicker({enableScrollAfterPick = false} = {}) {
-  if (!currentUser) {
-    openAuth("Sign in to upload your reference video.");
+  if (!(await ensureSignedInForAction("Sign in to upload your reference video."))) {
     return;
   }
 
@@ -2265,8 +2539,7 @@ async function openReferenceVideoPicker({enableScrollAfterPick = false} = {}) {
 }
 
 async function openPhotoPicker() {
-  if (!currentUser) {
-    openAuth("Sign in to upload a photo.");
+  if (!(await ensureSignedInForAction("Sign in to upload a photo."))) {
     return;
   }
 
@@ -2288,6 +2561,7 @@ function resetReferenceVideoPreview() {
 }
 
 function resetReferenceVideoUploadTracking() {
+  clearReferenceUploadStallTimer();
   selectedReferenceVideoUploadProgress = 0;
   selectedReferenceVideoUploadTransferredBytes = 0;
   selectedReferenceVideoUploadTotalBytes = 0;
@@ -2295,6 +2569,7 @@ function resetReferenceVideoUploadTracking() {
   selectedReferenceVideoUploadedJobId = "";
   selectedReferenceVideoUploadedInputPath = "";
   selectedReferenceVideoUploadedReferencePath = "";
+  persistReferenceUploadResumeState();
 }
 
 function readVideoFileDurationSeconds(file) {
@@ -2411,21 +2686,16 @@ async function ensureReferenceVideoUploadContext() {
 }
 
 async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = selectedReferenceVideoFileToken} = {}) {
-  if (!selectedReferenceVideoFile) {
-    throw new Error("Upload your reference video first.");
-  }
-
-  if (
-    selectedReferenceVideoUploadState === "uploaded" &&
-    selectedReferenceVideoUploadedJobId &&
-    selectedReferenceVideoUploadedInputPath &&
-    selectedReferenceVideoUploadedReferencePath
-  ) {
+  if (hasUploadedReferenceVideo()) {
     return {
       jobId: selectedReferenceVideoUploadedJobId,
       uploadPath: selectedReferenceVideoUploadedInputPath,
       referenceVideoPath: selectedReferenceVideoUploadedReferencePath,
     };
+  }
+
+  if (!selectedReferenceVideoFile) {
+    throw new Error("Upload your reference video first.");
   }
 
   if (selectedReferenceVideoUploadPromise) {
@@ -2460,6 +2730,7 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
       selectedReferenceVideoUploadTransferredBytes = 0;
       selectedReferenceVideoUploadTotalBytes = preparedVideo.blob.size || localFile.size || 0;
       refreshReferenceVideoCardUi();
+      persistReferenceUploadResumeState();
       if (
         localFile.size >= LARGE_REFERENCE_VIDEO_HINT_BYTES ||
         shouldUseRedirectLogin()
@@ -2483,11 +2754,16 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
         selectedReferenceVideoUploadProgress = percent;
         selectedReferenceVideoUploadTransferredBytes = Number(snapshot?.bytesTransferred || 0);
         selectedReferenceVideoUploadTotalBytes = Number(snapshot?.totalBytes || 0);
+        scheduleReferenceUploadStallTimer(localToken);
         refreshReferenceVideoCardUi();
         if (!surfaceStatus && !generateSubmissionInFlight) {
           setStatusHintVisible(true);
         }
         setStatus(buildReferenceVideoUploadStatus());
+      },
+      {
+        activityTimeoutMs: REFERENCE_UPLOAD_STALL_TIMEOUT_MS,
+        stallMessage: "Video upload stalled. Try uploading it again.",
       }
     );
 
@@ -2495,6 +2771,7 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
       localToken === selectedReferenceVideoFileToken &&
       localFile === selectedReferenceVideoFile
     ) {
+      clearReferenceUploadStallTimer();
       selectedReferenceVideoUploadState = "uploaded";
       selectedReferenceVideoUploadProgress = 100;
       selectedReferenceVideoUploadTransferredBytes = selectedReferenceVideoUploadTotalBytes;
@@ -2502,6 +2779,7 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
       selectedReferenceVideoUploadedInputPath = uploadPath;
       selectedReferenceVideoUploadedReferencePath = referenceVideoPath;
       refreshReferenceVideoCardUi();
+      persistReferenceUploadResumeState();
       if (!generateSubmissionInFlight) {
         setStatus("");
         setStatusHintVisible(false);
@@ -2514,10 +2792,12 @@ async function ensureReferenceVideoUploaded({surfaceStatus = false, fileToken = 
       localToken === selectedReferenceVideoFileToken &&
       localFile === selectedReferenceVideoFile
     ) {
+      clearReferenceUploadStallTimer();
       selectedReferenceVideoUploadState = "error";
       selectedReferenceVideoUploadTransferredBytes = 0;
       selectedReferenceVideoUploadTotalBytes = 0;
       refreshReferenceVideoCardUi();
+      persistReferenceUploadResumeState();
       if (!generateSubmissionInFlight) {
         setStatus("");
       }
@@ -2836,12 +3116,54 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function uploadFileWithProgress(storageRef, blob, metadata, onProgress) {
+function uploadFileWithProgress(storageRef, blob, metadata, onProgress, options = {}) {
   return new Promise((resolve, reject) => {
     const task = uploadBytesResumable(storageRef, blob, metadata);
+    const activityTimeoutMs = Number(options?.activityTimeoutMs || 0);
+    const stallMessage = typeof options?.stallMessage === "string" && options.stallMessage.trim() ?
+      options.stallMessage.trim() :
+      "Upload stalled. Please try again.";
+    let settled = false;
+    let stallTimer = null;
+
+    const clearStallTimer = () => {
+      if (!stallTimer) return;
+      clearTimeout(stallTimer);
+      stallTimer = null;
+    };
+
+    const finish = (callback) => {
+      if (settled) return;
+      settled = true;
+      clearStallTimer();
+      callback();
+    };
+
+    const refreshActivity = () => {
+      if (!activityTimeoutMs || activityTimeoutMs <= 0) {
+        return;
+      }
+      clearStallTimer();
+      stallTimer = setTimeout(() => {
+        finish(() => {
+          try {
+            task.cancel();
+          } catch {
+            // no-op
+          }
+          const error = new Error(stallMessage);
+          error.code = "upload_stalled";
+          reject(error);
+        });
+      }, activityTimeoutMs);
+    };
+
+    refreshActivity();
+
     task.on(
       "state_changed",
       (snapshot) => {
+        refreshActivity();
         if (typeof onProgress !== "function") return;
         const total = Number(snapshot?.totalBytes || 0);
         const transferred = Number(snapshot?.bytesTransferred || 0);
@@ -2850,8 +3172,8 @@ function uploadFileWithProgress(storageRef, blob, metadata, onProgress) {
           0;
         onProgress(percent, snapshot);
       },
-      reject,
-      () => resolve(task.snapshot)
+      (error) => finish(() => reject(error)),
+      () => finish(() => resolve(task.snapshot))
     );
   });
 }
@@ -3089,6 +3411,12 @@ async function finalizeMotrendJobRequest(payload) {
   return response;
 }
 
+async function createMotrendJobShareRequest(jobId) {
+  return await platformMotrendRequest(`/motrend/jobs/${encodeURIComponent(jobId)}/share`, {
+    method: "POST",
+  });
+}
+
 async function refreshMotrendJobRequest(jobId) {
   const response = await platformMotrendRequest(`/motrend/jobs/${encodeURIComponent(jobId)}/refresh`, {
     method: "POST",
@@ -3111,6 +3439,34 @@ async function listMotrendJobsRequest() {
   return {
     jobs: jobs.map((job) => normalizePlatformJobRecord(job)),
   };
+}
+
+async function getOrCreatePublicShare(jobId) {
+  const normalizedJobId = typeof jobId === "string" ? jobId.trim() : "";
+  if (!normalizedJobId) {
+    throw new Error("Share link is unavailable.");
+  }
+
+  const cached = publicShareByJobId.get(normalizedJobId);
+  if (cached?.shareUrl) {
+    return cached;
+  }
+
+  if (!publicSharePromiseByJobId.has(normalizedJobId)) {
+    const requestPromise = createMotrendJobShareRequest(normalizedJobId)
+      .then((payload) => {
+        if (payload && typeof payload === "object") {
+          publicShareByJobId.set(normalizedJobId, payload);
+        }
+        return payload;
+      })
+      .finally(() => {
+        publicSharePromiseByJobId.delete(normalizedJobId);
+      });
+    publicSharePromiseByJobId.set(normalizedJobId, requestPromise);
+  }
+
+  return await publicSharePromiseByJobId.get(normalizedJobId);
 }
 
 async function prepareDownloadLink(jobId) {
@@ -3184,6 +3540,7 @@ $("btnEmailSignIn").onclick = async () => {
 
   try {
     track("login_click", {method: "email"});
+    await ensurePreferredAuthPersistence();
     await signInWithEmailAndPassword(auth, email, pass);
   } catch (error) {
     showAuthError(callableErrorMessage(error));
@@ -3197,6 +3554,7 @@ $("btnEmailSignUp").onclick = async () => {
 
   try {
     track("signup_click", {method: "email"});
+    await ensurePreferredAuthPersistence();
     await createUserWithEmailAndPassword(auth, email, pass);
   } catch (error) {
     showAuthError(callableErrorMessage(error));
@@ -3216,8 +3574,8 @@ $("btnLogin").onclick = async () => {
 
   try {
     track("login_click", {method: "google"});
+    await ensurePreferredAuthPersistence();
     if (forceRedirect) {
-      await setPersistence(auth, browserSessionPersistence);
       setStatus("Redirecting to Google sign-in…");
       await signInWithRedirect(auth, provider);
       return;
@@ -3234,7 +3592,7 @@ $("btnLogin").onclick = async () => {
 
     if (!forceRedirect && popupFailed) {
       try {
-        await setPersistence(auth, browserSessionPersistence);
+        await ensurePreferredAuthPersistence();
         setStatus("Popup blocked. Redirecting to Google sign-in…");
         await signInWithRedirect(auth, provider);
         return;
@@ -3335,6 +3693,8 @@ function renderReferenceVideoCard() {
   card.className = "card tplCard";
   card.style.margin = "0";
   card.style.cursor = "pointer";
+  card.style.display = "flex";
+  card.style.flexDirection = "column";
   card.dataset.trendRole = "reference";
 
   const media = document.createElement("div");
@@ -3391,23 +3751,28 @@ function renderReferenceVideoCard() {
 
   const actionBtn = document.createElement("button");
   actionBtn.className = "btn tplUse";
-  actionBtn.style.marginTop = "10px";
+  actionBtn.style.marginTop = "auto";
   actionBtn.style.width = "100%";
   actionBtn.textContent = "Upload";
 
   const picker = $("fileReferenceVideo");
 
   const activateReferenceSelection = () => {
-    if (!selectedReferenceVideoFile) return;
+    if (!selectedReferenceVideoFile && !hasUploadedReferenceVideo()) {
+      return false;
+    }
     selectedTrendKind = TREND_SELECTION_REFERENCE;
     if (!selectedTemplate && availableTemplates.length > 0) {
       selectedTemplate = availableTemplates[0];
     }
     syncTrendSelectionUi();
+    return true;
   };
 
   card.onclick = () => {
-    activateReferenceSelection();
+    if (activateReferenceSelection()) {
+      return;
+    }
     openReferenceVideoPicker({enableScrollAfterPick: false});
   };
   actionBtn.onclick = (event) => {
@@ -3466,6 +3831,8 @@ function renderTemplateCard(template) {
   card.className = "card tplCard";
   card.style.margin = "0";
   card.style.cursor = "pointer";
+  card.style.display = "flex";
+  card.style.flexDirection = "column";
   card.dataset.templateId = template.id;
 
   const thumbUrl = safeUrl(template.preview?.thumbnailUrl || "");
@@ -3505,7 +3872,7 @@ function renderTemplateCard(template) {
 
   const useBtn = document.createElement("button");
   useBtn.className = "btn tplUse";
-  useBtn.style.marginTop = "10px";
+  useBtn.style.marginTop = "auto";
   useBtn.style.width = "100%";
   useBtn.textContent = "Use";
 
@@ -3601,7 +3968,7 @@ async function loadTemplates() {
 
     if (
       selectedTrendKind === TREND_SELECTION_REFERENCE &&
-      selectedReferenceVideoFile &&
+      (selectedReferenceVideoFile || selectedReferenceVideoUploadedReferencePath) &&
       !selectedTemplate &&
       availableTemplates.length > 0
     ) {
@@ -3688,13 +4055,55 @@ function setPendingResumeUpload(jobId, job) {
     templateId,
     selectionKind,
   };
+  persistReferenceUploadResumeState();
 }
 
 function clearPendingResumeUpload(jobId = "") {
   if (!pendingResumeUpload) return;
   if (!jobId || pendingResumeUpload.jobId === jobId) {
     pendingResumeUpload = null;
+    persistReferenceUploadResumeState();
   }
+}
+
+function applyReferenceUploadResumeState(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return;
+  }
+
+  pendingResumeUpload = snapshot.pendingResumeUpload || null;
+  selectedReferenceVideoUploadedJobId = snapshot.uploadedJobId || "";
+  selectedReferenceVideoUploadedInputPath = snapshot.uploadedInputPath || "";
+  selectedReferenceVideoUploadedReferencePath = snapshot.uploadedReferencePath || "";
+  selectedReferenceVideoName = snapshot.referenceVideoName || "";
+
+  if (hasUploadedReferenceVideo()) {
+    selectedReferenceVideoUploadState = "uploaded";
+    selectedReferenceVideoUploadProgress = 100;
+    selectedTrendKind = TREND_SELECTION_REFERENCE;
+  }
+}
+
+function syncReferenceResumeStateWithLatestJobs() {
+  if (!pendingResumeUpload?.jobId) {
+    return;
+  }
+
+  const matchingJob = latestJobs.find((entry) => entry.id === pendingResumeUpload.jobId);
+  const stillAwaitingUpload = matchingJob?.data?.status === "awaiting_upload";
+  if (stillAwaitingUpload) {
+    return;
+  }
+
+  pendingResumeUpload = null;
+  selectedReferenceVideoUploadedJobId = "";
+  selectedReferenceVideoUploadedInputPath = "";
+  selectedReferenceVideoUploadedReferencePath = "";
+  selectedReferenceVideoName = "";
+  selectedReferenceVideoUploadState = "idle";
+  persistReferenceUploadResumeState();
+  refreshReferenceVideoCardUi();
+  refreshGenerateButtonState();
 }
 
 async function maybeShowJobFailureNotice(jobId, job) {
@@ -3941,9 +4350,66 @@ function renderDoneJobActions(jobId) {
   const saveVideoPageUrl = buildSaveVideoPageUrl(inlineUrl, preparedUrl);
   const saveVideoTargetUrl = preparedUrl || inlineUrl || saveVideoPageUrl;
   const watchTargetUrl = saveVideoPageUrl || inlineUrl || preparedUrl;
-  const shareTargetUrl = saveVideoPageUrl || preparedUrl || inlineUrl;
+  const hasPreparedVideo = Boolean(preparedUrl || inlineUrl);
 
-  if (!preparedUrl && !inlineUrl) {
+  const shareBtn = document.createElement("button");
+  shareBtn.className = "btn2";
+  shareBtn.textContent = "Share";
+  shareBtn.onclick = async () => {
+    let copiedToClipboard = false;
+    let sharedNatively = false;
+    try {
+      shareBtn.disabled = true;
+      shareBtn.textContent = "Preparing…";
+      const sharePayload = await getOrCreatePublicShare(jobId);
+      const shareTargetUrl = safeUrl(
+        typeof sharePayload?.shareUrl === "string" ? sharePayload.shareUrl : ""
+      );
+      if (!shareTargetUrl) {
+        throw new Error("Share link is not ready yet.");
+      }
+
+      shareBtn.textContent = "Share";
+      if (navigator.share) {
+        try {
+          await navigator.share({
+            title: sharePayload?.title || "MoTrend© video",
+            text: sharePayload?.description || "",
+            url: shareTargetUrl,
+          });
+          sharedNatively = true;
+        } catch (error) {
+          if (error && error.name === "AbortError") {
+            sharedNatively = true;
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      if (!sharedNatively) {
+        await navigator.clipboard.writeText(shareTargetUrl);
+        copiedToClipboard = true;
+        shareBtn.textContent = "URL copied";
+        setTimeout(() => {
+          shareBtn.textContent = "Share";
+          shareBtn.disabled = false;
+        }, 700);
+      }
+    } catch (error) {
+      shareBtn.textContent = "Share";
+      shareBtn.disabled = false;
+      showFormError(callableErrorMessage(error) || "Unable to share link. Please try again.");
+      return;
+    }
+
+    if (!copiedToClipboard) {
+      shareBtn.textContent = "Share";
+      shareBtn.disabled = false;
+    }
+  };
+
+  if (!hasPreparedVideo) {
     const prepareBtn = document.createElement("button");
     prepareBtn.className = "btn";
     prepareBtn.disabled = isPreparing;
@@ -3957,6 +4423,7 @@ function renderDoneJobActions(jobId) {
       handlePrepareDownload(jobId);
     };
     actions.appendChild(prepareBtn);
+    actions.appendChild(shareBtn);
     return wrapper;
   }
 
@@ -3976,40 +4443,6 @@ function renderDoneJobActions(jobId) {
   watchBtn.rel = "noopener noreferrer";
   actions.appendChild(watchBtn);
 
-  const shareBtn = document.createElement("button");
-  shareBtn.className = "btn2";
-  shareBtn.textContent = "Share";
-  shareBtn.onclick = async () => {
-    if (!shareTargetUrl) {
-      showFormError("Link is not ready yet. Please try again.");
-      return;
-    }
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: "MoTrend© video",
-          url: shareTargetUrl,
-        });
-        return;
-      } catch (error) {
-        if (error && error.name === "AbortError") {
-          return;
-        }
-      }
-    }
-    try {
-      await navigator.clipboard.writeText(shareTargetUrl);
-      const originalText = "Share";
-      shareBtn.textContent = "URL copied";
-      shareBtn.disabled = true;
-      setTimeout(() => {
-        shareBtn.textContent = originalText;
-        shareBtn.disabled = false;
-      }, 500);
-    } catch {
-      showFormError("Unable to share link. Please try again.");
-    }
-  };
   actions.appendChild(shareBtn);
 
   const fallbackHint = document.createElement("div");
@@ -4131,7 +4564,8 @@ function renderJobsList() {
       itemWrap.appendChild(renderDoneJobActions(item.id));
       const retentionHint = document.createElement("div");
       retentionHint.className = "muted jobsHint";
-      retentionHint.textContent = "The link to the video is stored for ~30 days.";
+      retentionHint.textContent =
+        "Prepared links are temporary. If they expire, prepare them again.";
       itemWrap.appendChild(retentionHint);
     }
 
@@ -4195,6 +4629,7 @@ function watchLatestJobsPlatform() {
       }
 
       prunePreparedDownloadState();
+      syncReferenceResumeStateWithLatestJobs();
       renderJobsList();
 
       const latestFailed = latestJobs.find((item) => item.data?.status === "failed");
@@ -4252,8 +4687,7 @@ $("btnGenerate").onclick = async () => {
     return;
   }
 
-  if (!currentUser) {
-    openAuth("Sign in to upload a photo and generate.");
+  if (!(await ensureSignedInForAction("Sign in to upload a photo and generate."))) {
     return;
   }
 
@@ -4264,9 +4698,9 @@ $("btnGenerate").onclick = async () => {
 
   if (
     selectedTrendKind === TREND_SELECTION_REFERENCE &&
-    !selectedReferenceVideoFile
+    !hasUploadedReferenceVideo()
   ) {
-    showFormError("Upload your reference video first.");
+    showFormError("Wait for your reference video upload to finish.");
     return;
   }
 
@@ -4327,22 +4761,26 @@ $("btnGenerate").onclick = async () => {
     let referenceVideoPath = "";
     const useReferenceVideo = (
       selectedTrendKind === TREND_SELECTION_REFERENCE &&
-      !!selectedReferenceVideoFile
+      (hasUploadedReferenceVideo() || !!selectedReferenceVideoFile)
     );
     const referenceVideoWasPendingAtGenerate = (
       useReferenceVideo &&
+      !!selectedReferenceVideoFile &&
       selectedReferenceVideoUploadState !== "uploaded"
     );
-    if (useReferenceVideo && selectedReferenceVideoFile) {
-      setStatus(
-        selectedReferenceVideoUploadState === "uploaded" ?
-          "Reference video is ready." :
-          "Waiting for reference video upload…"
-      );
-      const uploadedReference = await ensureReferenceVideoUploaded({surfaceStatus: true});
-      jobId = uploadedReference?.jobId || jobId;
-      uploadPath = uploadedReference?.uploadPath || uploadPath;
-      referenceVideoPath = uploadedReference?.referenceVideoPath || "";
+    if (useReferenceVideo) {
+      if (hasUploadedReferenceVideo()) {
+        setStatus("Reference video is ready.");
+        jobId = selectedReferenceVideoUploadedJobId || jobId;
+        uploadPath = selectedReferenceVideoUploadedInputPath || uploadPath;
+        referenceVideoPath = selectedReferenceVideoUploadedReferencePath || "";
+      } else if (selectedReferenceVideoFile) {
+        setStatus("Waiting for reference video upload…");
+        const uploadedReference = await ensureReferenceVideoUploaded({surfaceStatus: true});
+        jobId = uploadedReference?.jobId || jobId;
+        uploadPath = uploadedReference?.uploadPath || uploadPath;
+        referenceVideoPath = uploadedReference?.referenceVideoPath || "";
+      }
     }
 
     setStatus("Preparing photo…");
@@ -4453,9 +4891,8 @@ const fileInput = $("filePhoto");
 if (fileInput) {
   fileInput.addEventListener("click", async (event) => {
 
-    if (!currentUser) {
+    if (!(await ensureSignedInForAction("Sign in to upload a photo."))) {
       event.preventDefault();
-      openAuth("Sign in to upload a photo.");
       return;
     }
 
@@ -4466,6 +4903,8 @@ if (fileInput) {
     fileInput.click();
   });
 }
+
+await ensurePreferredAuthPersistence();
 
 try {
   await getRedirectResult(auth);
@@ -4486,11 +4925,14 @@ onAuthStateChanged(auth, async (user) => {
     unsubscribeJobs = null;
   }
 
+  const previousUserUid = currentUser?.uid || "";
   currentUser = user;
+  markAuthRestoreReady();
   $("app").style.display = "block";
 
   if (!user) {
     clearPlatformSessionState();
+    clearReferenceUploadResumeState(previousUserUid);
     setStoredFlag(GIFT_CREDITS_PENDING_KEY, false, sessionStorage);
     setStoredNumber(GIFT_CREDITS_AMOUNT_KEY, Number.NaN, sessionStorage);
     $("userLine").textContent = "Guest";
@@ -4542,6 +4984,19 @@ onAuthStateChanged(auth, async (user) => {
   closeAuth();
   stopEstimatedProgress();
   clearPlatformSessionState();
+  selectedReferenceVideoFile = null;
+  selectedReferenceVideoName = "";
+  selectedReferenceVideoUploadState = "idle";
+  selectedReferenceVideoUploadProgress = 0;
+  selectedReferenceVideoUploadTransferredBytes = 0;
+  selectedReferenceVideoUploadTotalBytes = 0;
+  selectedReferenceVideoDurationSec = null;
+  selectedReferenceVideoFileToken += 1;
+  resetReferenceVideoUploadTracking();
+  resetReferenceVideoPreview();
+  applyReferenceUploadResumeState(readReferenceUploadResumeState(user.uid));
+  refreshReferenceVideoCardUi();
+  refreshGenerateButtonState();
   currentCreditsBalance = Number.NaN;
   $("userCard").style.display = "block";
   $("jobsCard").style.display = "block";
@@ -4585,7 +5040,14 @@ onAuthStateChanged(auth, async (user) => {
     applyPlatformProfileToUi(platformBootstrap.motrendProfile);
   }
 
-  if (!platformBootstrap?.bootstrap) {
+  const hasPlatformSession = Boolean(
+    platformBootstrap?.bootstrap ||
+    platformBootstrap?.restoredFromCookie ||
+    platformBootstrap?.motrendProfile ||
+    platformBootstrap?.session
+  );
+
+  if (!hasPlatformSession) {
     console.warn("platform session bootstrap missing");
     setStatus("Connection error. Refresh.");
     setStatusHintVisible(false);

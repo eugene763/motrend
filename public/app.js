@@ -89,6 +89,9 @@ const GIFT_CREDITS_PENDING_KEY = "motrend_gift_credits_pending_v1";
 const GIFT_CREDITS_AMOUNT_KEY = "motrend_gift_credits_amount_v1";
 const WALLET_PENDING_CHECKOUT_KEY = "motrend_wallet_pending_checkout_v1";
 const WALLET_PENDING_CHECKOUT_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+const WALLET_CHECKOUT_RETURN_QUERY_PARAM = "checkout";
+const WALLET_CHECKOUT_RETURN_QUERY_VALUE = "complete";
+const WALLET_CHECKOUT_RESUME_THROTTLE_MS = 1_500;
 
 function normalizeOriginCandidate(value) {
   if (typeof value !== "string") return "";
@@ -118,6 +121,23 @@ function stripPlatformApiQueryParam() {
     window.history.replaceState(null, "", url.toString());
   } catch {
     // no-op
+  }
+}
+
+function consumeWalletCheckoutReturnQueryParam() {
+  try {
+    const url = new URL(window.location.href);
+    if (
+      url.searchParams.get(WALLET_CHECKOUT_RETURN_QUERY_PARAM) !==
+      WALLET_CHECKOUT_RETURN_QUERY_VALUE
+    ) {
+      return false;
+    }
+    url.searchParams.delete(WALLET_CHECKOUT_RETURN_QUERY_PARAM);
+    window.history.replaceState(null, "", url.toString());
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -172,6 +192,7 @@ function resolvePlatformApiOrigin() {
 const platformApiOrigin = resolvePlatformApiOrigin();
 const platformApiBaseUrl = platformApiOrigin.replace(/\/+$/, "");
 const platformApiEnabled = Boolean(platformApiBaseUrl);
+let walletCheckoutReturnPending = consumeWalletCheckoutReturnQueryParam();
 
 function shouldUseRedirectLogin() {
   const ua = navigator.userAgent || "";
@@ -1686,15 +1707,17 @@ async function maybeResumePendingWalletCheckout() {
 
     if (status === "paid") {
       await refreshPlatformMotrendProfile({silent: true});
+      walletCheckoutReturnPending = false;
       clearPendingWalletCheckout();
+      closeWalletModal();
       const creditsAdded =
         Number(matchingOrder?.creditsAmount) ||
         pending.creditsAmount ||
         null;
       await showNoticeModal({
         message: Number.isFinite(creditsAdded) && creditsAdded > 0 ?
-          `Added ${creditsAdded} credits.` :
-          "Credits added.",
+          `Congratulations! ${creditsAdded} credits added.` :
+          "Congratulations! Credits added.",
         buttonText: "OK",
       });
       return true;
@@ -1705,9 +1728,11 @@ async function maybeResumePendingWalletCheckout() {
       Number.isFinite(currentCreditsBalance) &&
       currentCreditsBalance > pending.baselineCredits
     ) {
+      walletCheckoutReturnPending = false;
       clearPendingWalletCheckout();
+      closeWalletModal();
       await showNoticeModal({
-        message: "Credits added.",
+        message: "Congratulations! Credits added.",
         buttonText: "OK",
       });
       return true;
@@ -1743,6 +1768,32 @@ async function maybeResumePendingWalletCheckout() {
   });
 
   return await walletCheckoutResumePromise;
+}
+
+let walletCheckoutResumeAttemptedAtMs = 0;
+
+function shouldAttemptPendingWalletCheckoutResume() {
+  if (!walletCheckoutReturnPending && !readPendingWalletCheckout()) {
+    return false;
+  }
+
+  const now = Date.now();
+  if (now - walletCheckoutResumeAttemptedAtMs < WALLET_CHECKOUT_RESUME_THROTTLE_MS) {
+    return false;
+  }
+
+  walletCheckoutResumeAttemptedAtMs = now;
+  return true;
+}
+
+function resumePendingWalletCheckoutFromReturn() {
+  if (!shouldAttemptPendingWalletCheckoutResume()) {
+    return;
+  }
+
+  void maybeResumePendingWalletCheckout().catch((error) => {
+    console.warn("wallet checkout resume failed", error);
+  });
 }
 
 async function beginWalletCheckout(priceId) {
@@ -2433,11 +2484,17 @@ function refreshReferenceVideoUploadStatusSurface() {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     refreshReferenceVideoUploadStatusSurface();
+    resumePendingWalletCheckoutFromReturn();
   }
 });
 
 window.addEventListener("focus", () => {
   refreshReferenceVideoUploadStatusSurface();
+  resumePendingWalletCheckoutFromReturn();
+});
+
+window.addEventListener("pageshow", () => {
+  resumePendingWalletCheckoutFromReturn();
 });
 
 function computeEstimatedProgressPercent(nowMs, startedAtMs) {

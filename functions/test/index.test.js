@@ -3,15 +3,6 @@ const assert = require("node:assert/strict");
 
 const {__test} = require("../lib/index.js");
 
-test("effectiveCreditsBalance falls back to initial credits for new users", () => {
-  assert.equal(__test.effectiveCreditsBalance(undefined), __test.INITIAL_CREDITS);
-  assert.equal(__test.effectiveCreditsBalance({}), __test.INITIAL_CREDITS);
-});
-
-test("effectiveCreditsBalance prefers stored credits balance", () => {
-  assert.equal(__test.effectiveCreditsBalance({creditsBalance: 7}), 7);
-});
-
 test("buildProbeRanges returns one range for small files", () => {
   assert.deepEqual(__test.buildProbeRanges(1024, 2048), [
     {start: 0, end: 1023},

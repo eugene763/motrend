@@ -3,7 +3,6 @@ import {
   getAnalytics,
   logEvent,
   setUserId,
-  setUserProperties,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
 import {
   browserLocalPersistence,
@@ -5416,7 +5415,6 @@ onAuthStateChanged(auth, async (user) => {
   if (analytics) {
     try {
       setUserId(analytics, user.uid);
-      setUserProperties(analytics, {user_email: user.email || ""});
     } catch {
       // no-op
     }

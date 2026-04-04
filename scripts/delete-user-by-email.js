@@ -190,10 +190,12 @@ async function main() {
     supportCode: supportCode || null,
   };
 
+  let supportCodeDocExists = false;
   if (supportCode) {
     const codeRef = db.collection("support_codes").doc(supportCode);
     const codeSnap = await codeRef.get();
-    if (codeSnap.exists) summary.supportCodeDocsDeleted += 1;
+    supportCodeDocExists = codeSnap.exists;
+    if (supportCodeDocExists) summary.supportCodeDocsDeleted += 1;
   }
   summary.supportCodeDocsDeleted += supportCodesByUidSnap.docs
     .filter((doc) => doc.id !== supportCode)
@@ -217,8 +219,7 @@ async function main() {
     const supportCodeRefs = [];
     if (supportCode) {
       const codeRef = db.collection("support_codes").doc(supportCode);
-      const codeSnap = await codeRef.get();
-      if (codeSnap.exists) supportCodeRefs.push(codeRef);
+      if (supportCodeDocExists) supportCodeRefs.push(codeRef);
     }
     for (const doc of supportCodesByUidSnap.docs) {
       if (!supportCode || doc.id !== supportCode) supportCodeRefs.push(doc.ref);

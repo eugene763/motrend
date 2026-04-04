@@ -1,18 +1,5 @@
 /* eslint-disable require-jsdoc */
 
-const INITIAL_CREDITS = 20;
-
-interface UserDoc {
-  creditsBalance?: number;
-}
-
-function effectiveCreditsBalance(userData?: UserDoc): number {
-  return (
-    typeof userData?.creditsBalance === "number" &&
-    Number.isFinite(userData.creditsBalance)
-  ) ? userData.creditsBalance : INITIAL_CREDITS;
-}
-
 function isLikelyJpegBuffer(buffer: Buffer): boolean {
   return buffer.length >= 3 &&
     buffer[0] === 0xFF &&
@@ -172,8 +159,6 @@ function parseIsoBmffDurationSeconds(buffer: Buffer): number | null {
 }
 
 export const __test = {
-  INITIAL_CREDITS,
-  effectiveCreditsBalance,
   buildProbeRanges,
   isLikelyJpegBuffer,
   isLikelyIsoBmffVideoBuffer,

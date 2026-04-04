@@ -1,5 +1,7 @@
 # MoTrend Technical Overview
 
+> Status note (2026-04-04): production MoTrend no longer runs active business logic through the local Firebase Functions package in this repo. The live backend is the shared `moads-platform` API on `https://api.moads.agency`, and the local `functions/` package is retained only for utility tests/admin tooling. Historical references below to `createJob`, Firestore triggers, scheduled functions, and callable APIs are legacy unless explicitly updated.
+
 This document is intended for a new developer or another AI agent that needs to understand how the project works across product behavior, frontend, backend, data model, billing, queues, and platform caveats.
 
 ## 1. Product Summary
@@ -34,17 +36,20 @@ The project is optimized heavily for mobile browsers, including in-app browsers 
   - [/Users/malevich/Documents/Playground/motrend/public/app.js](/Users/malevich/Documents/Playground/motrend/public/app.js)
 - Download/watch page:
   - [/Users/malevich/Documents/Playground/motrend/public/save-video.html](/Users/malevich/Documents/Playground/motrend/public/save-video.html)
-- Firebase Web SDK (Auth, Firestore, Storage, Functions)
+- Firebase Web SDK (Auth, Storage, Analytics)
 - Plain JavaScript, no framework
 
 ### Backend
 
-- Firebase Functions v2
-- Main backend file:
-  - [/Users/malevich/Documents/Playground/motrend/functions/src/index.ts](/Users/malevich/Documents/Playground/motrend/functions/src/index.ts)
-- Firestore triggers
-- Scheduled functions
-- Callable HTTPS function used as a multiplexed API surface
+- Shared `moads-platform` API on Cloud Run:
+  - [https://api.moads.agency](https://api.moads.agency)
+- Main production backend repo:
+  - [/Users/malevich/Documents/Playground/moads-platform](/Users/malevich/Documents/Playground/moads-platform)
+- Main MoTrend API paths:
+  - `/auth/*`
+  - `/motrend/*`
+  - `/billing/*`
+- Local `functions/` package in this repo is legacy/utility-only and does not deploy active production handlers.
 
 ### External Services
 
@@ -52,6 +57,7 @@ The project is optimized heavily for mobile browsers, including in-app browsers 
 - Firestore
 - Firebase Storage
 - Kling API for video generation
+- Dodo Payments for checkout
 - WhatsApp deep-link for support
 
 ## 3. High-Level Architecture
@@ -60,16 +66,13 @@ The project is optimized heavily for mobile browsers, including in-app browsers 
 flowchart TD
     A["Browser (index.html/app.js)"] --> B["Firebase Auth"]
     A --> C["Firebase Storage"]
-    A --> D["Callable Function: createJob"]
-    D --> E["Firestore"]
-    E --> F["Queue Collections"]
-    F --> G["Queue Processors (Functions)"]
+    A --> D["Shared API (api.moads.agency)"]
+    D --> E["Postgres / Wallet / Job State"]
+    D --> F["Cloud Tasks"]
+    F --> G["Motrend workers"]
     G --> H["Kling API"]
-    H --> G
-    G --> E
-    G --> C
     A --> I["save-video.html"]
-    I --> C
+    I --> D
 ```
 
 Important architectural decisions:
@@ -82,9 +85,9 @@ Important architectural decisions:
    - Frontend creates and finalizes jobs.
    - Server controls billing, queueing, polling, refunds, and download preparation.
 
-3. `createJob` is a multiplexed callable.
-   - It is not just “create job”.
-   - It also handles support profile lookup, admin support actions, attribution storage, job finalization, job refresh, and download preparation.
+3. The production API surface is shared and path-based.
+   - MoTrend uses authenticated HTTP routes under `/motrend/*`, `/auth/*`, and `/billing/*`.
+   - Legacy references later in this document to a multiplexed callable are historical and should not be used for current implementation work.
 
 ## 4. Project/Environment Identifiers
 

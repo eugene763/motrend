@@ -65,3 +65,6 @@ functions/lib/
 # macOS / editor artifacts
 .DS_Store
 *.save
+
+# historical local snapshots
+backups/

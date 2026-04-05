@@ -1169,6 +1169,7 @@ function clearPlatformSessionState() {
   platformReauthPromise = null;
   publicShareByJobId.clear();
   publicSharePromiseByJobId.clear();
+  publicSharePreviewRefreshAttemptedJobIds.clear();
 }
 
 async function restorePlatformSessionFromCookie(user = currentUser) {
@@ -1538,9 +1539,70 @@ function safeCheckoutUrl(value) {
   }
 }
 
-function buildSaveVideoPageUrl(videoUrl, downloadUrl = "") {
+function hashTrackingSeed(value) {
+  const input = typeof value === "string" ? value : String(value || "");
+  let hash = 0;
+  for (let index = 0; index < input.length; index += 1) {
+    hash = ((hash << 5) - hash) + input.charCodeAt(index);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function buildShareCacheBustedUrl(value, seed = "") {
+  const shareUrl = safeUrl(value);
+  if (!shareUrl) {
+    return "";
+  }
+
+  try {
+    const url = new URL(shareUrl);
+    const normalizedSeed = typeof seed === "string" && seed.trim() ?
+      seed.trim() :
+      `${Date.now()}`;
+    url.searchParams.set("pv", hashTrackingSeed(normalizedSeed));
+    return url.toString();
+  } catch {
+    return shareUrl;
+  }
+}
+
+function getLatestJobRecord(jobId) {
+  if (!jobId) {
+    return null;
+  }
+
+  const item = latestJobs.find((entry) => entry.id === jobId);
+  return item?.data || null;
+}
+
+function getTemplatePreviewUrlForJob(jobId) {
+  const job = getLatestJobRecord(jobId);
+  const templateId = typeof job?.templateId === "string" ? job.templateId : "";
+  if (!templateId) {
+    return "";
+  }
+
+  const template = availableTemplates.find((entry) => entry.id === templateId);
+  return safeUrl(template?.preview?.thumbnailUrl || "");
+}
+
+function resolvePreferredPreviewUrlForJob(jobId) {
+  const cachedShare = publicShareByJobId.get(jobId);
+  const sharePreviewUrl = safeUrl(
+    typeof cachedShare?.previewImageUrl === "string" ? cachedShare.previewImageUrl : ""
+  );
+  if (sharePreviewUrl) {
+    return sharePreviewUrl;
+  }
+
+  return getTemplatePreviewUrlForJob(jobId);
+}
+
+function buildSaveVideoPageUrl(videoUrl, downloadUrl = "", previewUrl = "") {
   const safeVideoUrl = safeUrl(videoUrl);
   const safeDownloadUrl = safeUrl(downloadUrl);
+  const safePreviewUrl = safeUrl(previewUrl);
   if (!safeVideoUrl && !safeDownloadUrl) return "";
   const url = new URL("/save-video.html", window.location.origin);
   if (safeVideoUrl) {
@@ -1549,6 +1611,9 @@ function buildSaveVideoPageUrl(videoUrl, downloadUrl = "") {
   if (safeDownloadUrl) {
     url.searchParams.set("downloadUrl", safeDownloadUrl);
   }
+  if (safePreviewUrl) {
+    url.searchParams.set("previewUrl", safePreviewUrl);
+  }
   return url.toString();
 }
 
@@ -1556,6 +1621,14 @@ function callableErrorMessage(error) {
   const code = typeof error?.code === "string" ? error.code : "";
   const message = typeof error?.message === "string" ? error.message : "";
   const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes("missing initial state") ||
+    normalized.includes("storage-partitioned browser environment") ||
+    normalized.includes("sessionstorage is inaccessible")
+  ) {
+    return "Google sign-in is unavailable in Safari Private mode. Use email sign-in or open the site in regular Safari.";
+  }
 
   if (
     normalized.includes("image size is to large") ||
@@ -2434,6 +2507,7 @@ const preparingDownloadJobIds = new Set();
 const preparedDownloadByJobId = new Map();
 const publicShareByJobId = new Map();
 const publicSharePromiseByJobId = new Map();
+const publicSharePreviewRefreshAttemptedJobIds = new Set();
 const trackedJobStatusById = new Map();
 let showOlderJobs = false;
 let generateSubmissionInFlight = false;
@@ -3850,7 +3924,22 @@ async function captureGeneratedSharePreviewBlob(sourceUrl) {
     return null;
   }
 
-  const video = await loadVideoForPreview(previewSourceUrl);
+  const response = await fetch(previewSourceUrl, {
+    method: "GET",
+    credentials: "omit",
+    mode: "cors",
+  }).catch(() => null);
+  if (!response?.ok) {
+    return null;
+  }
+
+  const sourceBlob = await response.blob().catch(() => null);
+  if (!sourceBlob || !sourceBlob.size) {
+    return null;
+  }
+
+  const objectUrl = URL.createObjectURL(sourceBlob);
+  const video = await loadVideoForPreview(objectUrl);
   try {
     const width = Number(video.videoWidth || 0);
     const height = Number(video.videoHeight || 0);
@@ -3882,6 +3971,7 @@ async function captureGeneratedSharePreviewBlob(sourceUrl) {
     video.pause();
     video.removeAttribute("src");
     video.load();
+    URL.revokeObjectURL(objectUrl);
   }
 }
 
@@ -4159,6 +4249,44 @@ async function listMotrendJobsRequest() {
   };
 }
 
+async function refreshPublicSharePreview(jobId, sourceUrl) {
+  const normalizedJobId = typeof jobId === "string" ? jobId.trim() : "";
+  const previewSourceUrl = safeUrl(sourceUrl);
+  if (!normalizedJobId) {
+    throw new Error("Share link is unavailable.");
+  }
+
+  if (!publicSharePromiseByJobId.has(normalizedJobId)) {
+    publicSharePreviewRefreshAttemptedJobIds.add(normalizedJobId);
+    const requestPromise = Promise.resolve()
+      .then(async () => {
+        let previewImageUrl = "";
+        if (previewSourceUrl) {
+          previewImageUrl = await buildGeneratedSharePreviewUrl(
+            normalizedJobId,
+            previewSourceUrl,
+          ).catch(() => "");
+        }
+        return await createMotrendJobShareRequest(
+          normalizedJobId,
+          previewImageUrl ? {previewImageUrl} : undefined,
+        );
+      })
+      .then((payload) => {
+        if (payload && typeof payload === "object") {
+          publicShareByJobId.set(normalizedJobId, payload);
+        }
+        return payload;
+      })
+      .finally(() => {
+        publicSharePromiseByJobId.delete(normalizedJobId);
+      });
+    publicSharePromiseByJobId.set(normalizedJobId, requestPromise);
+  }
+
+  return await publicSharePromiseByJobId.get(normalizedJobId);
+}
+
 async function getOrCreatePublicShare(jobId) {
   const normalizedJobId = typeof jobId === "string" ? jobId.trim() : "";
   if (!normalizedJobId) {
@@ -4166,29 +4294,28 @@ async function getOrCreatePublicShare(jobId) {
   }
 
   const cached = publicShareByJobId.get(normalizedJobId);
+  const preparedStateRaw = preparedDownloadByJobId.get(normalizedJobId);
+  const preparedState = typeof preparedStateRaw === "string" ?
+    {downloadUrl: preparedStateRaw} :
+    (preparedStateRaw || {});
+  const preparedSourceUrl = safeUrl(
+    preparedState.inlineUrl ||
+    preparedState.downloadUrl ||
+    ""
+  );
+
+  if (preparedSourceUrl && !publicSharePreviewRefreshAttemptedJobIds.has(normalizedJobId)) {
+    return await refreshPublicSharePreview(normalizedJobId, preparedSourceUrl);
+  }
+
   if (cached?.shareUrl) {
     return cached;
   }
 
   if (!publicSharePromiseByJobId.has(normalizedJobId)) {
-    const preparedStateRaw = preparedDownloadByJobId.get(normalizedJobId);
-    const preparedState = typeof preparedStateRaw === "string" ?
-      {downloadUrl: preparedStateRaw} :
-      (preparedStateRaw || {});
-    const preparedSourceUrl = safeUrl(
-      preparedState.inlineUrl ||
-      preparedState.downloadUrl ||
-      ""
-    );
     const requestPromise = Promise.resolve()
       .then(async () => {
-        const previewImageUrl = preparedSourceUrl ?
-          await buildGeneratedSharePreviewUrl(normalizedJobId, preparedSourceUrl).catch(() => "") :
-          "";
-        return await createMotrendJobShareRequest(
-          normalizedJobId,
-          previewImageUrl ? {previewImageUrl} : undefined,
-        );
+        return await createMotrendJobShareRequest(normalizedJobId);
       })
       .then((payload) => {
         if (payload && typeof payload === "object") {
@@ -4349,6 +4476,16 @@ $("btnLogin").onclick = async () => {
     ].includes(code);
 
     if (!forceRedirect && popupFailed) {
+      if (isIOS()) {
+        track("auth_login_failed", {
+          method: "google",
+          error_code: typeof error?.code === "string" ? error.code : "",
+        });
+        showAuthError(
+          "Google sign-in is unavailable in Safari Private mode. Use email sign-in or open the site in regular Safari."
+        );
+        return;
+      }
       try {
         await ensurePreferredAuthPersistence();
         setStatus("Popup blocked. Redirecting to Google sign-in…");
@@ -5089,6 +5226,14 @@ async function handlePrepareDownload(jobId) {
   try {
     const downloadUrl = await prepareDownloadLink(jobId);
     preparedDownloadByJobId.set(jobId, downloadUrl);
+    const previewSourceUrl = safeUrl(
+      downloadUrl?.inlineUrl ||
+      downloadUrl?.downloadUrl ||
+      ""
+    );
+    if (previewSourceUrl) {
+      void refreshPublicSharePreview(jobId, previewSourceUrl).catch(() => {});
+    }
   } catch (error) {
     showFormError(callableErrorMessage(error));
   } finally {
@@ -5116,7 +5261,8 @@ function renderDoneJobActions(jobId) {
   const preparedUrl = safeUrl(
     preparedState.downloadUrl || preparedState.inlineUrl || ""
   );
-  const saveVideoPageUrl = buildSaveVideoPageUrl(inlineUrl, preparedUrl);
+  const previewUrl = resolvePreferredPreviewUrlForJob(jobId);
+  const saveVideoPageUrl = buildSaveVideoPageUrl(inlineUrl, preparedUrl, previewUrl);
   const saveVideoTargetUrl = preparedUrl || inlineUrl || saveVideoPageUrl;
   const watchTargetUrl = saveVideoPageUrl || inlineUrl || preparedUrl;
   const hasPreparedVideo = Boolean(preparedUrl || inlineUrl);
@@ -5131,8 +5277,12 @@ function renderDoneJobActions(jobId) {
       shareBtn.disabled = true;
       shareBtn.textContent = "Preparing…";
       const sharePayload = await getOrCreatePublicShare(jobId);
-      const shareTargetUrl = safeUrl(
+      const rawShareTargetUrl = safeUrl(
         typeof sharePayload?.shareUrl === "string" ? sharePayload.shareUrl : ""
+      );
+      const shareTargetUrl = buildShareCacheBustedUrl(
+        rawShareTargetUrl,
+        safeUrl(sharePayload?.previewImageUrl || "") || jobId,
       );
       if (!shareTargetUrl) {
         throw new Error("Share link is not ready yet.");

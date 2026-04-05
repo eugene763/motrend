@@ -21,6 +21,7 @@ import {
   signOut,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import {
+  getDownloadURL,
   getStorage,
   ref,
   uploadBytesResumable,
@@ -61,10 +62,99 @@ try {
   analytics = null;
 }
 
+function sanitizeTrackingValue(value) {
+  if (typeof value === "string") {
+    return value
+      .replace(/[\u0000-\u001F\u007F]/g, "")
+      .trim()
+      .slice(0, 500);
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  return null;
+}
+
+function getGtmBridge() {
+  const bridge = window.__MOTREND_GTM__;
+  return bridge && typeof bridge === "object" ? bridge : null;
+}
+
+function normalizeAttributionTouch(touch) {
+  if (!touch || typeof touch !== "object") {
+    return {
+      capturedAtMs: 0,
+      utm: {},
+      ids: {},
+    };
+  }
+
+  const source = touch;
+  const utm = {};
+  const ids = {};
+
+  ATTRIBUTION_UTM_KEYS.forEach((key) => {
+    const value = sanitizeAttributionValue(source.utm?.[key], 300);
+    if (value) {
+      utm[key] = value;
+    }
+  });
+
+  ATTRIBUTION_CLICK_ID_KEYS.forEach((key) => {
+    const value = sanitizeAttributionValue(source.ids?.[key], 500);
+    if (value) {
+      ids[key] = value;
+    }
+  });
+
+  const capturedAtMs = Number(source.capturedAtMs);
+  return {
+    capturedAtMs: Number.isFinite(capturedAtMs) && capturedAtMs > 0 ?
+      Math.floor(capturedAtMs) :
+      0,
+    utm,
+    ids,
+  };
+}
+
+function flattenTrackingAttribution() {
+  const bridge = getGtmBridge();
+  const state = bridge?.getAttributionState?.() || window.__MOTREND_ATTRIBUTION__ || null;
+  const lastTouch = normalizeAttributionTouch(state?.lastTouch);
+  return {
+    ...lastTouch.utm,
+    ...lastTouch.ids,
+  };
+}
+
 function track(name, params = {}) {
+  const payload = {};
+  const attribution = flattenTrackingAttribution();
+
+  Object.entries({...attribution, ...params}).forEach(([key, rawValue]) => {
+    const value = sanitizeTrackingValue(rawValue);
+    if (value !== null && value !== "") {
+      payload[key] = value;
+    }
+  });
+
+  const supportId = sanitizeTrackingValue(currentSupportCode || "");
+  if (supportId && !payload.support_id) {
+    payload.support_id = supportId;
+  }
+
+  try {
+    getGtmBridge()?.pushEvent?.(name, payload);
+  } catch {
+    // no-op
+  }
+
   if (!analytics) return;
   try {
-    logEvent(analytics, name, params);
+    logEvent(analytics, name, payload);
   } catch {
     // no-op
   }
@@ -72,7 +162,7 @@ function track(name, params = {}) {
 
 const $ = (id) => document.getElementById(id);
 const PLATFORM_API_ORIGIN_OVERRIDE_KEY = "motrend_platform_api_origin_v1";
-const MOTREND_TEST_GIFT_CREDITS = 20;
+const MOTREND_TEST_GIFT_CREDITS = 3;
 const PLATFORM_REQUEST_TIMEOUT_MS = 30_000;
 const PLATFORM_LOGOUT_TIMEOUT_MS = 5_000;
 const PLATFORM_POLL_AUTH_RETRY_MS = 2_500;
@@ -395,6 +485,10 @@ const ATTRIBUTION_SYNC_PREFIX = "motrend_attribution_sync_v1_";
 const AUTH_GIFT_PROMO_SEEN_KEY = "motrend_auth_gift_prompt_seen_v1";
 const AUTH_ATTEMPT_COOKIE_KEY = "motrend_auth_attempted_v1";
 const AUTH_SUCCESS_COOKIE_KEY = "motrend_auth_success_v1";
+const REGISTRATION_EVIDENCE_COOKIE_KEY = "motrend_registration_seen_v1";
+const GIFT_CLAIMED_COOKIE_KEY = "motrend_gift_claimed_v1";
+const REGISTRATION_EVIDENCE_STORAGE_KEY = "motrend_registration_seen_local_v1";
+const GIFT_CLAIMED_STORAGE_KEY = "motrend_gift_claimed_local_v1";
 const AUTH_ATTEMPT_COOKIE_MAX_AGE_SECONDS = 72 * 60 * 60;
 const AUTH_SUCCESS_COOKIE_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const ATTRIBUTION_UTM_KEYS = [
@@ -412,6 +506,11 @@ const ATTRIBUTION_CLICK_ID_KEYS = [
   "yclid",
   "ysclid",
   "ttclid",
+  "gcl_au",
+  "fbp",
+  "fbc",
+  "ym_uid",
+  "ga_client_id",
 ];
 
 function sanitizeAttributionValue(value, maxLength = 1500) {
@@ -436,21 +535,33 @@ function readCookie(name) {
   }
 }
 
+function getSharedCookieDomain() {
+  const hostname = (window.location.hostname || "").trim().toLowerCase();
+  if (hostname.endsWith(".moads.agency")) {
+    return ".moads.agency";
+  }
+  return "";
+}
+
 function writeCookie(name, value, {
   maxAgeSeconds = AUTH_SUCCESS_COOKIE_MAX_AGE_SECONDS,
   path = "/",
 } = {}) {
   if (!name) return;
   const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  const domain = getSharedCookieDomain();
+  const domainPart = domain ? `; Domain=${domain}` : "";
   document.cookie =
-    `${encodeURIComponent(name)}=${encodeURIComponent(value || "")}; Path=${path}; Max-Age=${Math.max(0, Number(maxAgeSeconds) || 0)}; SameSite=Lax${secure}`;
+    `${encodeURIComponent(name)}=${encodeURIComponent(value || "")}; Path=${path}; Max-Age=${Math.max(0, Number(maxAgeSeconds) || 0)}; SameSite=Lax${secure}${domainPart}`;
 }
 
 function clearCookie(name) {
   if (!name) return;
   const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  const domain = getSharedCookieDomain();
+  const domainPart = domain ? `; Domain=${domain}` : "";
   document.cookie =
-    `${encodeURIComponent(name)}=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
+    `${encodeURIComponent(name)}=; Path=/; Max-Age=0; SameSite=Lax${secure}${domainPart}`;
 }
 
 function hasAuthAttemptCookie() {
@@ -485,6 +596,42 @@ function shouldKeepAuthOpenAfterAttempt() {
   return hasAuthAttemptCookie() && !hasAuthSuccessCookie();
 }
 
+function hasRegistrationEvidenceCookie() {
+  return readCookie(REGISTRATION_EVIDENCE_COOKIE_KEY) === "1";
+}
+
+function hasGiftClaimedCookie() {
+  return readCookie(GIFT_CLAIMED_COOKIE_KEY) === "1";
+}
+
+function markRegistrationEvidence() {
+  writeCookie(REGISTRATION_EVIDENCE_COOKIE_KEY, "1", {
+    maxAgeSeconds: AUTH_SUCCESS_COOKIE_MAX_AGE_SECONDS,
+  });
+  setStoredFlag(REGISTRATION_EVIDENCE_STORAGE_KEY, true);
+}
+
+function markGiftClaimedEvidence() {
+  writeCookie(GIFT_CLAIMED_COOKIE_KEY, "1", {
+    maxAgeSeconds: AUTH_SUCCESS_COOKIE_MAX_AGE_SECONDS,
+  });
+  setStoredFlag(GIFT_CLAIMED_STORAGE_KEY, true);
+}
+
+function hasBrowserRegistrationEvidence() {
+  return (
+    hasRegistrationEvidenceCookie() ||
+    hasGiftClaimedCookie() ||
+    hasAuthSuccessCookie() ||
+    getStoredFlag(REGISTRATION_EVIDENCE_STORAGE_KEY) ||
+    getStoredFlag(GIFT_CLAIMED_STORAGE_KEY)
+  );
+}
+
+function shouldBlockNewSignup() {
+  return hasBrowserRegistrationEvidence();
+}
+
 function parseGaClientId(cookieValue) {
   const normalized = sanitizeAttributionValue(cookieValue, 200);
   if (!normalized) return "";
@@ -517,10 +664,12 @@ function writeStoredAttribution(payload) {
 }
 
 function buildAttributionFromRuntime() {
+  const gtmState = getGtmBridge()?.getAttributionState?.() || window.__MOTREND_ATTRIBUTION__ || null;
+  const gtmLastTouch = normalizeAttributionTouch(gtmState?.lastTouch);
   const url = new URL(window.location.href);
   const query = url.searchParams;
 
-  const utm = {};
+  const utm = {...gtmLastTouch.utm};
   ATTRIBUTION_UTM_KEYS.forEach((key) => {
     const value = sanitizeAttributionValue(query.get(key) || "", 300);
     if (value) {
@@ -528,7 +677,7 @@ function buildAttributionFromRuntime() {
     }
   });
 
-  const ids = {};
+  const ids = {...gtmLastTouch.ids};
   ATTRIBUTION_CLICK_ID_KEYS.forEach((key) => {
     const value = sanitizeAttributionValue(query.get(key) || "", 500);
     if (value) {
@@ -559,7 +708,7 @@ function buildAttributionFromRuntime() {
     1500
   );
   const referrer = sanitizeAttributionValue(document.referrer || "", 1500);
-  const capturedAtMs = Date.now();
+  const capturedAtMs = gtmLastTouch.capturedAtMs || Date.now();
 
   return {capturedAtMs, landingUrl, referrer, utm, ids};
 }
@@ -851,7 +1000,12 @@ function setSupportButtonMessage(supportCode = "") {
 }
 
 function openAuth(message = "", {skipPromo = false} = {}) {
-  if (!skipPromo && !currentUser && !getStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY)) {
+  if (
+    !skipPromo &&
+    !currentUser &&
+    !shouldBlockNewSignup() &&
+    !getStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY)
+  ) {
     setStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY, true);
     void showNoticeModal({
       message: `🎁 Sign up and get ${MOTREND_TEST_GIFT_CREDITS} free credits!`,
@@ -863,7 +1017,12 @@ function openAuth(message = "", {skipPromo = false} = {}) {
 
   const authBox = $("auth");
   if (authBox) authBox.style.display = "block";
+  track("auth_form_opened", {
+    auth_panel_reason: message ? "with_message" : "manual",
+    signup_blocked: shouldBlockNewSignup(),
+  });
   updateAuthInAppActions();
+  refreshAuthSignupState();
   if (message) {
     showAuthError(message);
   } else {
@@ -891,6 +1050,33 @@ function closeAuth() {
   const authBox = $("auth");
   if (authBox) authBox.style.display = "none";
   clearAuthError();
+}
+
+function refreshAuthSignupState() {
+  const signUpBtn = $("btnEmailSignUp");
+  if (!signUpBtn) return;
+
+  const blocked = shouldBlockNewSignup();
+  signUpBtn.disabled = blocked;
+  signUpBtn.title = blocked ?
+    "This browser already used registration. Log in instead." :
+    "";
+  signUpBtn.textContent = blocked ? "Already registered" : "Sign up";
+}
+
+function resolveAuthMethodLabel(user = currentUser) {
+  const providerIds = Array.isArray(user?.providerData) ?
+    user.providerData
+      .map((entry) => typeof entry?.providerId === "string" ? entry.providerId.trim().toLowerCase() : "")
+      .filter(Boolean) :
+    [];
+  if (providerIds.includes("google.com")) {
+    return "google";
+  }
+  if (providerIds.includes("password")) {
+    return "email";
+  }
+  return "unknown";
 }
 
 function buildPlatformUrl(path) {
@@ -1436,6 +1622,9 @@ function callableErrorMessage(error) {
   if (code.includes("job_not_shareable")) {
     return message || "Video is not ready to share yet.";
   }
+  if (code.includes("motrend_signup_blocked")) {
+    return message || "This browser already used sign up before. Log in instead.";
+  }
   if (code.includes("permission-denied")) {
     return message || "You have no access to this trend.";
   }
@@ -1671,6 +1860,11 @@ async function maybeResumePendingWalletCheckout() {
     return false;
   }
 
+  track("payment_checkout_returned", {
+    order_id: pending.orderId,
+    pack_code: pending.priceId,
+  });
+
   if (
     currentUser &&
     pending.uid &&
@@ -1720,6 +1914,11 @@ async function maybeResumePendingWalletCheckout() {
           "Congratulations! Credits added.",
         buttonText: "OK",
       });
+      track("payment_success", {
+        order_id: pending.orderId,
+        pack_code: pending.priceId,
+        credits_delta: Number.isFinite(creditsAdded) ? creditsAdded : undefined,
+      });
       return true;
     }
 
@@ -1735,11 +1934,20 @@ async function maybeResumePendingWalletCheckout() {
         message: "Congratulations! Credits added.",
         buttonText: "OK",
       });
+      track("payment_success", {
+        order_id: pending.orderId,
+        pack_code: pending.priceId,
+      });
       return true;
     }
 
     if (status === "failed" || status === "canceled" || status === "refunded") {
       clearPendingWalletCheckout();
+      track("payment_failed", {
+        order_id: pending.orderId,
+        pack_code: pending.priceId,
+        payment_status: status,
+      });
       return false;
     }
 
@@ -1804,6 +2012,12 @@ async function beginWalletCheckout(priceId) {
 
   try {
     const selectedPack = walletOffers.find((pack) => pack.priceId === priceId) || null;
+    track("payment_checkout_started", {
+      pack_code: priceId,
+      credits_delta: Number(selectedPack?.creditsAmount) || undefined,
+      amount_minor: Number(selectedPack?.amountMinor) || undefined,
+      currency_code: typeof selectedPack?.currencyCode === "string" ? selectedPack.currencyCode : undefined,
+    });
     const checkout = await createBillingCheckoutOrderRequest({
       priceId,
       attribution: buildAttributionSyncPayload() || undefined,
@@ -1832,6 +2046,10 @@ async function beginWalletCheckout(priceId) {
     window.location.assign(redirectUrl);
   } catch (error) {
     clearPendingWalletCheckout();
+    track("payment_failed", {
+      pack_code: priceId,
+      error_code: typeof error?.code === "string" ? error.code : "",
+    });
     if (error?.code === "billing_checkout_unavailable") {
       await showNoticeModal({
         message: "Checkout is not ready for this pack yet.",
@@ -2216,6 +2434,7 @@ const preparingDownloadJobIds = new Set();
 const preparedDownloadByJobId = new Map();
 const publicShareByJobId = new Map();
 const publicSharePromiseByJobId = new Map();
+const trackedJobStatusById = new Map();
 let showOlderJobs = false;
 let generateSubmissionInFlight = false;
 let estimatedProgressActive = false;
@@ -3561,6 +3780,133 @@ function canvasToBlob(canvas, type, quality) {
   });
 }
 
+function loadVideoForPreview(sourceUrl) {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    let settled = false;
+    const cleanup = () => {
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      video.onseeked = null;
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error("Unable to prepare video preview."));
+    };
+
+    video.preload = "auto";
+    video.muted = true;
+    video.playsInline = true;
+    video.crossOrigin = "anonymous";
+    video.onloadedmetadata = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(video);
+    };
+    video.onerror = () => {
+      fail(new Error("Unable to load generated video preview."));
+    };
+    video.src = sourceUrl;
+    video.load();
+  });
+}
+
+function seekVideoForPreview(video, targetTimeSec) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      video.onseeked = null;
+      video.onerror = null;
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error("Unable to seek generated video preview."));
+    };
+    video.onseeked = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    video.onerror = () => {
+      fail(new Error("Unable to seek generated video preview."));
+    };
+    try {
+      video.currentTime = Math.max(0, targetTimeSec || 0);
+    } catch (error) {
+      fail(error);
+    }
+  });
+}
+
+async function captureGeneratedSharePreviewBlob(sourceUrl) {
+  const previewSourceUrl = safeUrl(sourceUrl);
+  if (!previewSourceUrl) {
+    return null;
+  }
+
+  const video = await loadVideoForPreview(previewSourceUrl);
+  try {
+    const width = Number(video.videoWidth || 0);
+    const height = Number(video.videoHeight || 0);
+    if (width <= 0 || height <= 0) {
+      return null;
+    }
+
+    const duration = Number(video.duration || 0);
+    const safeTargetTime = Number.isFinite(duration) && duration > 0.2 ?
+      Math.min(Math.max(duration * 0.18, 0.15), Math.max(duration - 0.05, 0.15)) :
+      0;
+    if (safeTargetTime > 0) {
+      await seekVideoForPreview(video, safeTargetTime);
+    }
+
+    const maxWidth = 1200;
+    const scale = width > maxWidth ? maxWidth / width : 1;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return null;
+    }
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return await canvasToBlob(canvas, "image/jpeg", 0.84);
+  } finally {
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+  }
+}
+
+async function buildGeneratedSharePreviewUrl(jobId, sourceUrl) {
+  if (!currentUser?.uid || !jobId) {
+    return "";
+  }
+
+  const blob = await captureGeneratedSharePreviewBlob(sourceUrl);
+  if (!blob) {
+    return "";
+  }
+
+  const previewRef = ref(
+    storage,
+    `user_uploads/${currentUser.uid}/share_previews/${jobId}_${Date.now()}.jpg`
+  );
+  await uploadFileWithProgress(
+    previewRef,
+    blob,
+    {contentType: "image/jpeg"},
+  );
+  return safeUrl(await getDownloadURL(previewRef));
+}
+
 function loadImageFromFile(file) {
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);
@@ -3782,9 +4128,10 @@ async function finalizeMotrendJobRequest(payload) {
   return response;
 }
 
-async function createMotrendJobShareRequest(jobId) {
+async function createMotrendJobShareRequest(jobId, payload = undefined) {
   return await platformMotrendRequest(`/motrend/jobs/${encodeURIComponent(jobId)}/share`, {
     method: "POST",
+    body: payload,
   });
 }
 
@@ -3824,7 +4171,25 @@ async function getOrCreatePublicShare(jobId) {
   }
 
   if (!publicSharePromiseByJobId.has(normalizedJobId)) {
-    const requestPromise = createMotrendJobShareRequest(normalizedJobId)
+    const preparedStateRaw = preparedDownloadByJobId.get(normalizedJobId);
+    const preparedState = typeof preparedStateRaw === "string" ?
+      {downloadUrl: preparedStateRaw} :
+      (preparedStateRaw || {});
+    const preparedSourceUrl = safeUrl(
+      preparedState.inlineUrl ||
+      preparedState.downloadUrl ||
+      ""
+    );
+    const requestPromise = Promise.resolve()
+      .then(async () => {
+        const previewImageUrl = preparedSourceUrl ?
+          await buildGeneratedSharePreviewUrl(normalizedJobId, preparedSourceUrl).catch(() => "") :
+          "";
+        return await createMotrendJobShareRequest(
+          normalizedJobId,
+          previewImageUrl ? {previewImageUrl} : undefined,
+        );
+      })
       .then((payload) => {
         if (payload && typeof payload === "object") {
           publicShareByJobId.set(normalizedJobId, payload);
@@ -3909,10 +4274,14 @@ $("btnEmailSignIn").onclick = async () => {
 
   try {
     markAuthAttemptCookie();
-    track("login_click", {method: "email"});
+    track("auth_login_attempt", {method: "email"});
     await ensurePreferredAuthPersistence();
     await signInWithEmailAndPassword(auth, email, pass);
   } catch (error) {
+    track("auth_login_failed", {
+      method: "email",
+      error_code: typeof error?.code === "string" ? error.code : "",
+    });
     showAuthError(await describeEmailSignInFailure(email, error));
   }
 };
@@ -3922,12 +4291,29 @@ $("btnEmailSignUp").onclick = async () => {
   const email = $("authEmail").value.trim();
   const pass = $("authPass").value;
 
+   if (shouldBlockNewSignup()) {
+    markAuthAttemptCookie();
+    track("auth_signup_blocked", {
+      method: "email",
+      reason: "browser_registration_marker",
+    });
+    openAuth(
+      "This browser already used sign up before. Log in to the existing account instead.",
+      {skipPromo: true}
+    );
+    return;
+  }
+
   try {
     markAuthAttemptCookie();
-    track("signup_click", {method: "email"});
+    track("auth_signup_attempt", {method: "email"});
     await ensurePreferredAuthPersistence();
     await createUserWithEmailAndPassword(auth, email, pass);
   } catch (error) {
+    track("auth_signup_failed", {
+      method: "email",
+      error_code: typeof error?.code === "string" ? error.code : "",
+    });
     showAuthError(callableErrorMessage(error));
   }
 };
@@ -3945,7 +4331,7 @@ $("btnLogin").onclick = async () => {
 
   try {
     markAuthAttemptCookie();
-    track("login_click", {method: "google"});
+    track("auth_login_attempt", {method: "google"});
     await ensurePreferredAuthPersistence();
     if (forceRedirect) {
       setStatus("Redirecting to Google sign-in…");
@@ -3969,10 +4355,18 @@ $("btnLogin").onclick = async () => {
         await signInWithRedirect(auth, provider);
         return;
       } catch (redirectError) {
+        track("auth_login_failed", {
+          method: "google",
+          error_code: typeof redirectError?.code === "string" ? redirectError.code : "",
+        });
         showAuthError(callableErrorMessage(redirectError));
         return;
       }
     }
+    track("auth_login_failed", {
+      method: "google",
+      error_code: typeof error?.code === "string" ? error.code : "",
+    });
     showAuthError(callableErrorMessage(error));
   }
 };
@@ -4029,6 +4423,7 @@ $("btnForgotPassword").onclick = async () => {
   );
 };
 
+refreshAuthSignupState();
 
 $("btnWallet").onclick = () => {
   openWallet();
@@ -4797,7 +5192,6 @@ function renderDoneJobActions(jobId) {
       handlePrepareDownload(jobId);
     };
     actions.appendChild(prepareBtn);
-    actions.appendChild(shareBtn);
     return wrapper;
   }
 
@@ -4963,6 +5357,54 @@ function renderJobsList() {
   updateLatestJobUI(latest.id, latest.data);
 }
 
+function trackJobLifecycleTransitions(previousJobs, nextJobs) {
+  const hasPreviousSnapshot = Array.isArray(previousJobs) && previousJobs.length > 0;
+  const previousById = new Map(
+    (Array.isArray(previousJobs) ? previousJobs : []).map((entry) => [entry.id, entry.data || {}])
+  );
+  const nextById = new Map(
+    (Array.isArray(nextJobs) ? nextJobs : []).map((entry) => [entry.id, entry.data || {}])
+  );
+
+  nextById.forEach((job, jobId) => {
+    const previousStatus = previousById.get(jobId)?.status || trackedJobStatusById.get(jobId) || "";
+    const nextStatus = typeof job?.status === "string" ? job.status : "";
+    if (!nextStatus || previousStatus === nextStatus) {
+      trackedJobStatusById.set(jobId, nextStatus || previousStatus);
+      return;
+    }
+
+    if (!hasPreviousSnapshot && !previousStatus) {
+      trackedJobStatusById.set(jobId, nextStatus);
+      return;
+    }
+
+    if (nextStatus === "done") {
+      track("generation_completed", {
+        job_id: jobId,
+        template_id: typeof job?.templateId === "string" ? job.templateId : "",
+        selection_kind: typeof job?.selectionKind === "string" ? job.selectionKind : "",
+        credits_delta: Number(job?.finalCostCredits) || Number(job?.debitedCredits) || undefined,
+      });
+    } else if (nextStatus === "failed") {
+      track("generation_failed", {
+        job_id: jobId,
+        template_id: typeof job?.templateId === "string" ? job.templateId : "",
+        selection_kind: typeof job?.selectionKind === "string" ? job.selectionKind : "",
+        error_code: sanitizeTrackingValue(job?.kling?.error || "") || "failed",
+      });
+    }
+
+    trackedJobStatusById.set(jobId, nextStatus);
+  });
+
+  previousById.forEach((_job, jobId) => {
+    if (!nextById.has(jobId)) {
+      trackedJobStatusById.delete(jobId);
+    }
+  });
+}
+
 function watchLatestJobsPlatform() {
   let cancelled = false;
   let pollTimer = null;
@@ -4985,7 +5427,9 @@ function watchLatestJobsPlatform() {
       if (cancelled) return;
       pollErrorCount = 0;
 
+      const previousJobs = latestJobs;
       latestJobs = response?.jobs || [];
+      trackJobLifecycleTransitions(previousJobs, latestJobs);
       if (!latestJobs.length) {
         preparedDownloadByJobId.clear();
         preparingDownloadJobIds.clear();
@@ -5098,6 +5542,10 @@ $("btnGenerate").onclick = async () => {
   setUploadSafetyHint("", false);
 
   try {
+    track("generation_attempt", {
+      template_id: selectedTemplate?.id || "",
+      selection_kind: selectedTrendKind,
+    });
     let jobId = "";
     let uploadPath = "";
     const shouldReusePendingUpload = !!pendingResumeUpload &&
@@ -5183,6 +5631,11 @@ $("btnGenerate").onclick = async () => {
       inputImagePath: uploadPath,
       referenceVideoPath: referenceVideoPath || undefined,
     });
+    track("generation_started", {
+      job_id: jobId,
+      template_id: selectedTemplate?.id || "",
+      selection_kind: selectedTrendKind,
+    });
     clearPendingResumeUpload(jobId);
     setUploadSafetyHint(
       "You can close this page now. Your trend will keep generating in the background.",
@@ -5255,6 +5708,11 @@ $("btnGenerate").onclick = async () => {
       return;
     }
     showFormError(callableErrorMessage(error));
+    track("generation_failed", {
+      template_id: selectedTemplate?.id || "",
+      selection_kind: selectedTrendKind,
+      error_code: typeof error?.code === "string" ? error.code : "",
+    });
   } finally {
     generateSubmissionInFlight = false;
     btn.disabled = false;
@@ -5356,6 +5814,7 @@ onAuthStateChanged(auth, async (user) => {
     } else {
       closeAuth();
     }
+    refreshAuthSignupState();
     updateAuthInAppActions();
     setStatus("");
     latestJobs = [];
@@ -5371,8 +5830,6 @@ onAuthStateChanged(auth, async (user) => {
   }
 
   closeAuth();
-  markAuthSuccessCookie();
-  clearAuthAttemptCookie();
   stopEstimatedProgress();
   clearPlatformSessionState();
   selectedReferenceVideoFile = null;
@@ -5398,9 +5855,26 @@ onAuthStateChanged(auth, async (user) => {
   renderLocaleFields();
 
   const bootstrapPromise = bootstrapPlatformSession(user)
-    .catch((error) => {
+    .catch(async (error) => {
       console.warn("platform session bootstrap failed", error);
       clearPlatformSessionState();
+      if (error?.code === "motrend_signup_blocked") {
+        track("auth_signup_blocked", {
+          method: resolveAuthMethodLabel(user),
+          reason: "browser_registration_marker",
+        });
+        try {
+          await signOut(auth);
+        } catch {
+          // no-op
+        }
+        openAuth(
+          callableErrorMessage(error) ||
+            "This browser already used sign up before. Log in instead.",
+          {skipPromo: true}
+        );
+        return {signupBlocked: true};
+      }
       return null;
     })
     .finally(() => {
@@ -5421,6 +5895,9 @@ onAuthStateChanged(auth, async (user) => {
   }
 
   const platformBootstrap = await bootstrapPromise;
+  if (platformBootstrap?.signupBlocked) {
+    return;
+  }
   await loadTemplates();
   if (
     currentUser &&
@@ -5445,6 +5922,9 @@ onAuthStateChanged(auth, async (user) => {
     return;
   }
 
+  markAuthSuccessCookie();
+  clearAuthAttemptCookie();
+
   if (platformBootstrap?.bootstrap?.grantedTestCredits === true) {
     const grantedCreditsAmount = Number(
       platformBootstrap.bootstrap.grantedTestCreditsAmount
@@ -5457,6 +5937,24 @@ onAuthStateChanged(auth, async (user) => {
         MOTREND_TEST_GIFT_CREDITS,
       sessionStorage
     );
+  }
+
+  markRegistrationEvidence();
+  refreshAuthSignupState();
+  if (platformBootstrap?.bootstrap?.grantedTestCredits === true) {
+    markGiftClaimedEvidence();
+  }
+
+  if (platformBootstrap?.bootstrap?.createdMembership === true) {
+    track("auth_signup_success", {
+      method: resolveAuthMethodLabel(user),
+      granted_credits: Number(platformBootstrap?.bootstrap?.grantedTestCreditsAmount) ||
+        MOTREND_TEST_GIFT_CREDITS,
+    });
+  } else {
+    track("auth_login_success", {
+      method: resolveAuthMethodLabel(user),
+    });
   }
 
   await syncSupportProfile();

@@ -25,63 +25,49 @@
     }, delay);
   }
 
-  function loadVideoForPoster(sourceUrl) {
-    return fetch(sourceUrl, {
-      method: "GET",
-      credentials: "omit",
-      mode: "cors",
-    })
-      .then(function(response) {
-        if (!response.ok) {
-          throw new Error("Unable to load video preview.");
+  function waitForVideoMetadata(video) {
+    return new Promise(function(resolve, reject) {
+      if (video.readyState >= 1 && Number(video.videoWidth || 0) > 0 && Number(video.videoHeight || 0) > 0) {
+        resolve();
+        return;
+      }
+
+      var settled = false;
+
+      function cleanup() {
+        video.removeEventListener("loadedmetadata", onLoadedMetadata);
+        video.removeEventListener("canplay", onCanPlay);
+        video.removeEventListener("error", onError);
+      }
+
+      function finish() {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      }
+
+      function onLoadedMetadata() {
+        if (video.readyState >= 1) {
+          finish();
         }
-        return response.blob();
-      })
-      .then(function(blob) {
-        return new Promise(function(resolve, reject) {
-          var objectUrl = URL.createObjectURL(blob);
-          var video = document.createElement("video");
-          var settled = false;
+      }
 
-          function cleanup() {
-            video.onloadedmetadata = null;
-            video.onerror = null;
-          }
+      function onCanPlay() {
+        finish();
+      }
 
-          function release() {
-            video.pause();
-            video.removeAttribute("src");
-            video.load();
-            URL.revokeObjectURL(objectUrl);
-          }
+      function onError() {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error("Unable to load video preview."));
+      }
 
-          function fail(error) {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            release();
-            reject(error instanceof Error ? error : new Error("Unable to load video preview."));
-          }
-
-          video.preload = "auto";
-          video.muted = true;
-          video.playsInline = true;
-          video.onloadedmetadata = function() {
-            if (settled) return;
-            settled = true;
-            cleanup();
-            resolve({
-              video: video,
-              release: release,
-            });
-          };
-          video.onerror = function() {
-            fail(new Error("Unable to load video preview."));
-          };
-          video.src = objectUrl;
-          video.load();
-        });
-      });
+      video.addEventListener("loadedmetadata", onLoadedMetadata);
+      video.addEventListener("canplay", onCanPlay);
+      video.addEventListener("error", onError);
+    });
   }
 
   function seekVideo(video, timeSec) {
@@ -118,44 +104,46 @@
     });
   }
 
-  function capturePosterDataUrl(sourceUrl) {
-    return loadVideoForPoster(sourceUrl)
-      .then(function(result) {
-        var video = result.video;
-        var release = result.release;
+  function capturePosterDataUrl(video) {
+    return waitForVideoMetadata(video)
+      .then(function() {
+        var width = Number(video.videoWidth || 0);
+        var height = Number(video.videoHeight || 0);
+        if (width <= 0 || height <= 0) {
+          return "";
+        }
+
+        var originalTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+        var duration = Number(video.duration || 0);
+        var targetTime = Number.isFinite(duration) && duration > 0.2 ?
+          Math.min(Math.max(duration * 0.18, 0.15), Math.max(duration - 0.05, 0.15)) :
+          0;
+
         return Promise.resolve()
           .then(function() {
-            var width = Number(video.videoWidth || 0);
-            var height = Number(video.videoHeight || 0);
-            if (width <= 0 || height <= 0) {
+            if (targetTime > 0) {
+              return seekVideo(video, targetTime);
+            }
+          })
+          .then(function() {
+            var canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            var ctx = canvas.getContext("2d");
+            if (!ctx) {
               return "";
             }
-
-            var duration = Number(video.duration || 0);
-            var targetTime = Number.isFinite(duration) && duration > 0.2 ?
-              Math.min(Math.max(duration * 0.18, 0.15), Math.max(duration - 0.05, 0.15)) :
-              0;
-
-            return Promise.resolve()
-              .then(function() {
-                if (targetTime > 0) {
-                  return seekVideo(video, targetTime);
-                }
-              })
-              .then(function() {
-                var canvas = document.createElement("canvas");
-                canvas.width = width;
-                canvas.height = height;
-                var ctx = canvas.getContext("2d");
-                if (!ctx) {
-                  return "";
-                }
-                ctx.drawImage(video, 0, 0, width, height);
-                return canvas.toDataURL("image/jpeg", 0.84);
-              });
+            ctx.drawImage(video, 0, 0, width, height);
+            return canvas.toDataURL("image/jpeg", 0.84);
           })
           .finally(function() {
-            release();
+            if (targetTime > 0 && Number.isFinite(originalTime)) {
+              try {
+                video.currentTime = originalTime;
+              } catch {
+                // no-op
+              }
+            }
           });
       })
       .catch(function() {
@@ -202,7 +190,7 @@
   videoWrap.style.display = "block";
   actions.style.display = "flex";
 
-  capturePosterDataUrl(videoUrl || downloadUrl).then(function(capturedPosterUrl) {
+  capturePosterDataUrl(videoEl).then(function(capturedPosterUrl) {
     if (!capturedPosterUrl) {
       return;
     }

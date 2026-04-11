@@ -628,7 +628,7 @@ function hasBrowserRegistrationEvidence() {
   );
 }
 
-function shouldBlockNewSignup() {
+function shouldUseReturningBrowserAuthLayout() {
   return hasBrowserRegistrationEvidence();
 }
 
@@ -1003,7 +1003,7 @@ function openAuth(message = "", {skipPromo = false} = {}) {
   if (
     !skipPromo &&
     !currentUser &&
-    !shouldBlockNewSignup() &&
+    !shouldUseReturningBrowserAuthLayout() &&
     !getStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY)
   ) {
     setStoredFlag(AUTH_GIFT_PROMO_SEEN_KEY, true);
@@ -1019,7 +1019,7 @@ function openAuth(message = "", {skipPromo = false} = {}) {
   if (authBox) authBox.style.display = "block";
   track("auth_form_opened", {
     auth_panel_reason: message ? "with_message" : "manual",
-    signup_blocked: shouldBlockNewSignup(),
+    returning_browser: shouldUseReturningBrowserAuthLayout(),
   });
   updateAuthInAppActions();
   refreshAuthSignupState();
@@ -1054,14 +1054,24 @@ function closeAuth() {
 
 function refreshAuthSignupState() {
   const signUpBtn = $("btnEmailSignUp");
-  if (!signUpBtn) return;
+  const signInBtn = $("btnEmailSignIn");
+  if (!signUpBtn || !signInBtn) return;
 
-  const blocked = shouldBlockNewSignup();
-  signUpBtn.disabled = blocked;
-  signUpBtn.title = blocked ?
-    "This browser already used registration. Log in instead." :
+  const returningBrowser = shouldUseReturningBrowserAuthLayout();
+  signUpBtn.disabled = false;
+  signUpBtn.title = returningBrowser ?
+    "This device already used the free gift. You can still create a new account without bonus credits." :
     "";
-  signUpBtn.textContent = blocked ? "Already registered" : "Sign up";
+  signUpBtn.textContent = returningBrowser ? "Create account" : "Sign up";
+
+  const parent = signUpBtn.parentElement;
+  if (parent && signInBtn.parentElement === parent) {
+    if (returningBrowser) {
+      parent.insertBefore(signInBtn, signUpBtn);
+    } else {
+      parent.insertBefore(signUpBtn, signInBtn);
+    }
+  }
 }
 
 function resolveAuthMethodLabel(user = currentUser) {
@@ -1696,7 +1706,7 @@ function callableErrorMessage(error) {
     return message || "Video is not ready to share yet.";
   }
   if (code.includes("motrend_signup_blocked")) {
-    return message || "This browser already used sign up before. Log in instead.";
+    return message || "This device already used the free gift before. You can still create a new account without bonus credits.";
   }
   if (code.includes("permission-denied")) {
     return message || "You have no access to this trend.";
@@ -4418,22 +4428,12 @@ $("btnEmailSignUp").onclick = async () => {
   const email = $("authEmail").value.trim();
   const pass = $("authPass").value;
 
-   if (shouldBlockNewSignup()) {
-    markAuthAttemptCookie();
-    track("auth_signup_blocked", {
-      method: "email",
-      reason: "browser_registration_marker",
-    });
-    openAuth(
-      "This browser already used sign up before. Log in to the existing account instead.",
-      {skipPromo: true}
-    );
-    return;
-  }
-
   try {
     markAuthAttemptCookie();
-    track("auth_signup_attempt", {method: "email"});
+    track("auth_signup_attempt", {
+      method: "email",
+      returning_browser: shouldUseReturningBrowserAuthLayout(),
+    });
     await ensurePreferredAuthPersistence();
     await createUserWithEmailAndPassword(auth, email, pass);
   } catch (error) {
@@ -4482,7 +4482,7 @@ $("btnLogin").onclick = async () => {
           error_code: typeof error?.code === "string" ? error.code : "",
         });
         showAuthError(
-          "Google sign-in is unavailable in Safari Private mode. Use email sign-in or open the site in regular Safari."
+          "Google sign-in popup was blocked. Try again, or use email sign-in. If you're in Safari Private mode, open the site in regular Safari."
         );
         return;
       }
@@ -6020,7 +6020,7 @@ onAuthStateChanged(auth, async (user) => {
         }
         openAuth(
           callableErrorMessage(error) ||
-            "This browser already used sign up before. Log in instead.",
+            "This device already used the free gift before. You can still create a new account without bonus credits.",
           {skipPromo: true}
         );
         return {signupBlocked: true};

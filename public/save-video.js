@@ -178,9 +178,6 @@
   videoEl.src = videoUrl || downloadUrl;
   videoEl.preload = "metadata";
   videoEl.playsInline = true;
-  if (previewUrl) {
-    videoEl.poster = previewUrl;
-  }
   if (downloadUrl) {
     btnSaveFile.href = downloadUrl;
   } else if (videoUrl) {
@@ -191,10 +188,13 @@
   actions.style.display = "flex";
 
   capturePosterDataUrl(videoEl).then(function(capturedPosterUrl) {
-    if (!capturedPosterUrl) {
+    if (capturedPosterUrl) {
+      videoEl.poster = capturedPosterUrl;
       return;
     }
-    videoEl.poster = capturedPosterUrl;
+    if (previewUrl) {
+      videoEl.poster = previewUrl;
+    }
   });
 
   if (navigator.share) {

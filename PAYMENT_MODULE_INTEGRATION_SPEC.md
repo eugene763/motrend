@@ -1,6 +1,6 @@
 # MoTrend Payment Module Integration Spec
 
-Last updated: 2026-04-14 (Europe/Madrid)
+Last updated: 2026-04-15 (Asia/Tbilisi)
 Status: Beta v1 working snapshot
 
 This document is the practical payment handoff for the current MoTrend beta stack.
@@ -10,7 +10,7 @@ This document is the practical payment handoff for the current MoTrend beta stac
 ### Canonical frontend repo
 - Path: `/Users/malevich/Documents/Playground/motrend`
 - Branch: `feature/motrend-wallet-fastspring`
-- Current committed anchor at snapshot start: `b4bb9b1b3b6a7a097457dfb54f98c7a57ca49ec6`
+- Current committed anchor at snapshot start: `f83c45486708a3e7a14f8ca7c683256252f3bda8`
 
 ### Secondary local clone
 - Path: `/Users/malevich/motrend`
@@ -20,7 +20,7 @@ This document is the practical payment handoff for the current MoTrend beta stac
 ### Backend repo
 - Path: `/Users/malevich/Documents/Playground/moads-platform`
 - Branch: `feature/motrend-wallet-fastspring`
-- Current committed anchor: `73c12443f33fb153714c8442a546751fe8004160`
+- Current committed anchor: `844b6de7563907ad202519bc21b79bcb4be3f762`
 
 ### Live runtime
 - Frontend: [https://trend.moads.agency](https://trend.moads.agency)
@@ -29,8 +29,9 @@ This document is the practical payment handoff for the current MoTrend beta stac
 
 ### Current Beta v1 payment note
 - Active payment provider: `Dodo Payments`
-- QA has temporarily exercised the prod contour with `DODO_ENVIRONMENT=test_mode`
-- Wallet and order flows remain the same in both live/test Dodo environments
+- Production contour is restored to `DODO_ENVIRONMENT=live_mode`
+- Current live API revision: `moads-api-00036-fgz`
+- Wallet and order flows remain the same in both live/test Dodo environments, but prod is no longer pointed at the test provider target
 
 ## 2. Current Payment Architecture
 
@@ -182,8 +183,8 @@ Canonical MoTrend packs:
 - Pro: `pdt_0Nbn40LuSVJ47oKbWRsSd`
 
 ### Runtime note
-- During Beta v1 QA, the production contour may temporarily point to the test IDs above when `DODO_ENVIRONMENT=test_mode` is being exercised.
-- The wallet UI itself does not change; only the provider target changes.
+- Production is currently pointed at the live IDs above under `DODO_ENVIRONMENT=live_mode`.
+- The test IDs remain available only for future QA when prod/runtime is intentionally switched into `test_mode`.
 
 ## 7. Secrets and Environment
 

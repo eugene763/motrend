@@ -1,6 +1,6 @@
 # MoTrend Technical Overview
 
-Last updated: 2026-04-14 (Europe/Madrid)
+Last updated: 2026-04-15 (Asia/Tbilisi)
 Status: Beta v1 working snapshot
 
 This document is the current Beta v1 handoff snapshot for MoTrend. It reflects the live architecture and the practical frontend/backend behavior that is actually in use now, not the older Firebase Functions-era design.
@@ -10,7 +10,7 @@ This document is the current Beta v1 handoff snapshot for MoTrend. It reflects t
 ### Canonical frontend repo
 - Path: `/Users/malevich/Documents/Playground/motrend`
 - Branch: `feature/motrend-wallet-fastspring`
-- Current committed anchor at snapshot start: `b4bb9b1b3b6a7a097457dfb54f98c7a57ca49ec6`
+- Current committed anchor at snapshot start: `f83c45486708a3e7a14f8ca7c683256252f3bda8`
 
 ### Secondary local clone
 - Path: `/Users/malevich/motrend`
@@ -20,7 +20,7 @@ This document is the current Beta v1 handoff snapshot for MoTrend. It reflects t
 ### Backend repo
 - Path: `/Users/malevich/Documents/Playground/moads-platform`
 - Branch: `feature/motrend-wallet-fastspring`
-- Current committed anchor: `73c12443f33fb153714c8442a546751fe8004160`
+- Current committed anchor: `844b6de7563907ad202519bc21b79bcb4be3f762`
 
 ### Live surfaces
 - Main app: [https://trend.moads.agency](https://trend.moads.agency)
@@ -30,8 +30,10 @@ This document is the current Beta v1 handoff snapshot for MoTrend. It reflects t
 - Save/watch fallback page: `https://trend.moads.agency/save-video.html?...`
 
 ### Beta v1 runtime note
-- Production contour is currently used for QA and checkout verification.
-- Dodo has been temporarily exercised in `test_mode` during QA, while the main user path, wallet, and share/download surfaces remain the same.
+- Production contour is currently back on `DODO_ENVIRONMENT=live_mode`.
+- Live Dodo secrets are restored as latest versions in GCP Secret Manager.
+- Live Dodo product IDs are restored in the prod DB pack mapping.
+- Current live API revision: `moads-api-00036-fgz`.
 
 ## 2. Product Summary
 

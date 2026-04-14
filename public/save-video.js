@@ -16,6 +16,38 @@
     }
   }
 
+  function safeShareUrl(value) {
+    try {
+      if (typeof value !== "string") return "";
+      const trimmed = value.trim();
+      if (!trimmed) return "";
+      const url = new URL(trimmed, window.location.origin);
+      if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+      const sameOrigin = url.origin === window.location.origin;
+      const canonicalOrigin = url.origin === "https://trend.moads.agency";
+      const isPublicSharePath = /^\/v\/[a-z0-9_-]+$/i.test(url.pathname);
+      if ((!sameOrigin && !canonicalOrigin) || !isPublicSharePath) {
+        return "";
+      }
+      return url.toString();
+    } catch {
+      return "";
+    }
+  }
+
+  function isTemplatePreviewUrl(value) {
+    const normalized = safeUrl(value);
+    if (!normalized) return false;
+
+    try {
+      const url = new URL(normalized);
+      const decodedPath = decodeURIComponent(url.pathname || "");
+      return decodedPath.includes("/template/thumb/");
+    } catch {
+      return false;
+    }
+  }
+
   function showTemporaryButtonState(button, label, resetLabel, delay) {
     button.textContent = label;
     button.disabled = true;
@@ -155,6 +187,7 @@
   var videoUrl = safeUrl(params.get("videoUrl") || "");
   var downloadUrl = safeUrl(params.get("downloadUrl") || "");
   var previewUrl = safeUrl(params.get("previewUrl") || "");
+  var shareUrl = safeShareUrl(params.get("shareUrl") || "");
   var errorEl = document.getElementById("error");
   var videoWrap = document.getElementById("videoWrap");
   var videoEl = document.getElementById("video");
@@ -163,7 +196,24 @@
   var btnShare = document.getElementById("btnShare");
   var btnCopy = document.getElementById("btnCopy");
   var pageUrl = window.location.href;
+  var shareTargetUrl = shareUrl || pageUrl;
   var copyTargetUrl = downloadUrl || videoUrl;
+  var posterFallbackTimer = null;
+  var posterSettled = false;
+
+  function clearPosterFallbackTimer() {
+    if (posterFallbackTimer) {
+      clearTimeout(posterFallbackTimer);
+      posterFallbackTimer = null;
+    }
+  }
+
+  function applyPoster(url) {
+    if (!url) return;
+    videoEl.poster = url;
+    posterSettled = true;
+    clearPosterFallbackTimer();
+  }
 
   if (!videoUrl && !downloadUrl) {
     errorEl.textContent = "Video URL is missing or invalid.";
@@ -175,6 +225,7 @@
     return;
   }
 
+  videoEl.crossOrigin = "anonymous";
   videoEl.src = videoUrl || downloadUrl;
   videoEl.preload = "metadata";
   videoEl.playsInline = true;
@@ -187,13 +238,21 @@
   videoWrap.style.display = "block";
   actions.style.display = "flex";
 
+  if (previewUrl && !isTemplatePreviewUrl(previewUrl)) {
+    applyPoster(previewUrl);
+  } else if (previewUrl) {
+    posterFallbackTimer = setTimeout(function() {
+      if (!posterSettled) {
+        applyPoster(previewUrl);
+      }
+    }, 1400);
+  }
+
   capturePosterDataUrl(videoEl).then(function(capturedPosterUrl) {
     if (capturedPosterUrl) {
-      videoEl.poster = capturedPosterUrl;
-      return;
-    }
-    if (previewUrl) {
-      videoEl.poster = previewUrl;
+      applyPoster(capturedPosterUrl);
+    } else if (previewUrl) {
+      applyPoster(previewUrl);
     }
   });
 
@@ -202,7 +261,7 @@
       try {
         await navigator.share({
           title: "MoTrend© video",
-          url: pageUrl,
+          url: shareTargetUrl,
         });
       } catch (error) {
         if (!error || error.name === "AbortError") {

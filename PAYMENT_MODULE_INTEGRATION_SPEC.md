@@ -1,63 +1,72 @@
 # MoTrend Payment Module Integration Spec
 
-Last updated: 2026-03-30 (Asia/Tbilisi)
+Last updated: 2026-04-14 (Europe/Madrid)
+Status: Beta v1 working snapshot
 
-This document is a practical handoff spec for continuing payment integration work in a separate branch without replaying prior chat context.
+This document is the practical payment handoff for the current MoTrend beta stack.
 
-## 1) Git Anchors (Local Snapshot)
+## 1. Git and Runtime Anchors
 
 ### Canonical frontend repo
 - Path: `/Users/malevich/Documents/Playground/motrend`
-- Branch: `main`
-- HEAD: `33bdbbe12d1fb758a2e8006ee0331d6a87eb2dcd`
-- Status at snapshot: clean, synced with `origin/main`
+- Branch: `feature/motrend-wallet-fastspring`
+- Current committed anchor at snapshot start: `b4bb9b1b3b6a7a097457dfb54f98c7a57ca49ec6`
 
-### Secondary local clone (legacy/diverged)
+### Secondary local clone
 - Path: `/Users/malevich/motrend`
 - Branch: `main`
-- HEAD: `ec5bee3`
-- Status at snapshot: `ahead 1, behind 12` vs `origin/main`
-- Important: this clone does not contain the current wallet checkout UI/API flow.
+- Local-only mirror for docs/reference
 
-### Backend/API repo (reference for payment contracts)
+### Backend repo
 - Path: `/Users/malevich/Documents/Playground/moads-platform`
-- Branch: `main`
-- HEAD: `cf118bed2538ab6239ba4c8dd72865c5ceee77a0`
+- Branch: `feature/motrend-wallet-fastspring`
+- Current committed anchor: `73c12443f33fb153714c8442a546751fe8004160`
 
-## 2) Scope and Source of Truth
+### Live runtime
+- Frontend: [https://trend.moads.agency](https://trend.moads.agency)
+- API: [https://api.moads.agency](https://api.moads.agency)
+- Health: [https://api.moads.agency/health](https://api.moads.agency/health)
 
-For payment module work, treat this stack as source of truth:
-- frontend: `/Users/malevich/Documents/Playground/motrend/public/app.js`
-- backend routes: `/Users/malevich/Documents/Playground/moads-platform/services/api/src/routes/billing.ts`
-- DB billing logic: `/Users/malevich/Documents/Playground/moads-platform/packages/db/src/billing.ts`
-- pack defaults: `/Users/malevich/Documents/Playground/moads-platform/packages/db/src/motrend-billing.ts`
-- pack upsert script: `/Users/malevich/Documents/Playground/moads-platform/infra/scripts/upsert-motrend-credit-packs.ts`
+### Current Beta v1 payment note
+- Active payment provider: `Dodo Payments`
+- QA has temporarily exercised the prod contour with `DODO_ENVIRONMENT=test_mode`
+- Wallet and order flows remain the same in both live/test Dodo environments
 
-## 3) Frontend Payment Contract (Current)
+## 2. Current Payment Architecture
 
-Wallet modal is implemented in `public/index.html` + `public/app.js`.
+### Frontend payment surfaces
+- Wallet modal in:
+  - [/Users/malevich/Documents/Playground/motrend/public/index.html](/Users/malevich/Documents/Playground/motrend/public/index.html)
+  - [/Users/malevich/Documents/Playground/motrend/public/app.js](/Users/malevich/Documents/Playground/motrend/public/app.js)
 
-### 3.1 API calls from frontend
+### Backend routes
+- [/Users/malevich/Documents/Playground/moads-platform/services/api/src/routes/billing.ts](/Users/malevich/Documents/Playground/moads-platform/services/api/src/routes/billing.ts)
+
+Current MoTrend billing endpoints:
 - `GET /billing/credit-packs`
 - `GET /billing/orders`
-- `POST /billing/orders/checkout` with body:
-```json
-{
-  "priceId": "<billing_price_id>"
-}
-```
+- `POST /billing/orders/checkout`
+- `POST /billing/webhooks/dodo`
 
-### 3.2 Expected response shapes
+### DB and billing logic
+- [/Users/malevich/Documents/Playground/moads-platform/packages/db/src/billing.ts](/Users/malevich/Documents/Playground/moads-platform/packages/db/src/billing.ts)
+- [/Users/malevich/Documents/Playground/moads-platform/packages/db/src/motrend-billing.ts](/Users/malevich/Documents/Playground/moads-platform/packages/db/src/motrend-billing.ts)
+- [/Users/malevich/Documents/Playground/moads-platform/infra/scripts/upsert-motrend-credit-packs.ts](/Users/malevich/Documents/Playground/moads-platform/infra/scripts/upsert-motrend-credit-packs.ts)
 
-`GET /billing/credit-packs`:
+## 3. Wallet Contract
+
+### `GET /billing/credit-packs`
+
+Expected shape:
+
 ```json
 {
   "packs": [
     {
       "billingProductId": "string",
-      "billingProductCode": "string",
+      "billingProductCode": "motrend_credits_starter",
       "priceId": "string",
-      "name": "string",
+      "name": "Starter",
       "creditsAmount": 30,
       "amountMinor": 499,
       "currencyCode": "USD",
@@ -69,7 +78,10 @@ Wallet modal is implemented in `public/index.html` + `public/app.js`.
 }
 ```
 
-`GET /billing/orders`:
+### `GET /billing/orders`
+
+Expected shape:
+
 ```json
 {
   "orders": [
@@ -88,12 +100,23 @@ Wallet modal is implemented in `public/index.html` + `public/app.js`.
 }
 ```
 
-`POST /billing/orders/checkout`:
+### `POST /billing/orders/checkout`
+
+Request:
+
+```json
+{
+  "priceId": "<billing_price_id>"
+}
+```
+
+Response:
+
 ```json
 {
   "orderId": "string",
   "status": "pending",
-  "redirectUrl": "https://...",
+  "redirectUrl": "https://checkout.dodopayments.com/session/...",
   "billingProductCode": "motrend_credits_starter",
   "creditsAmount": 30,
   "amountMinor": 499,
@@ -101,100 +124,148 @@ Wallet modal is implemented in `public/index.html` + `public/app.js`.
 }
 ```
 
-### 3.3 Frontend checkout safety rules
-- Redirect URL is accepted only for host suffixes:
-  - `fastspring.com`
-  - `onfastspring.com`
-- If URL is missing or not whitelisted, frontend treats it as:
-  - `billing_checkout_unavailable`
-- Only one checkout opening is allowed at a time (`walletCheckoutInFlightPriceId` lock).
+## 4. Dodo Integration Details
 
-## 4) Backend Billing Behavior (Current)
+### Active provider code
+- `dodo`
 
-### 4.1 Routes
-- Implemented in `services/api/src/routes/billing.ts`:
-  - `GET /billing/credit-packs`
-  - `GET /billing/orders`
-  - `POST /billing/orders/checkout`
-- Guards: authenticated account context required (`requireAuth`, `resolveAccount`).
+### Checkout session builder
+- [/Users/malevich/Documents/Playground/moads-platform/services/api/src/lib/dodo.ts](/Users/malevich/Documents/Playground/moads-platform/services/api/src/lib/dodo.ts)
 
-### 4.2 Checkout creation model
-- `createBillingCheckoutOrder(...)`:
-  - validates price/product/scope
-  - checks active status
-  - validates checkout URL presence
-  - creates `billing_order` with status `pending`
-  - writes audit log `billing.checkout_order_created`
-- No client-side credit mutation.
-- Wallet balance changes happen via backend ledger operations.
+Current checkout configuration goals:
+- `minimal_address: true`
+- preferred `billing_currency: "USD"`
+- restricted payment methods:
+  - `credit`
+  - `debit`
+  - `apple_pay`
+  - `google_pay`
 
-### 4.3 Fulfillment state (important)
-- Current live flow is checkout-link creation + order record.
-- Credits grant path is handled via backend fulfillment logic (manual/admin-safe path exists).
-- If adding provider webhooks, map webhook terminal states to billing order status and single ledger grant idempotently.
+Important practical note:
+- Dodo may still request country and some address/tax fields depending on jurisdiction, tax rules, and adaptive currency behavior.
+- These flags reduce friction but do not guarantee a no-address checkout.
 
-## 5) Default MoTrend Credit Packs
+### Return flow
+- Checkout return goes back into the MoTrend app
+- Wallet resumes pending checkout state
+- On successful fulfillment the user should see updated balance and the recent order row
 
-Defined in `packages/db/src/motrend-billing.ts`:
-- `Starter` -> `30 credits` -> `499` minor
-- `Creator` -> `80 credits` -> `999` minor
-- `Pro` -> `200 credits` -> `1999` minor
+## 5. Current Pack Definitions
 
-Codes:
+Canonical MoTrend packs:
+
+1. Starter
 - `motrend_credits_starter`
+- `30 credits`
+- `499` minor
+
+2. Creator
 - `motrend_credits_creator`
+- `80 credits`
+- `999` minor
+
+3. Pro
 - `motrend_credits_pro`
+- `200 credits`
+- `1999` minor
 
-## 6) Runtime Configuration for Packs
+## 6. Dodo Product Mapping
 
-`MOTREND_CREDIT_PACKS_JSON` can override defaults via env.
+### Live Dodo product IDs
+- Starter: `pdt_0NbveLQCLSD2Mooo7VM4P`
+- Creator: `pdt_0NbveJet1CbAWPjsr6eRw`
+- Pro: `pdt_0NbveKvRWgGzOx2H7hrdc`
 
-JSON item shape:
-```json
-{
-  "code": "motrend_credits_starter",
-  "name": "Starter",
-  "creditsAmount": 30,
-  "amountMinor": 499,
-  "checkoutUrl": "https://...",
-  "currencyCode": "USD",
-  "marketCode": "global",
-  "languageCode": "en"
-}
-```
+### Test Dodo product IDs
+- Starter: `pdt_0Nbn3AengyfOHAGPiGibQ`
+- Creator: `pdt_0Nbn3kZhICn5HGrxLBvSx`
+- Pro: `pdt_0Nbn40LuSVJ47oKbWRsSd`
 
-If `checkoutUrl` is missing, pack remains visible with `checkoutConfigured=false` and button is disabled/unavailable.
+### Runtime note
+- During Beta v1 QA, the production contour may temporarily point to the test IDs above when `DODO_ENVIRONMENT=test_mode` is being exercised.
+- The wallet UI itself does not change; only the provider target changes.
 
-## 7) Data Bootstrap / Update Procedure
+## 7. Secrets and Environment
 
-Use backend script:
-- `/Users/malevich/Documents/Playground/moads-platform/infra/scripts/upsert-motrend-credit-packs.ts`
+Relevant secrets in GCP:
+- `DODO_API_KEY`
+- `DODO_WEBHOOK_SECRET` or `DODO_WEBHOOK_KEY`
 
-Recommended run sequence:
-1. Load backend env (`DATABASE_URL`, optional `MOTREND_CREDIT_PACKS_JSON`).
-2. Run pack upsert script.
-3. Verify `GET /billing/credit-packs` returns expected `checkoutConfigured`.
-4. Verify `POST /billing/orders/checkout` returns redirect URL for each enabled pack.
+Important runtime envs:
+- `DODO_ENVIRONMENT=live_mode|test_mode`
+- optional `DODO_BASE_URL`
 
-## 8) Frontend-Backend Integration Checklist
+Production deploy script:
+- [/Users/malevich/Documents/Playground/moads-platform/infra/scripts/cloud/deploy-moads-api-prod.sh](/Users/malevich/Documents/Playground/moads-platform/infra/scripts/cloud/deploy-moads-api-prod.sh)
 
-1. Wallet modal opens and loads packs/orders.
-2. At least one pack has `checkoutConfigured=true`.
-3. Clicking `Continue` creates order and redirects to FastSpring URL.
-4. Returning user sees created order in "Recent orders".
-5. Credits balance update path is verified after fulfillment.
-6. Invalid checkout URL never redirects (must show unavailable/failure modal).
+## 8. Fulfillment Rules
 
-## 9) Known Drift and Constraints
+Source of truth for credit grants is always backend-side ledger logic.
 
-1. `/Users/malevich/motrend` is on older code (`ec5bee3`) and does not include this wallet flow.
-2. `moads-platform` env examples still show `SESSION_COOKIE_MAX_AGE_MS=2592000000`, while runtime config now enforces Firebase max (14 days). Keep deployment env aligned with validated bounds.
-3. Firebase Functions runtime for old MoTrend flow is removed from active path; payment work must target shared API routes above.
+Rules:
 
-## 10) Recommended Base for New Payment Branch
+1. Frontend never increments credits directly.
+2. A paid Dodo order must map to one backend billing order.
+3. Fulfillment must be idempotent.
+4. A repeated webhook must not double-credit the wallet.
+5. Failed or abandoned orders must not change the wallet.
 
-Use:
-- frontend branch from `/Users/malevich/Documents/Playground/motrend` at `33bdbbe...`
-- backend branch from `/Users/malevich/Documents/Playground/moads-platform` at `cf118be...`
+## 9. Checkout Metadata and Attribution
 
-If work must start in `/Users/malevich/motrend`, first align it with current `origin/main` or port payment commits from canonical repo before implementation.
+Beta v1 checkout metadata is intentionally kept compact.
+
+Current goals:
+- keep order correlation intact
+- carry attribution essentials
+- avoid oversized or provider-rejected metadata payloads
+
+Attribution sources:
+- first-party cookies
+- GTM/Firebase tracking state
+- restored returning-user identifiers
+
+## 10. Beta v1 QA Checklist
+
+### Safe QA
+
+1. Existing user login
+2. Open wallet
+3. Load packs and orders
+4. Start Dodo checkout
+5. Complete test checkout when runtime is in `test_mode`
+6. Verify return flow and wallet update
+
+### Gift / account rules to verify
+
+1. Fresh browser signup gets `3` credits
+2. Same browser second signup is allowed
+3. Same browser second signup gets no gift
+4. Incognito/new cookie jar can also be gift-suppressed by server-side fingerprint cooldown
+
+### Share / watch / recovery rules to verify
+
+1. Completed job watch/save/share buttons work
+2. Public share uses `/v/<slug>`
+3. Expired prepared artifacts show `Prepare download`
+4. After prepare, watch/download/share return
+
+## 11. Known Beta v1 Constraints
+
+1. Dodo address collection cannot be fully eliminated from our side if Dodo/tax rules require it.
+2. iPhone/Safari preview behavior can still be inconsistent for links that do not yet have a persisted generated preview asset.
+3. The secondary local `motrend` clone is not the canonical implementation source.
+
+## 12. Recommended Base for Ongoing Payment Work
+
+Treat these files as source of truth:
+
+- frontend wallet flow:
+  - [/Users/malevich/Documents/Playground/motrend/public/app.js](/Users/malevich/Documents/Playground/motrend/public/app.js)
+- backend billing routes:
+  - [/Users/malevich/Documents/Playground/moads-platform/services/api/src/routes/billing.ts](/Users/malevich/Documents/Playground/moads-platform/services/api/src/routes/billing.ts)
+- Dodo provider integration:
+  - [/Users/malevich/Documents/Playground/moads-platform/services/api/src/lib/dodo.ts](/Users/malevich/Documents/Playground/moads-platform/services/api/src/lib/dodo.ts)
+- DB billing logic:
+  - [/Users/malevich/Documents/Playground/moads-platform/packages/db/src/billing.ts](/Users/malevich/Documents/Playground/moads-platform/packages/db/src/billing.ts)
+- pack defaults:
+  - [/Users/malevich/Documents/Playground/moads-platform/packages/db/src/motrend-billing.ts](/Users/malevich/Documents/Playground/moads-platform/packages/db/src/motrend-billing.ts)

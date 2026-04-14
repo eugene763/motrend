@@ -1577,6 +1577,26 @@ function buildShareCacheBustedUrl(value, seed = "") {
   }
 }
 
+function safePublicShareUrl(value) {
+  const normalized = safeUrl(value);
+  if (!normalized) {
+    return "";
+  }
+
+  try {
+    const url = new URL(normalized, window.location.origin);
+    const sameOrigin = url.origin === window.location.origin;
+    const canonicalOrigin = url.origin === "https://trend.moads.agency";
+    const isPublicSharePath = /^\/v\/[a-z0-9_-]+$/i.test(url.pathname);
+    if ((!sameOrigin && !canonicalOrigin) || !isPublicSharePath) {
+      return "";
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
 function getLatestJobRecord(jobId) {
   if (!jobId) {
     return null;
@@ -1609,10 +1629,29 @@ function resolvePreferredPreviewUrlForJob(jobId) {
   return getTemplatePreviewUrlForJob(jobId);
 }
 
-function buildSaveVideoPageUrl(videoUrl, downloadUrl = "", previewUrl = "") {
+function getSharePreviewSourceUrlForJob(jobId) {
+  const preparedStateRaw = preparedDownloadByJobId.get(jobId);
+  const preparedState = typeof preparedStateRaw === "string" ?
+    {downloadUrl: preparedStateRaw} :
+    (preparedStateRaw || {});
+  const preparedSourceUrl = safeUrl(
+    preparedState.inlineUrl ||
+    preparedState.downloadUrl ||
+    ""
+  );
+  if (preparedSourceUrl) {
+    return preparedSourceUrl;
+  }
+
+  const latestJob = getLatestJobRecord(jobId);
+  return safeUrl(latestJob?.kling?.outputUrl || "");
+}
+
+function buildSaveVideoPageUrl(videoUrl, downloadUrl = "", previewUrl = "", shareUrl = "") {
   const safeVideoUrl = safeUrl(videoUrl);
   const safeDownloadUrl = safeUrl(downloadUrl);
   const safePreviewUrl = safeUrl(previewUrl);
+  const safeShareLink = safePublicShareUrl(shareUrl);
   if (!safeVideoUrl && !safeDownloadUrl) return "";
   const url = new URL("/save-video.html", window.location.origin);
   if (safeVideoUrl) {
@@ -1623,6 +1662,9 @@ function buildSaveVideoPageUrl(videoUrl, downloadUrl = "", previewUrl = "") {
   }
   if (safePreviewUrl) {
     url.searchParams.set("previewUrl", safePreviewUrl);
+  }
+  if (safeShareLink) {
+    url.searchParams.set("shareUrl", safeShareLink);
   }
   return url.toString();
 }
@@ -4304,18 +4346,10 @@ async function getOrCreatePublicShare(jobId) {
   }
 
   const cached = publicShareByJobId.get(normalizedJobId);
-  const preparedStateRaw = preparedDownloadByJobId.get(normalizedJobId);
-  const preparedState = typeof preparedStateRaw === "string" ?
-    {downloadUrl: preparedStateRaw} :
-    (preparedStateRaw || {});
-  const preparedSourceUrl = safeUrl(
-    preparedState.inlineUrl ||
-    preparedState.downloadUrl ||
-    ""
-  );
+  const previewSourceUrl = getSharePreviewSourceUrlForJob(normalizedJobId);
 
-  if (preparedSourceUrl && !publicSharePreviewRefreshAttemptedJobIds.has(normalizedJobId)) {
-    return await refreshPublicSharePreview(normalizedJobId, preparedSourceUrl);
+  if (previewSourceUrl && !publicSharePreviewRefreshAttemptedJobIds.has(normalizedJobId)) {
+    return await refreshPublicSharePreview(normalizedJobId, previewSourceUrl);
   }
 
   if (cached?.shareUrl) {
@@ -5262,10 +5296,24 @@ function renderDoneJobActions(jobId) {
     preparedState.downloadUrl || preparedState.inlineUrl || ""
   );
   const previewUrl = resolvePreferredPreviewUrlForJob(jobId);
-  const saveVideoPageUrl = buildSaveVideoPageUrl(inlineUrl, preparedUrl, previewUrl);
+  const cachedShareUrl = safePublicShareUrl(publicShareByJobId.get(jobId)?.shareUrl || "");
+  const saveVideoPageUrl = buildSaveVideoPageUrl(
+    inlineUrl,
+    preparedUrl,
+    previewUrl,
+    cachedShareUrl,
+  );
   const saveVideoTargetUrl = preparedUrl || inlineUrl || saveVideoPageUrl;
   const watchTargetUrl = saveVideoPageUrl || inlineUrl || preparedUrl;
   const hasPreparedVideo = Boolean(preparedUrl || inlineUrl);
+
+  if (hasPreparedVideo && !cachedShareUrl && !publicSharePromiseByJobId.has(jobId)) {
+    void getOrCreatePublicShare(jobId)
+      .then(() => {
+        renderJobsList();
+      })
+      .catch(() => {});
+  }
 
   const shareBtn = document.createElement("button");
   shareBtn.className = "btn2";

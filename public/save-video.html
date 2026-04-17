@@ -3,14 +3,8 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <meta name="theme-color" content="#0b0b0b"/>
-  <meta name="apple-mobile-web-app-capable" content="yes"/>
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
-  <meta name="apple-mobile-web-app-title" content="MoTrend"/>
   <title>MoTrend© Video</title>
   <link rel="icon" href="/favicon.ico" sizes="any"/>
-  <link rel="manifest" href="/manifest.webmanifest"/>
-  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"/>
   <style>
     @font-face{font-family:"Coolvetica";src:url("/fonts/CoolveticaRg-Regular.woff") format("woff");font-weight:400;font-style:normal;font-display:swap;}
     @font-face{font-family:"Coolvetica";src:url("/fonts/CoolveticaRg-Bold.woff") format("woff");font-weight:700;font-style:normal;font-display:swap;}
@@ -33,47 +27,6 @@
     .brandLink:hover{opacity:.92}
     .inlineLink{color:var(--accent);text-decoration:none}
     .inlineLink:hover{text-decoration:underline}
-    .pageTop{
-      display:flex;
-      align-items:flex-start;
-      justify-content:space-between;
-      gap:14px;
-    }
-    .pageTopCopy{min-width:0}
-    .pageTopActions{
-      display:flex;
-      flex-direction:column;
-      align-items:flex-end;
-      gap:10px;
-    }
-    .pwaInstallBtn{
-      display:inline-flex;
-      align-items:center;
-      justify-content:center;
-      gap:8px;
-      padding:10px 16px;
-      border:1px solid rgba(185,135,255,.42);
-      border-radius:10px;
-      background:#18101f;
-      color:#deb9ff;
-      font-size:20px;
-      line-height:1.1;
-      font-weight:700;
-      cursor:pointer;
-      box-shadow:0 0 0 1px rgba(185,135,255,.08) inset;
-    }
-    .pwaInstallBtn:hover{
-      border-color:rgba(185,135,255,.7);
-      background:#231230;
-    }
-    .pwaInstallBtn[hidden]{display:none !important;}
-    .pwaInstallWrap{
-      margin-top:14px;
-      display:flex;
-      align-items:stretch;
-      justify-content:center;
-    }
-    .pwaInstallWrap[hidden]{display:none !important;}
     .videoWrap{margin-top:14px;border-radius:14px;overflow:hidden;background:#000;border:1px solid #202020}
     video{display:block;width:100%;max-height:70vh;background:#000}
     .actions{display:flex;flex-direction:column;gap:10px;margin-top:14px}
@@ -83,24 +36,14 @@
     .btn:disabled,.btnGhost:disabled{opacity:.55;cursor:not-allowed}
     .note{margin-top:10px;font-size:18px;opacity:.78}
     .error{color:#f87171;font-size:18px}
-    @media (max-width: 640px){
-      .pageTop{flex-direction:column;align-items:stretch;}
-      .pageTopActions{align-items:stretch;}
-      .pageTopActions .pwaInstallBtn{width:100%;}
-      .pwaInstallWrap .pwaInstallBtn{width:100%;}
-    }
   </style>
 </head>
 <body>
   <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-N2W4DK23" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   <div class="wrap">
     <div class="card">
-      <div class="pageTop">
-        <div class="pageTopCopy">
-          <a class="brandLink" href="/?utm_source=motend_2_nd_page_save"><h1>MoTrend©</h1></a>
-          <div class="muted">Click <a class="inlineLink" href="/?utm_source=motend_2_nd_page_save">here</a> to make your own video.</div>
-        </div>
-      </div>
+      <a class="brandLink" href="/?utm_source=motend_2_nd_page_save"><h1>MoTrend©</h1></a>
+      <div class="muted">Click <a class="inlineLink" href="/?utm_source=motend_2_nd_page_save">here</a> to make your own video.</div>
       <div id="error" class="error" style="display:none;margin-top:12px"></div>
       <div class="videoWrap" id="videoWrap" style="display:none">
         <video id="video" controls playsinline></video>
@@ -111,19 +54,9 @@
         <button id="btnShare" class="btnGhost" type="button">Share</button>
       </div>
       <div class="note">If download does not start, tap <b>Copy URL</b> and open it in another browser.</div>
-      <div class="pwaInstallWrap" data-pwa-install-wrap hidden>
-        <button
-          class="pwaInstallBtn"
-          type="button"
-          data-pwa-install
-          data-pwa-install-source="footer_save_video"
-          hidden
-        >Install app</button>
-      </div>
     </div>
   </div>
   <script src="/gtm-bootstrap.js?v=20260404a"></script>
-  <script src="/pwa.js?v=20260417b"></script>
-  <script src="/save-video.js?v=20260417c"></script>
+  <script src="/save-video.js?v=20260413b"></script>
 </body>
 </html>

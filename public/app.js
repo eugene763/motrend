@@ -27,19 +27,17 @@ import {
   uploadBytesResumable,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
 
-const FIREBASE_API_KEY = "AIzaSyBro7c7o8kiRdAuZZpu73KdKyApX7JuflE";
 const runtimeHost = window.location.hostname.toLowerCase();
 const sameSiteAuthDomains = new Set([
   "trend.moads.agency",
   "www.trend.moads.agency",
 ]);
-
 const runtimeAuthDomain = sameSiteAuthDomains.has(runtimeHost) ?
   runtimeHost :
   "gen-lang-client-0651837818.firebaseapp.com";
 
 const firebaseConfig = {
-  apiKey: FIREBASE_API_KEY,
+  apiKey: "AIzaSyBro7c7o8kiRdAuZZpu73KdKyApX7JuflE",
   authDomain: runtimeAuthDomain,
   projectId: "gen-lang-client-0651837818",
   storageBucket: "gen-lang-client-0651837818.firebasestorage.app",
@@ -164,7 +162,6 @@ function track(name, params = {}) {
 
 const $ = (id) => document.getElementById(id);
 const PLATFORM_API_ORIGIN_OVERRIDE_KEY = "motrend_platform_api_origin_v1";
-const PLATFORM_ACTIVE_ACCOUNT_ID_KEY = "motrend_platform_active_account_id_v1";
 const MOTREND_TEST_GIFT_CREDITS = 3;
 const PLATFORM_REQUEST_TIMEOUT_MS = 30_000;
 const PLATFORM_LOGOUT_TIMEOUT_MS = 5_000;
@@ -203,46 +200,6 @@ function clearStoredPlatformApiOriginOverride() {
   } catch {
     // no-op
   }
-}
-
-function normalizePlatformAccountId(value) {
-  if (typeof value !== "string") return "";
-  return value.trim();
-}
-
-function readStoredPlatformAccountId() {
-  try {
-    return normalizePlatformAccountId(localStorage.getItem(PLATFORM_ACTIVE_ACCOUNT_ID_KEY) || "");
-  } catch {
-    return "";
-  }
-}
-
-function writeStoredPlatformAccountId(value) {
-  try {
-    const normalized = normalizePlatformAccountId(value);
-    if (!normalized) {
-      localStorage.removeItem(PLATFORM_ACTIVE_ACCOUNT_ID_KEY);
-      return;
-    }
-    localStorage.setItem(PLATFORM_ACTIVE_ACCOUNT_ID_KEY, normalized);
-  } catch {
-    // no-op
-  }
-}
-
-function resolveActivePlatformAccountId() {
-  const sessionAccountId = normalizePlatformAccountId(currentPlatformSession?.account?.id);
-  if (sessionAccountId) {
-    return sessionAccountId;
-  }
-
-  const bootstrapAccountId = normalizePlatformAccountId(currentPlatformBootstrap?.account?.id);
-  if (bootstrapAccountId) {
-    return bootstrapAccountId;
-  }
-
-  return readStoredPlatformAccountId();
 }
 
 function stripPlatformApiQueryParam() {
@@ -315,9 +272,7 @@ function resolvePlatformApiOrigin() {
     runtimeHost.endsWith(".web.app") ||
     runtimeHost.endsWith(".firebaseapp.com")
   ) {
-    return runtimeHost === "trend.moads.agency" || runtimeHost === "www.trend.moads.agency" ?
-      "https://api.moads.agency" :
-      "https://api-dev.moads.agency";
+    return "https://api.moads.agency";
   }
 
   return "";
@@ -1029,28 +984,6 @@ function showNoticeModal({
   });
 }
 
-function maybeShowGenerationInstallOffer({
-  jobId = "",
-  templateId = "",
-  selectionKind = "",
-} = {}) {
-  try {
-    const pwa = window.__MOTREND_PWA__;
-    if (!pwa || typeof pwa.showGenerationInstallOffer !== "function") {
-      return false;
-    }
-
-    return pwa.showGenerationInstallOffer({
-      jobId,
-      templateId,
-      selectionKind,
-    }) === true;
-  } catch (error) {
-    console.warn("generation install offer failed", error);
-    return false;
-  }
-}
-
 function setSupportButtonMessage(supportCode = "") {
   const btn = $("supportBtn");
   if (!btn) return;
@@ -1162,14 +1095,6 @@ function buildPlatformUrl(path) {
   return `${platformApiBaseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
-function shouldAttachPlatformFirebaseIdToken() {
-  return (
-    platformApiBaseUrl === "https://api-dev.moads.agency" ||
-    platformApiBaseUrl === "http://localhost:8080" ||
-    platformApiBaseUrl === "http://127.0.0.1:8080"
-  );
-}
-
 function createPlatformRequestError(message, payload = null, status = 0, code = "") {
   const error = new Error(message || "Platform request failed.");
   error.platformPayload = payload;
@@ -1184,24 +1109,10 @@ async function platformRequest(path, options = {}) {
     throw createPlatformRequestError("Platform API is not configured.");
   }
 
-  const activePlatformAccountId = resolveActivePlatformAccountId();
   const headers = {
     Accept: "application/json",
     ...(options.headers || {}),
   };
-  if (activePlatformAccountId && path !== "/auth/session-login") {
-    headers["x-account-id"] = activePlatformAccountId;
-  }
-  if (path !== "/auth/session-login" && shouldAttachPlatformFirebaseIdToken() && currentUser) {
-    try {
-      const idToken = await currentUser.getIdToken();
-      if (typeof idToken === "string" && idToken.trim()) {
-        headers.Authorization = `Bearer ${idToken.trim()}`;
-      }
-    } catch (error) {
-      console.warn("platform firebase id token attach failed", error);
-    }
-  }
   let body = options.body;
   if (body !== undefined && body !== null && !(body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
@@ -1266,7 +1177,6 @@ function clearPlatformSessionState() {
   platformBootstrapPromise = null;
   platformBootstrapPromiseUid = "";
   platformReauthPromise = null;
-  writeStoredPlatformAccountId("");
   publicShareByJobId.clear();
   publicSharePromiseByJobId.clear();
   publicSharePreviewRefreshAttemptedJobIds.clear();
@@ -1300,7 +1210,6 @@ async function restorePlatformSessionFromCookie(user = currentUser) {
 
     currentPlatformSession = session;
     currentPlatformMotrendProfile = motrendProfile;
-    writeStoredPlatformAccountId(session?.account?.id || "");
     return {
       bootstrap: null,
       session,
@@ -1388,7 +1297,6 @@ async function bootstrapPlatformSession(user) {
   }
 
   currentPlatformBootstrap = bootstrap;
-  writeStoredPlatformAccountId(bootstrap?.account?.id || "");
 
   const [sessionResult, motrendProfileResult] = await Promise.allSettled([
     platformRequest("/auth/me"),
@@ -1404,9 +1312,6 @@ async function bootstrapPlatformSession(user) {
   currentPlatformMotrendProfile = motrendProfileResult.status === "fulfilled" ?
     motrendProfileResult.value :
     buildBootstrapMotrendProfile(bootstrap);
-  if (sessionResult.status === "fulfilled") {
-    writeStoredPlatformAccountId(sessionResult.value?.account?.id || bootstrap?.account?.id || "");
-  }
 
   if (sessionResult.status === "rejected") {
     console.warn("platform auth/me failed", sessionResult.reason);
@@ -1682,13 +1587,8 @@ function safePublicShareUrl(value) {
     const url = new URL(normalized, window.location.origin);
     const sameOrigin = url.origin === window.location.origin;
     const canonicalOrigin = url.origin === "https://trend.moads.agency";
-    const devApiPublicOrigin = url.origin === "https://api-dev.moads.agency";
     const isPublicSharePath = /^\/v\/[a-z0-9_-]+$/i.test(url.pathname);
-    const isDevApiPublicPath = /^\/public\/motrend\/v\/[a-z0-9_-]+$/i.test(url.pathname);
-    if (
-      (!sameOrigin && !canonicalOrigin && !devApiPublicOrigin) ||
-      (!isPublicSharePath && !isDevApiPublicPath)
-    ) {
+    if ((!sameOrigin && !canonicalOrigin) || !isPublicSharePath) {
       return "";
     }
     return url.toString();
@@ -1767,55 +1667,6 @@ function buildSaveVideoPageUrl(videoUrl, downloadUrl = "", previewUrl = "", shar
     url.searchParams.set("shareUrl", safeShareLink);
   }
   return url.toString();
-}
-
-function buildExternalPublicWatchUrl(shareUrl) {
-  const safeShareLink = safePublicShareUrl(shareUrl);
-  if (!safeShareLink) {
-    return "";
-  }
-
-  try {
-    const url = new URL(safeShareLink, window.location.origin);
-    if (/^\/public\/motrend\/v\/[a-z0-9_-]+$/i.test(url.pathname)) {
-      return url.toString();
-    }
-    if (!/^\/v\/[a-z0-9_-]+$/i.test(url.pathname)) {
-      return "";
-    }
-    return buildPlatformUrl(`/public/motrend${url.pathname}`);
-  } catch {
-    return "";
-  }
-}
-
-function rewritePublicShareUrlForQa(value) {
-  const safeShareLink = safePublicShareUrl(value);
-  if (!safeShareLink) {
-    return "";
-  }
-
-  if (
-    runtimeHost === "trend.moads.agency" ||
-    runtimeHost === "www.trend.moads.agency" ||
-    runtimeHost === "localhost" ||
-    runtimeHost === "127.0.0.1"
-  ) {
-    return safeShareLink;
-  }
-
-  try {
-    const url = new URL(safeShareLink);
-    const slugMatch = url.pathname.match(/\/v\/([a-z0-9_-]+)$/i) ||
-      url.pathname.match(/\/public\/motrend\/v\/([a-z0-9_-]+)$/i);
-    const slug = slugMatch?.[1] || "";
-    if (!slug || !platformApiBaseUrl) {
-      return safeShareLink;
-    }
-    return `${platformApiBaseUrl}/public/motrend/v/${encodeURIComponent(slug)}`;
-  } catch {
-    return safeShareLink;
-  }
 }
 
 function callableErrorMessage(error) {
@@ -5446,16 +5297,14 @@ function renderDoneJobActions(jobId) {
   );
   const previewUrl = resolvePreferredPreviewUrlForJob(jobId);
   const cachedShareUrl = safePublicShareUrl(publicShareByJobId.get(jobId)?.shareUrl || "");
-  const qaShareUrl = rewritePublicShareUrlForQa(cachedShareUrl);
-  const browserSafeWatchUrl = buildExternalPublicWatchUrl(qaShareUrl);
   const saveVideoPageUrl = buildSaveVideoPageUrl(
     inlineUrl,
     preparedUrl,
     previewUrl,
-    qaShareUrl,
+    cachedShareUrl,
   );
   const saveVideoTargetUrl = preparedUrl || inlineUrl || saveVideoPageUrl;
-  const watchTargetUrl = browserSafeWatchUrl || saveVideoPageUrl || inlineUrl || preparedUrl;
+  const watchTargetUrl = saveVideoPageUrl || inlineUrl || preparedUrl;
   const hasPreparedVideo = Boolean(preparedUrl || inlineUrl);
 
   if (hasPreparedVideo && !cachedShareUrl && !publicSharePromiseByJobId.has(jobId)) {
@@ -5480,7 +5329,7 @@ function renderDoneJobActions(jobId) {
         typeof sharePayload?.shareUrl === "string" ? sharePayload.shareUrl : ""
       );
       const shareTargetUrl = buildShareCacheBustedUrl(
-        rewritePublicShareUrlForQa(rawShareTargetUrl),
+        rawShareTargetUrl,
         safeUrl(sharePayload?.previewImageUrl || "") || jobId,
       );
       if (!shareTargetUrl) {
@@ -5996,15 +5845,9 @@ $("btnGenerate").onclick = async () => {
     if (finalizePayload?.dispatchDeferred === true) {
       setStatus("Upload finished. Background queue is retrying — generation may start a bit later.");
     }
-    const installOfferShown = maybeShowGenerationInstallOffer({
-      jobId,
-      templateId: selectedTemplate?.id || "",
-      selectionKind: selectedTrendKind,
-    });
     if (
       useReferenceVideo &&
       referenceVideoWasPendingAtGenerate &&
-      !installOfferShown &&
       !getStoredFlag(getReferenceVideoUploadNoticeKey(currentUser?.uid || ""))
     ) {
       setStoredFlag(getReferenceVideoUploadNoticeKey(currentUser?.uid || ""), true);

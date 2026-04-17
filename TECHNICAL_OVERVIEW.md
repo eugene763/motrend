@@ -29,18 +29,11 @@ This document is the current Beta v1 handoff snapshot for MoTrend. It reflects t
 - Public share route: `https://trend.moads.agency/v/<slug>`
 - Save/watch fallback page: `https://trend.moads.agency/save-video.html?...`
 
-### QA surfaces
-- Firebase Hosting preview channels on the canonical site project are the frontend QA contour.
-- Any `*.web.app` or `*.firebaseapp.com` frontend host now targets `https://api-dev.moads.agency` automatically.
-- `api-dev.moads.agency` remains backed by dev Cloud SQL and test-mode payment wiring.
-- Preview deploy command: `./deploy-preview.sh [channel-id]`
-
 ### Beta v1 runtime note
 - Production contour is currently back on `DODO_ENVIRONMENT=live_mode`.
 - Live Dodo secrets are restored as latest versions in GCP Secret Manager.
 - Live Dodo product IDs are restored in the prod DB pack mapping.
 - Current live API revision: `moads-api-00036-fgz`.
-- Safe QA contour uses Firebase Hosting preview URLs + `api-dev.moads.agency` + dev Cloud SQL + `DODO_ENVIRONMENT=test_mode`.
 
 ## 2. Product Summary
 
@@ -237,7 +230,6 @@ Result:
 ### Important constraint for QA
 - Do not spend real provider generations unless explicitly intended.
 - Safe QA should stop at upload, checkout, share, or already-completed-job flows.
-- Payment QA should run only on the Firebase preview / `web.app` frontend contour or other non-prod hosts that resolve to `api-dev.moads.agency`.
 
 ## 8. Billing and Wallet
 
@@ -264,7 +256,6 @@ Beta v1 checkout notes:
   - `minimal_address: true`
   - restricted payment methods
   - preferred `USD` billing currency
-- Dev-cloud/test contour should seed MoTrend credit packs with Dodo test product IDs, not the live pack IDs used in prod.
 
 ## 9. Share, Watch, Download
 

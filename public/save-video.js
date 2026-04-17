@@ -25,60 +25,11 @@
       if (url.protocol !== "http:" && url.protocol !== "https:") return "";
       const sameOrigin = url.origin === window.location.origin;
       const canonicalOrigin = url.origin === "https://trend.moads.agency";
-      const devApiPublicOrigin = url.origin === "https://api-dev.moads.agency";
       const isPublicSharePath = /^\/v\/[a-z0-9_-]+$/i.test(url.pathname);
-      const isDevApiPublicPath = /^\/public\/motrend\/v\/[a-z0-9_-]+$/i.test(url.pathname);
-      if (
-        (!sameOrigin && !canonicalOrigin && !devApiPublicOrigin) ||
-        (!isPublicSharePath && !isDevApiPublicPath)
-      ) {
+      if ((!sameOrigin && !canonicalOrigin) || !isPublicSharePath) {
         return "";
       }
       return url.toString();
-    } catch {
-      return "";
-    }
-  }
-
-  function isStandalone() {
-    return Boolean(
-      window.matchMedia && window.matchMedia("(display-mode: standalone)").matches
-    );
-  }
-
-  function isMobileLike() {
-    var ua = navigator.userAgent || "";
-    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua) ||
-      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  }
-
-  function resolvePlatformApiOrigin() {
-    var host = (window.location.hostname || "").toLowerCase();
-    if (host === "localhost" || host === "127.0.0.1") {
-      return "http://localhost:8080";
-    }
-    if (
-      host === "trend.moads.agency" ||
-      host === "www.trend.moads.agency"
-    ) {
-      return "https://api.moads.agency";
-    }
-    return "https://api-dev.moads.agency";
-  }
-
-  function buildExternalPublicSharePageUrl(value) {
-    var safeLink = safeShareUrl(value);
-    if (!safeLink) return "";
-
-    try {
-      var url = new URL(safeLink, window.location.origin);
-      if (/^\/public\/motrend\/v\/[a-z0-9_-]+$/i.test(url.pathname)) {
-        return url.toString();
-      }
-      if (!/^\/v\/[a-z0-9_-]+$/i.test(url.pathname)) {
-        return "";
-      }
-      return resolvePlatformApiOrigin() + "/public/motrend" + url.pathname;
     } catch {
       return "";
     }
@@ -246,15 +197,9 @@
   var btnCopy = document.getElementById("btnCopy");
   var pageUrl = window.location.href;
   var shareTargetUrl = shareUrl || pageUrl;
-  var copyTargetUrl = shareTargetUrl;
-  var browserSafeSharePageUrl = buildExternalPublicSharePageUrl(shareUrl);
+  var copyTargetUrl = downloadUrl || videoUrl;
   var posterFallbackTimer = null;
   var posterSettled = false;
-
-  if (isStandalone() && !isMobileLike() && browserSafeSharePageUrl) {
-    window.location.replace(browserSafeSharePageUrl);
-    return;
-  }
 
   function clearPosterFallbackTimer() {
     if (posterFallbackTimer) {

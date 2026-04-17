@@ -4,7 +4,7 @@
   }
   window.__MOTREND_GTM_INITIALIZED__ = true;
 
-  const GTM_CONTAINER_ID = "GTM-N2W4DK23";
+  const GTM_CONTAINER_ID = "GTM-MK8VXS47";
   const ATTRIBUTION_STORAGE_KEY = "motrend_attribution_v1";
   const ATTRIBUTION_FIRST_COOKIE_KEY = "motrend_attr_first_v1";
   const ATTRIBUTION_LAST_COOKIE_KEY = "motrend_attr_last_v1";
@@ -308,6 +308,19 @@
     return state;
   }
 
+  function hasExistingGtmLoader() {
+    if (window.google_tag_manager && typeof window.google_tag_manager === "object") {
+      return Boolean(window.google_tag_manager[GTM_CONTAINER_ID]);
+    }
+
+    const encodedId = encodeURIComponent(GTM_CONTAINER_ID);
+    return Boolean(
+      document.querySelector(
+        "script[src*='googletagmanager.com/gtm.js?id=" + encodedId + "']"
+      )
+    );
+  }
+
   window.dataLayer = window.dataLayer || [];
 
   const bridge = {
@@ -336,10 +349,13 @@
   };
 
   window.__MOTREND_GTM__ = bridge;
-  window.dataLayer.push({
-    "gtm.start": Date.now(),
-    event: "gtm.js",
-  });
+  const gtmAlreadyRequested = hasExistingGtmLoader();
+  if (!gtmAlreadyRequested) {
+    window.dataLayer.push({
+      "gtm.start": Date.now(),
+      event: "gtm.js",
+    });
+  }
   const initialState = persistState();
   window.dataLayer.push({
     event: "motrend_context",
@@ -350,7 +366,7 @@
   });
 
   const existingScript = document.querySelector("script[data-motrend-gtm='1']");
-  if (!existingScript) {
+  if (!existingScript && !gtmAlreadyRequested) {
     const script = document.createElement("script");
     script.async = true;
     script.dataset.motrendGtm = "1";

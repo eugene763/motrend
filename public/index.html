@@ -4,8 +4,14 @@
   <meta charset="utf-8"/>
   <meta name="description" content="Turn your photo into a viral trending video — MoTrend©"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta name="theme-color" content="#0b0b0b"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="MoTrend"/>
   <title>MoTrend©</title>
   <link rel="icon" href="/favicon.ico" sizes="any"/>
+  <link rel="manifest" href="/manifest.webmanifest"/>
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"/>
 
   <style>
     /* Fonts (Tilda: Coolvetica) */
@@ -172,6 +178,51 @@ a{color:#fff}
 .brandLink:hover{opacity:.92}
 .brandTitle{margin:0 0 12px;font-size:58px;line-height:.92}
 .brandSubtitle{max-width:480px;font-size:22px;line-height:1.18;opacity:.78}
+.pwaInstallBtn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:10px 16px;
+  border:1px solid rgba(185,135,255,.42);
+  border-radius:10px;
+  background:#18101f;
+  color:#deb9ff;
+  font-size:20px;
+  line-height:1.1;
+  font-weight:700;
+  box-shadow:0 0 0 1px rgba(185,135,255,.08) inset;
+}
+.pwaInstallBtn:hover{
+  border-color:rgba(185,135,255,.7);
+  background:#231230;
+}
+.pwaInstallBtn[hidden]{display:none !important;}
+.pwaFooterInstall{
+  margin:18px 0 26px;
+  padding:16px;
+  border:1px solid rgba(185,135,255,.16);
+  border-radius:18px;
+  background:linear-gradient(180deg, rgba(185,135,255,.08), rgba(185,135,255,.04));
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+}
+.pwaFooterInstall[hidden]{display:none !important;}
+.pwaFooterCopy{
+  min-width:0;
+}
+.pwaFooterTitle{
+  font-size:24px;
+  line-height:1.02;
+  margin-bottom:6px;
+}
+.pwaFooterText{
+  color:var(--muted);
+  font-size:16px;
+  line-height:1.32;
+}
 .supportBtn{
   display:none;
   padding:10px 16px;
@@ -394,6 +445,11 @@ a{color:#fff}
   font-size:14px;
 }
 
+@media (max-width: 640px){
+  .topBar{flex-direction:column;align-items:stretch;}
+  .supportBtn{width:100%;justify-content:center;}
+  .pwaFooterInstall{flex-direction:column;align-items:stretch;}
+  .pwaFooterInstall .pwaInstallBtn{width:100%;justify-content:center;}
   .brandTitle{font-size:46px;}
   .brandSubtitle{font-size:18px;line-height:1.22;}
 }
@@ -406,7 +462,7 @@ a{color:#fff}
   <div class="wrap">
     <div class="topBar">
       <div class="brandBlock">
-        <a class="brandLink" href="https://trend.moads.agency/">
+        <a class="brandLink" href="/">
           <h1 class="brandTitle">MoTrend©</h1>
         </a>
         <div class="muted brandSubtitle">Turn your photo into a viral trend</div>
@@ -517,6 +573,20 @@ a{color:#fff}
   <div id="jobs" class="muted">No trends yet.</div>
 </div>
 
+      <div class="pwaFooterInstall" data-pwa-install-wrap hidden>
+        <div class="pwaFooterCopy">
+          <div class="pwaFooterTitle">Keep MoTrend On Your Home Screen</div>
+          <div class="pwaFooterText">Install the app to reopen your active generations faster and come back in one tap.</div>
+        </div>
+        <button
+          class="pwaInstallBtn"
+          type="button"
+          data-pwa-install
+          data-pwa-install-source="footer_main"
+          hidden
+        >Install app</button>
+      </div>
+
       <div class="brandFooter">
         <span>by</span>
         <a href="https://moads.agency?utm_source=motrends_web" target="_blank" rel="noopener noreferrer">
@@ -564,6 +634,7 @@ a{color:#fff}
   </div>
 
   <script src="/gtm-bootstrap.js?v=20260404a"></script>
-  <script type="module" src="/app.js?v=20260413b"></script>
+  <script src="/pwa.js?v=20260417b"></script>
+  <script type="module" src="/app.js?v=20260417r2"></script>
 </body>
 </html>

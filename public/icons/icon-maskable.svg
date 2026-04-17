@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="56" y1="52" x2="458" y2="462" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#262626"/>
+      <stop offset="1" stop-color="#0d0d12"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(260 206) rotate(90) scale(164)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#C589FF" stop-opacity=".72"/>
+      <stop offset=".52" stop-color="#A96BFF" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#A96BFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="tentacle" x1="128" y1="146" x2="382" y2="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D7A3FF"/>
+      <stop offset=".4" stop-color="#B274FF"/>
+      <stop offset="1" stop-color="#7B42D8"/>
+    </linearGradient>
+    <linearGradient id="tentacleShadow" x1="174" y1="170" x2="350" y2="338" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#63319E"/>
+      <stop offset="1" stop-color="#3A1C65"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="160" fill="url(#bg)"/>
+  <circle cx="260" cy="206" r="164" fill="url(#glow)"/>
+  <path d="M142 340C110 370 106 414 146 418C184 422 196 380 178 344C154 296 166 212 212 192C244 178 264 204 260 238C256 274 222 292 210 326C200 354 210 390 244 392C292 396 294 308 312 250C326 204 364 192 396 216C434 244 436 302 408 334C380 366 334 368 316 338C300 310 316 284 348 280C378 278 404 298 410 328C418 358 398 390 360 404" fill="none" stroke="url(#tentacle)" stroke-linecap="round" stroke-linejoin="round" stroke-width="46"/>
+  <path d="M154 340C128 364 128 398 158 400C184 402 192 374 178 344C156 298 168 224 210 208C236 198 248 218 246 240C244 266 218 286 208 318C200 342 210 372 238 374C274 376 280 304 298 252C312 218 344 208 370 226C402 248 404 292 382 318C360 344 328 348 316 324C304 302 316 286 342 284C366 284 388 302 392 326C398 352 382 378 352 388" fill="none" stroke="url(#tentacleShadow)" stroke-linecap="round" stroke-linejoin="round" stroke-opacity=".72" stroke-width="16"/>
+  <g fill="#E8C7FF" fill-opacity=".5">
+    <circle cx="164" cy="376" r="6"/>
+    <circle cx="184" cy="360" r="6"/>
+    <circle cx="200" cy="318" r="6"/>
+    <circle cx="220" cy="344" r="6"/>
+    <circle cx="316" cy="322" r="6"/>
+    <circle cx="338" cy="302" r="6"/>
+    <circle cx="358" cy="310" r="6"/>
+    <circle cx="372" cy="338" r="6"/>
+  </g>
+  <g fill="#F7E7FF" fill-opacity=".32">
+    <ellipse cx="174" cy="222" rx="20" ry="9" transform="rotate(-24 174 222)"/>
+    <ellipse cx="250" cy="188" rx="22" ry="9" transform="rotate(-10 250 188)"/>
+    <ellipse cx="348" cy="226" rx="20" ry="9" transform="rotate(22 348 226)"/>
+  </g>
+</svg>

@@ -1,39 +1,16 @@
 {
-  "firestore": {
-    "database": "motrend",
-    "location": "us-central1",
-    "rules": "firestore.rules",
-    "indexes": "firestore.indexes.json"
-  },
-  "functions": [
-    {
-      "codebase": "default",
-      "disallowLegacyRuntimeConfig": true,
-      "ignore": [
-        "node_modules",
-        ".git",
-        "firebase-debug.log",
-        "firebase-debug.*.log",
-        "*.local"
-      ],
-      "source": "functions",
-      "predeploy": [
-        "npm --prefix \"$RESOURCE_DIR\" run lint",
-        "npm --prefix \"$RESOURCE_DIR\" run build"
-      ]
-    }
-  ],
   "hosting": {
     "public": "public",
     "redirects": [
       {
         "source": "/v/:slug",
-        "destination": "https://api.moads.agency/public/motrend/v/:slug",
+        "destination": "https://api-dev.moads.agency/public/motrend/v/:slug",
         "type": 302
       }
     ],
     "ignore": [
       "firebase.json",
+      "firebase.preview.json",
       "**/.*",
       "**/node_modules/**"
     ],
@@ -102,40 +79,7 @@
             "value": "no-cache"
           }
         ]
-      },
-      {
-        "source": "/sw.js",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "no-cache"
-          }
-        ]
-      },
-      {
-        "source": "/manifest.webmanifest",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "no-cache"
-          }
-        ]
-      },
-      {
-        "source": "/pwa.js",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "no-cache"
-          }
-        ]
       }
     ]
-  },
-  "emulators": {
-    "singleProjectMode": true
-  },
-  "storage": {
-    "rules": "storage.rules"
   }
 }

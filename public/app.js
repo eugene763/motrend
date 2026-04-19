@@ -1720,11 +1720,14 @@ function callableErrorMessage(error) {
   if (code.includes("upload_stalled")) {
     return "Video upload stalled. Try again.";
   }
+  if (code.includes("active_queue_limit_reached")) {
+    return message || "You already have several generations in progress. Wait for one to finish before starting another.";
+  }
   if (code.includes("failed-precondition")) {
     return message || "Template is unavailable. Pick another one.";
   }
   if (code.includes("active_job_exists")) {
-    return message || "Finish your current upload or generation first.";
+    return message || "Finish your current upload first.";
   }
   if (code.includes("template_inactive")) {
     return message || "Template is unavailable. Pick another one.";
@@ -1802,6 +1805,17 @@ function extractActiveJobConflict(error) {
     activeJobId,
     activeStatus,
   };
+}
+
+function isReferenceVideoFailure(error) {
+  const code = typeof error?.code === "string" ? error.code.toLowerCase() : "";
+  const message = typeof error?.message === "string" ? error.message.toLowerCase() : "";
+  return (
+    code.includes("reference_video") ||
+    code.includes("missing_reference_video") ||
+    message.includes("reference video") ||
+    message.includes("video upload stalled")
+  );
 }
 
 function escapeHtml(value) {
@@ -3567,7 +3581,7 @@ async function maybeStartReferenceVideoAutoUpload(fileToken) {
     }
     const activeJobConflict = extractActiveJobConflict(error);
     if (activeJobConflict) {
-      showFormError("Finish your current upload or generation before starting a new one.");
+      showFormError("Finish your current upload before starting a new one.");
       return;
     }
     showFormError(callableErrorMessage(error));
@@ -5877,7 +5891,8 @@ $("btnGenerate").onclick = async () => {
     setUploadSafetyHint("", false);
     if (
       selectedTrendKind === TREND_SELECTION_REFERENCE &&
-      selectedReferenceVideoFile
+      selectedReferenceVideoFile &&
+      isReferenceVideoFailure(error)
     ) {
       selectedReferenceVideoUploadState = "error";
       refreshReferenceVideoCardUi();

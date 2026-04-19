@@ -2612,6 +2612,7 @@ const PROGRESS_STAGE_E_MS = 240000; // 97-99
 const RESUME_UPLOAD_DELAY_MS = 5 * 60 * 1000;
 const LARGE_REFERENCE_VIDEO_HINT_BYTES = 20 * 1024 * 1024;
 const REFERENCE_UPLOAD_STALL_TIMEOUT_MS = 60_000;
+const REFERENCE_VIDEO_METADATA_TIMEOUT_MS = 4_000;
 const authRestoreReadyPromise = new Promise((resolve) => {
   authRestoreReadyResolver = resolve;
 });
@@ -3125,8 +3126,8 @@ function getReferenceVideoCostEstimatePresentation() {
   }
 
   return {
-    text: "Calculating cost…",
-    title: "Calculating cost",
+    text: "Cost after upload",
+    title: "Exact cost will be calculated from the uploaded video length.",
     visible: true,
   };
 }
@@ -3293,8 +3294,13 @@ function readVideoFileDurationSeconds(file) {
     const objectUrl = URL.createObjectURL(file);
     const video = document.createElement("video");
     let settled = false;
+    let timeoutId = null;
 
     const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
       URL.revokeObjectURL(objectUrl);
       try {
         video.pause();
@@ -3328,6 +3334,9 @@ function readVideoFileDurationSeconds(file) {
       }
       finish(() => resolve(duration));
     }, {once: true});
+    timeoutId = setTimeout(() => {
+      finish(() => reject(new Error("Unable to read video duration.")));
+    }, REFERENCE_VIDEO_METADATA_TIMEOUT_MS);
     video.src = objectUrl;
   });
 }
@@ -3755,8 +3764,13 @@ async function getSelectedTrendCostCredits() {
   ) {
     let duration = selectedReferenceVideoDurationSec;
     if (!Number.isFinite(duration) || duration <= 0) {
-      duration = await readVideoFileDurationSeconds(selectedReferenceVideoFile);
-      selectedReferenceVideoDurationSec = duration;
+      try {
+        duration = await readVideoFileDurationSeconds(selectedReferenceVideoFile);
+        selectedReferenceVideoDurationSec = duration;
+      } catch {
+        selectedReferenceVideoDurationSec = null;
+        return null;
+      }
     }
     return Math.max(1, Math.ceil(duration));
   }

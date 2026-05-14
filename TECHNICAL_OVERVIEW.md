@@ -22,6 +22,33 @@ Primary production surface:
 - Main site: [https://trend.moads.agency/](https://trend.moads.agency/)
 - Firebase Hosting origin: [https://gen-lang-client-0651837818.web.app](https://gen-lang-client-0651837818.web.app)
 
+Current frontend contours:
+
+- Source of truth: `main`; do not maintain long-lived `dev` and `prod` git branches.
+- Production frontend:
+  - domain: `https://trend.moads.agency/`
+  - Firebase Hosting site: `gen-lang-client-0651837818`
+  - platform API: `https://api.moads.agency`
+  - indexing: open
+  - browser analytics: enabled
+- Dev-cloud frontend:
+  - domain: `https://trend-dev.moads.agency/`
+  - Firebase Hosting site: `moads-trend-dev`
+  - first Firebase site creation/domain attachment is a separate cloud setup step
+  - platform API: `https://api-dev.moads.agency`
+  - indexing: blocked by `robots.txt` and `X-Robots-Tag`
+  - browser analytics: disabled
+- Local frontend:
+  - host: `localhost` or `127.0.0.1`
+  - platform API: `http://localhost:8080`
+  - browser analytics: disabled
+
+Frontend-only deploy scripts:
+
+- `./deploy-dev.sh` deploys only the dev Firebase Hosting site.
+- `./deploy-prod-frontend.sh` deploys only the production Firebase Hosting frontend.
+- `./deploy-prod.sh` is the legacy full deploy path and can deploy functions, rules, and indexes; do not use it for frontend-only releases.
+
 The project is optimized heavily for mobile browsers, including in-app browsers such as Telegram and Instagram, but some iOS limitations remain unavoidable.
 
 ## 2. Tech Stack
@@ -95,6 +122,8 @@ Important architectural decisions:
 Main config files:
 
 - [/Users/malevich/Documents/Playground/motrend/firebase.json](/Users/malevich/Documents/Playground/motrend/firebase.json)
+- [/Users/malevich/Documents/Playground/motrend/firebase.hosting.dev.json](/Users/malevich/Documents/Playground/motrend/firebase.hosting.dev.json)
+- [/Users/malevich/Documents/Playground/motrend/firebase.hosting.prod.json](/Users/malevich/Documents/Playground/motrend/firebase.hosting.prod.json)
 - [/Users/malevich/Documents/Playground/motrend/.firebaserc](/Users/malevich/Documents/Playground/motrend/.firebaserc)
 
 ## 5. Frontend Structure

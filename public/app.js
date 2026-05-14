@@ -1,11 +1,5 @@
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import {
-  getAnalytics,
-  logEvent,
-  setUserId,
-  setUserProperties,
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js";
-import {
   browserLocalPersistence,
   GoogleAuthProvider,
   browserSessionPersistence,
@@ -28,9 +22,55 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
 
 const runtimeHost = window.location.hostname.toLowerCase();
+const PROD_MOTREND_HOST = "trend.moads.agency";
+const PROD_MOTREND_WWW_HOST = "www.trend.moads.agency";
+const DEV_MOTREND_HOST = "trend-dev.moads.agency";
+const DEV_FIREBASE_HOST = "moads-trend-dev.web.app";
+const DEV_FIREBASEAPP_HOST = "moads-trend-dev.firebaseapp.com";
+const PROD_PLATFORM_API_ORIGIN = "https://api.moads.agency";
+const DEV_PLATFORM_API_ORIGIN = "https://api-dev.moads.agency";
+const LOCAL_PLATFORM_API_ORIGIN = "http://localhost:8080";
+
+function isLocalMotrendHost(hostname) {
+  return hostname === "localhost" || hostname === "127.0.0.1";
+}
+
+function resolveMotrendRuntime(hostname) {
+  if (isLocalMotrendHost(hostname)) {
+    return {
+      serviceEnv: "local",
+      platformApiOrigin: LOCAL_PLATFORM_API_ORIGIN,
+      analyticsEnabled: false,
+      allowPlatformApiOverride: true,
+    };
+  }
+
+  if (
+    hostname === DEV_MOTREND_HOST ||
+    hostname === DEV_FIREBASE_HOST ||
+    hostname === DEV_FIREBASEAPP_HOST
+  ) {
+    return {
+      serviceEnv: "dev_cloud",
+      platformApiOrigin: DEV_PLATFORM_API_ORIGIN,
+      analyticsEnabled: false,
+      allowPlatformApiOverride: false,
+    };
+  }
+
+  return {
+    serviceEnv: "prod",
+    platformApiOrigin: PROD_PLATFORM_API_ORIGIN,
+    analyticsEnabled: true,
+    allowPlatformApiOverride: false,
+  };
+}
+
+const motrendRuntime = resolveMotrendRuntime(runtimeHost);
 const sameSiteAuthDomains = new Set([
-  "trend.moads.agency",
-  "www.trend.moads.agency",
+  PROD_MOTREND_HOST,
+  PROD_MOTREND_WWW_HOST,
+  DEV_MOTREND_HOST,
 ]);
 const runtimeAuthDomain = sameSiteAuthDomains.has(runtimeHost) ?
   runtimeHost :
@@ -56,16 +96,54 @@ const AUTH_PERSISTENCE_CANDIDATES = [
 ];
 
 let analytics = null;
-try {
-  analytics = getAnalytics(app);
-} catch {
-  analytics = null;
+let analyticsApi = null;
+let pendingAnalyticsUser = null;
+
+function applyAnalyticsUser() {
+  if (!analytics || !analyticsApi) return;
+
+  try {
+    if (!pendingAnalyticsUser) {
+      analyticsApi.setUserId(analytics, null);
+      analyticsApi.setUserProperties(analytics, {});
+      return;
+    }
+
+    analyticsApi.setUserId(analytics, pendingAnalyticsUser.uid);
+    analyticsApi.setUserProperties(analytics, {
+      user_email: pendingAnalyticsUser.email || "",
+      service_env: motrendRuntime.serviceEnv,
+    });
+  } catch {
+    // no-op
+  }
+}
+
+function setAnalyticsUser(user) {
+  pendingAnalyticsUser = user ? {uid: user.uid, email: user.email || ""} : null;
+  applyAnalyticsUser();
+}
+
+if (motrendRuntime.analyticsEnabled) {
+  import("https://www.gstatic.com/firebasejs/10.12.5/firebase-analytics.js")
+    .then((module) => {
+      analyticsApi = module;
+      analytics = module.getAnalytics(app);
+      applyAnalyticsUser();
+    })
+    .catch(() => {
+      analytics = null;
+      analyticsApi = null;
+    });
 }
 
 function track(name, params = {}) {
-  if (!analytics) return;
+  if (!analytics || !analyticsApi) return;
   try {
-    logEvent(analytics, name, params);
+    analyticsApi.logEvent(analytics, name, {
+      service_env: motrendRuntime.serviceEnv,
+      ...params,
+    });
   } catch {
     // no-op
   }
@@ -130,7 +208,10 @@ function resolvePlatformApiOrigin() {
   );
   if (queryOverride) {
     stripPlatformApiQueryParam();
-    if (isAllowedPlatformApiOrigin(queryOverride)) {
+    if (
+      motrendRuntime.allowPlatformApiOverride &&
+      isAllowedPlatformApiOrigin(queryOverride)
+    ) {
       try {
         localStorage.setItem(PLATFORM_API_ORIGIN_OVERRIDE_KEY, queryOverride);
       } catch {
@@ -140,31 +221,23 @@ function resolvePlatformApiOrigin() {
     }
   }
 
-  try {
-    const storedOverride = normalizeOriginCandidate(
-      localStorage.getItem(PLATFORM_API_ORIGIN_OVERRIDE_KEY) || ""
-    );
-    if (storedOverride && isAllowedPlatformApiOrigin(storedOverride)) {
-      return storedOverride;
+  if (motrendRuntime.allowPlatformApiOverride) {
+    try {
+      const storedOverride = normalizeOriginCandidate(
+        localStorage.getItem(PLATFORM_API_ORIGIN_OVERRIDE_KEY) || ""
+      );
+      if (storedOverride && isAllowedPlatformApiOrigin(storedOverride)) {
+        return storedOverride;
+      }
+      clearStoredPlatformApiOriginOverride();
+    } catch {
+      // no-op
     }
+  } else {
     clearStoredPlatformApiOriginOverride();
-  } catch {
-    // no-op
   }
 
-  if (runtimeHost === "localhost" || runtimeHost === "127.0.0.1") {
-    return "http://localhost:8080";
-  }
-
-  if (
-    runtimeHost.endsWith(".moads.agency") ||
-    runtimeHost.endsWith(".web.app") ||
-    runtimeHost.endsWith(".firebaseapp.com")
-  ) {
-    return "https://api.moads.agency";
-  }
-
-  return "";
+  return motrendRuntime.platformApiOrigin;
 }
 
 const platformApiOrigin = resolvePlatformApiOrigin();
@@ -5056,6 +5129,7 @@ onAuthStateChanged(auth, async (user) => {
 
   const previousUserUid = currentUser?.uid || "";
   currentUser = user;
+  setAnalyticsUser(user);
   markAuthRestoreReady();
   $("app").style.display = "block";
 
@@ -5166,15 +5240,6 @@ onAuthStateChanged(auth, async (user) => {
     });
   platformBootstrapPromise = bootstrapPromise;
   platformBootstrapPromiseUid = user.uid;
-
-  if (analytics) {
-    try {
-      setUserId(analytics, user.uid);
-      setUserProperties(analytics, {user_email: user.email || ""});
-    } catch {
-      // no-op
-    }
-  }
 
   const platformBootstrap = await bootstrapPromise;
   await loadTemplates();

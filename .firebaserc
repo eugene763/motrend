@@ -2,6 +2,6 @@
   "projects": {
     "default": "gen-lang-client-0651837818",
     "prod": "gen-lang-client-0651837818",
-    "dev": "motrend-dev"
+    "dev": "gen-lang-client-0651837818"
   }
 }

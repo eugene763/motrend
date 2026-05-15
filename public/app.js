@@ -70,7 +70,6 @@ const motrendRuntime = resolveMotrendRuntime(runtimeHost);
 const sameSiteAuthDomains = new Set([
   PROD_MOTREND_HOST,
   PROD_MOTREND_WWW_HOST,
-  DEV_MOTREND_HOST,
 ]);
 const runtimeAuthDomain = sameSiteAuthDomains.has(runtimeHost) ?
   runtimeHost :

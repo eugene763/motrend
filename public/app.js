@@ -1318,6 +1318,7 @@ function safeUrl(value) {
 const BILLING_ALLOWED_HOST_SUFFIXES = [
   "fastspring.com",
   "onfastspring.com",
+  "dodopayments.com",
 ];
 
 function safeCheckoutUrl(value) {

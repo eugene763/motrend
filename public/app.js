@@ -1337,6 +1337,39 @@ function safeCheckoutUrl(value) {
   }
 }
 
+function buildCheckoutReturnUrl(creditsAmount) {
+  const url = new URL("/", window.location.origin);
+  url.searchParams.set("checkout", "complete");
+
+  const normalizedCredits = Number(creditsAmount);
+  if (Number.isFinite(normalizedCredits) && normalizedCredits > 0) {
+    url.searchParams.set("credits", String(Math.floor(normalizedCredits)));
+  }
+
+  return url.toString();
+}
+
+function readCheckoutReturnState() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("checkout") !== "complete") {
+    return null;
+  }
+
+  const creditsAmount = Number(params.get("credits") || "");
+  return {
+    creditsAmount: Number.isFinite(creditsAmount) && creditsAmount > 0 ?
+      Math.floor(creditsAmount) :
+      0,
+  };
+}
+
+function clearCheckoutReturnStateFromUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("checkout");
+  url.searchParams.delete("credits");
+  window.history.replaceState({}, document.title, url.toString());
+}
+
 function buildSaveVideoPageUrl(videoUrl, downloadUrl = "") {
   const safeVideoUrl = safeUrl(videoUrl);
   const safeDownloadUrl = safeUrl(downloadUrl);
@@ -1652,7 +1685,13 @@ async function beginWalletCheckout(priceId) {
   renderWalletModal();
 
   try {
-    const checkout = await createBillingCheckoutOrderRequest({priceId});
+    const selectedPack = walletOffers.find((pack) => pack.priceId === priceId);
+    const checkout = await createBillingCheckoutOrderRequest({
+      priceId,
+      attribution: {
+        landingUrl: buildCheckoutReturnUrl(selectedPack?.creditsAmount),
+      },
+    });
     const redirectUrl = safeCheckoutUrl(checkout?.redirectUrl);
 
     if (!redirectUrl) {
@@ -5281,6 +5320,18 @@ onAuthStateChanged(auth, async (user) => {
   }
 
   await syncSupportProfile();
+
+  const checkoutReturnState = readCheckoutReturnState();
+  if (checkoutReturnState) {
+    clearCheckoutReturnStateFromUrl();
+    await refreshPlatformMotrendProfile({silent: true});
+    void showNoticeModal({
+      message: checkoutReturnState.creditsAmount > 0 ?
+        `All set. You received ${checkoutReturnState.creditsAmount} credits.` :
+        "All set. Your credits are ready.",
+      buttonText: "OK",
+    });
+  }
 
   void syncAttributionForUser(user.uid).catch((error) => {
     console.warn("attribution sync failed", error);

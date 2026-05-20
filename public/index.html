@@ -86,6 +86,72 @@ input,select{width:100%;padding:10px;border-radius:10px;border:1px solid var(--b
 .userActions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 a{color:#fff}
 
+.trendSection{margin:0 0 22px;}
+.trendSection:last-child{margin-bottom:0;}
+.trendSectionHeader{margin:0 0 12px;}
+.trendSectionTitle{font-weight:700;font-size:24px;line-height:1.08;margin:0 0 5px;}
+.trendSectionHint{color:var(--muted);font-size:16px;line-height:1.25;}
+.trendCarouselViewport{
+  position:relative;
+  overflow-x:auto;
+  overflow-y:hidden;
+  overscroll-behavior-x:contain;
+  scrollbar-width:thin;
+  scrollbar-color:rgba(255,255,255,.22) transparent;
+  padding:2px 0 12px;
+  margin:0 -16px 0 0;
+}
+.trendCarouselViewport::-webkit-scrollbar{height:6px;}
+.trendCarouselViewport::-webkit-scrollbar-track{background:transparent;}
+.trendCarouselViewport::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2);border-radius:999px;}
+.trendCarouselViewport::after{
+  content:"";
+  position:sticky;
+  right:0;
+  top:0;
+  float:right;
+  width:54px;
+  height:1px;
+  min-height:100%;
+  pointer-events:none;
+  background:linear-gradient(90deg,rgba(21,21,21,0),var(--card));
+}
+.trendCarouselTrack{
+  display:flex;
+  align-items:stretch;
+  gap:14px;
+  width:max-content;
+  max-width:none;
+  scroll-snap-type:x mandatory;
+  padding:0 54px 2px 0;
+}
+.trendCard{
+  flex:0 0 clamp(220px,24vw,240px);
+  width:clamp(220px,24vw,240px);
+  scroll-snap-align:start;
+}
+.customReferenceCard{
+  width:100%;
+  margin:0;
+  border:1px dashed rgba(255,255,255,.24);
+  background:linear-gradient(180deg,#171717,#111);
+}
+.customReferenceCard .tplMedia{
+  max-width:220px;
+  width:42%;
+  min-width:148px;
+}
+.customReferenceCardInner{
+  display:grid;
+  grid-template-columns:minmax(148px,220px) minmax(0,1fr);
+  gap:16px;
+  align-items:stretch;
+}
+.customReferenceDetails{display:flex;flex-direction:column;gap:8px;min-width:0;}
+.customReferenceTitle{font-weight:700;font-size:22px;line-height:1.1;}
+.customReferenceFormats{font-size:16px;color:var(--muted);}
+.customReferenceCard .tplUse{margin-top:auto;align-self:flex-start;min-width:170px;}
+
 /* Template cards */
 .tplCard{border:1px solid var(--border);display:flex;flex-direction:column;height:100%;}
 .tplCard.isHot{border-color:var(--accent);}
@@ -102,16 +168,18 @@ a{color:#fff}
   border-radius:12px;
 }
 
-/* Templates grid: desktop fixed 240px, mobile 2 per row */
-.templatesGrid{grid-template-columns:repeat(auto-fill,240px);justify-content:start;align-items:stretch;}
-
 @media (max-width: 640px){
   .wrap{padding:24px 16px 32px;}
   .grid{grid-template-columns:1fr;}                 /* формы в 1 колонку */
   input,select,button{width:100%;}
   input,select{font-size:24px;}                     /* iOS не зумит */
   input[type="file"]{width:100%;max-width:100%;}
-  .templatesGrid{grid-template-columns:repeat(2,minmax(0,1fr));} /* темплейты 2 в ряд */
+  .trendCarouselViewport{margin-right:-16px;padding-bottom:10px;}
+  .trendCarouselTrack{gap:12px;padding-right:26vw;}
+  .trendCard{flex-basis:72vw;width:72vw;}
+  .customReferenceCardInner{grid-template-columns:1fr;}
+  .customReferenceCard .tplMedia{width:100%;max-width:none;}
+  .customReferenceCard .tplUse{width:100%;}
   .userCardRow{flex-direction:column;align-items:stretch;}
   .userActions{width:100%;flex-direction:column;align-items:stretch;gap:10px;}
   .userActions button{width:100%;}
@@ -485,8 +553,22 @@ a{color:#fff}
       </div>
 
       <div class="card">
-        <div style="font-weight:700;margin-bottom:8px">Choose trend or upload yours</div>
-        <div id="templates" class="grid templatesGrid"></div>
+        <section class="trendSection" aria-labelledby="trendPickerTitle">
+          <div class="trendSectionHeader">
+            <h2 id="trendPickerTitle" class="trendSectionTitle">Choose a trend</h2>
+            <div class="trendSectionHint">Pick a ready-made trend. Swipe or scroll to see more.</div>
+          </div>
+          <div class="trendCarouselViewport" aria-label="Ready-made trends">
+            <div id="templates" class="trendCarouselTrack"></div>
+          </div>
+        </section>
+        <section class="trendSection" aria-labelledby="customReferenceTitle">
+          <div class="trendSectionHeader">
+            <h2 id="customReferenceTitle" class="trendSectionTitle">Use your own reference</h2>
+            <div class="trendSectionHint">Upload an mp4 or mov and turn your photo into that motion style.</div>
+          </div>
+          <div id="customReferenceMount"></div>
+        </section>
         <input id="fileReferenceVideo" type="file" accept="video/mp4,video/quicktime,.mp4,.mov" style="display:none"/>
       </div>
 

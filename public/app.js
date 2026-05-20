@@ -3931,12 +3931,12 @@ function stopAllTemplateVideos(exceptEl = null) {
 
 function renderReferenceVideoCard() {
   const card = document.createElement("div");
-  card.className = "card tplCard";
-  card.style.margin = "0";
+  card.className = "tplCard customReferenceCard";
   card.style.cursor = "pointer";
-  card.style.display = "flex";
-  card.style.flexDirection = "column";
   card.dataset.trendRole = "reference";
+
+  const inner = document.createElement("div");
+  inner.className = "customReferenceCardInner";
 
   const media = document.createElement("div");
   media.className = "tplMedia";
@@ -3970,10 +3970,16 @@ function renderReferenceVideoCard() {
   };
   media.appendChild(previewImg);
 
+  const details = document.createElement("div");
+  details.className = "customReferenceDetails";
+
   const title = document.createElement("div");
-  title.style.fontWeight = "700";
-  title.style.marginTop = "8px";
-  title.textContent = "mp4 / mov,  ≤100MB";
+  title.className = "customReferenceTitle";
+  title.textContent = "Upload your motion reference";
+
+  const formats = document.createElement("div");
+  formats.className = "customReferenceFormats";
+  formats.textContent = "Formats: mp4 / mov • Max size: ≤100MB";
 
   const meta = document.createElement("div");
   meta.className = "muted refMetaName";
@@ -3992,8 +3998,6 @@ function renderReferenceVideoCard() {
 
   const actionBtn = document.createElement("button");
   actionBtn.className = "btn tplUse";
-  actionBtn.style.marginTop = "auto";
-  actionBtn.style.width = "100%";
   actionBtn.textContent = "Upload";
 
   const picker = $("fileReferenceVideo");
@@ -4057,11 +4061,14 @@ function renderReferenceVideoCard() {
     };
   }
 
-  card.appendChild(media);
-  card.appendChild(title);
-  card.appendChild(meta);
-  card.appendChild(estimate);
-  card.appendChild(actionBtn);
+  details.appendChild(title);
+  details.appendChild(formats);
+  details.appendChild(meta);
+  details.appendChild(estimate);
+  details.appendChild(actionBtn);
+  inner.appendChild(media);
+  inner.appendChild(details);
+  card.appendChild(inner);
   refreshReferenceVideoCardUi();
 
   return card;
@@ -4069,11 +4076,8 @@ function renderReferenceVideoCard() {
 
 function renderTemplateCard(template) {
   const card = document.createElement("div");
-  card.className = "card tplCard";
-  card.style.margin = "0";
+  card.className = "tplCard trendCard";
   card.style.cursor = "pointer";
-  card.style.display = "flex";
-  card.style.flexDirection = "column";
   card.dataset.templateId = template.id;
 
   const thumbUrl = safeUrl(template.preview?.thumbnailUrl || "");
@@ -4188,8 +4192,12 @@ function renderTemplateCard(template) {
 
 async function loadTemplates() {
   const container = $("templates");
+  const referenceMount = $("customReferenceMount");
   container.innerHTML =
     '<div class="templatesLoading"><span class="spinner"></span>Loading...</div>';
+  if (referenceMount) {
+    referenceMount.innerHTML = "";
+  }
 
   try {
     const response = await listPlatformTemplatesRequest();
@@ -4224,7 +4232,9 @@ async function loadTemplates() {
       empty.className = "templatesLoading muted";
       empty.textContent = "No templates yet.";
       container.appendChild(empty);
-      container.appendChild(renderReferenceVideoCard());
+      if (referenceMount) {
+        referenceMount.appendChild(renderReferenceVideoCard());
+      }
       syncTrendSelectionUi();
       return;
     }
@@ -4232,11 +4242,16 @@ async function loadTemplates() {
     availableTemplates.forEach((template) => {
       container.appendChild(renderTemplateCard(template));
     });
-    container.appendChild(renderReferenceVideoCard());
+    if (referenceMount) {
+      referenceMount.appendChild(renderReferenceVideoCard());
+    }
     syncTrendSelectionUi();
   } catch (error) {
     container.innerHTML =
       '<div class="templatesLoading muted">Failed to load templates.</div>';
+    if (referenceMount) {
+      referenceMount.appendChild(renderReferenceVideoCard());
+    }
     console.warn(error);
   }
 }

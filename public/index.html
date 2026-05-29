@@ -88,7 +88,7 @@ a{color:#fff}
 
 .trendSection{margin:0 0 22px;}
 .trendSection:last-child{margin-bottom:0;}
-.trendSectionHeader{margin:0 0 12px;min-width:0;}
+.trendSectionHeader{margin:0 0 22px;min-width:0;}
 .trendSectionTitle{font-weight:700;font-size:24px;line-height:1.08;margin:0 0 5px;}
 .trendSectionHint{color:var(--muted);font-size:16px;line-height:1.25;max-width:100%;overflow-wrap:anywhere;}
 .trendCarouselViewport{
@@ -126,8 +126,8 @@ a{color:#fff}
   padding:0 54px 2px 0;
 }
 .trendCard{
-  flex:0 0 clamp(220px,24vw,240px);
-  width:clamp(220px,24vw,240px);
+  flex:0 0 clamp(180px,18vw,220px);
+  width:clamp(180px,18vw,220px);
   scroll-snap-align:start;
 }
 .customReferenceCard{
@@ -147,7 +147,8 @@ a{color:#fff}
   display:grid;
   grid-template-columns:minmax(148px,220px) minmax(0,1fr);
   gap:16px;
-  align-items:stretch;
+  align-items:center;
+  min-height:0;
 }
 .customReferenceDetails{display:flex;flex-direction:column;gap:8px;min-width:0;max-width:100%;}
 .customReferenceTitle{font-weight:700;font-size:22px;line-height:1.1;}

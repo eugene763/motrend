@@ -150,7 +150,7 @@ function track(name, params = {}) {
 
 const $ = (id) => document.getElementById(id);
 const PLATFORM_API_ORIGIN_OVERRIDE_KEY = "motrend_platform_api_origin_v1";
-const MOTREND_TEST_GIFT_CREDITS = 20;
+const MOTREND_TEST_GIFT_CREDITS = 3;
 const PLATFORM_REQUEST_TIMEOUT_MS = 30_000;
 const PLATFORM_LOGOUT_TIMEOUT_MS = 5_000;
 const PLATFORM_POLL_AUTH_RETRY_MS = 2_500;

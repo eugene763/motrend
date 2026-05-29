@@ -88,9 +88,9 @@ a{color:#fff}
 
 .trendSection{margin:0 0 22px;}
 .trendSection:last-child{margin-bottom:0;}
-.trendSectionHeader{margin:0 0 12px;}
+.trendSectionHeader{margin:0 0 12px;min-width:0;}
 .trendSectionTitle{font-weight:700;font-size:24px;line-height:1.08;margin:0 0 5px;}
-.trendSectionHint{color:var(--muted);font-size:16px;line-height:1.25;}
+.trendSectionHint{color:var(--muted);font-size:16px;line-height:1.25;max-width:100%;overflow-wrap:anywhere;}
 .trendCarouselViewport{
   position:relative;
   overflow-x:auto;
@@ -132,9 +132,11 @@ a{color:#fff}
 }
 .customReferenceCard{
   width:100%;
+  max-width:100%;
   margin:0;
-  border:1px dashed rgba(255,255,255,.24);
+  border-color:transparent;
   background:linear-gradient(180deg,#171717,#111);
+  overflow:hidden;
 }
 .customReferenceCard .tplMedia{
   max-width:220px;
@@ -147,13 +149,13 @@ a{color:#fff}
   gap:16px;
   align-items:stretch;
 }
-.customReferenceDetails{display:flex;flex-direction:column;gap:8px;min-width:0;}
+.customReferenceDetails{display:flex;flex-direction:column;gap:8px;min-width:0;max-width:100%;}
 .customReferenceTitle{font-weight:700;font-size:22px;line-height:1.1;}
-.customReferenceFormats{font-size:16px;color:var(--muted);}
+.customReferenceFormats{font-size:16px;color:var(--muted);overflow-wrap:anywhere;}
 .customReferenceCard .tplUse{margin-top:auto;align-self:flex-start;min-width:170px;}
 
 /* Template cards */
-.tplCard{border:1px solid var(--border);display:flex;flex-direction:column;height:100%;}
+.tplCard{border:1px solid transparent;display:flex;flex-direction:column;height:100%;}
 .tplCard.isHot{border-color:var(--accent);}
 .tplCard.isSelected{border-color:var(--accent);box-shadow:0 0 0 2px rgba(139,255,176,.25);}
 .tplMedia{border-radius:12px;overflow:hidden;background:#000;}
@@ -170,15 +172,24 @@ a{color:#fff}
 
 @media (max-width: 640px){
   .wrap{padding:24px 16px 32px;}
+  .card{padding:14px;overflow:hidden;}
   .grid{grid-template-columns:1fr;}                 /* формы в 1 колонку */
   input,select,button{width:100%;}
   input,select{font-size:24px;}                     /* iOS не зумит */
   input[type="file"]{width:100%;max-width:100%;}
-  .trendCarouselViewport{margin-right:-16px;padding-bottom:10px;}
-  .trendCarouselTrack{gap:12px;padding-right:26vw;}
-  .trendCard{flex-basis:72vw;width:72vw;}
+  .trendSectionTitle{font-size:23px;}
+  .trendSectionHint{font-size:15px;}
+  .trendCarouselViewport{margin:0 -14px 0 0;padding-bottom:10px;}
+  .trendCarouselTrack{gap:12px;padding-right:24vw;}
+  .trendCard{flex-basis:min(72vw,280px);width:min(72vw,280px);}
   .customReferenceCardInner{grid-template-columns:1fr;}
-  .customReferenceCard .tplMedia{width:100%;max-width:none;}
+  .customReferenceCard .tplMedia{
+    width:100%;
+    max-width:260px;
+    min-width:0;
+    justify-self:center;
+  }
+  .customReferenceTitle{font-size:21px;}
   .customReferenceCard .tplUse{width:100%;}
   .userCardRow{flex-direction:column;align-items:stretch;}
   .userActions{width:100%;flex-direction:column;align-items:stretch;gap:10px;}
@@ -263,12 +274,12 @@ a{color:#fff}
   padding:12px;
   background:rgba(10,10,10,.82);
   color:var(--muted);
-  border:1px dashed #3a3a3a;
+  border:1px solid transparent;
   z-index:2;
 }
 .refPlaceholder.hasPreview{
   background:rgba(10,10,10,.42);
-  border-color:rgba(255,255,255,.14);
+  border-color:transparent;
   backdrop-filter:blur(2px);
 }
 .refPlaceholder.isBusy{
@@ -564,7 +575,7 @@ a{color:#fff}
         </section>
         <section class="trendSection" aria-labelledby="customReferenceTitle">
           <div class="trendSectionHeader">
-            <h2 id="customReferenceTitle" class="trendSectionTitle">Use your own reference</h2>
+            <h2 id="customReferenceTitle" class="trendSectionTitle">Or use your own reference</h2>
             <div class="trendSectionHint">Upload an mp4 or mov and turn your photo into that motion style.</div>
           </div>
           <div id="customReferenceMount"></div>

@@ -2583,6 +2583,18 @@ function refreshGenerateButtonState() {
   btn.title = referencePending ?
     "Wait for the reference video upload to finish." :
     "";
+
+  if (!generateSubmissionInFlight) {
+    if (selectedTrendKind === TREND_SELECTION_REFERENCE) {
+      const refCredits = getSelectedReferenceVideoCostCredits();
+      btn.textContent = refCredits ? `Generate · ${refCredits} credits` : "Generate";
+    } else if (selectedTemplate) {
+      const costCredits = getTemplateCostCredits(selectedTemplate);
+      btn.textContent = costCredits ? `Generate · ${costCredits} credits` : "Generate";
+    } else {
+      btn.textContent = "Generate";
+    }
+  }
 }
 
 function getReferenceVideoMetaPresentation() {
@@ -3552,9 +3564,12 @@ function normalizePlatformJobRecord(job) {
   const outputUrl = safeUrl(
     typeof job?.providerOutputUrl === "string" ? job.providerOutputUrl : ""
   );
-  const errorText = typeof job?.reconciliationError === "string" ?
-    job.reconciliationError :
+  const providerError = typeof job?.providerError === "string" ?
+    job.providerError :
     "";
+  const errorText = providerError || (typeof job?.reconciliationError === "string" ?
+    job.reconciliationError :
+    "");
 
   return {
     id: typeof job?.id === "string" ? job.id : "",
@@ -3574,6 +3589,7 @@ function normalizePlatformJobRecord(job) {
         null,
       refundCredits: Number.isFinite(refundCredits) ? refundCredits : null,
       providerState: typeof job?.providerState === "string" ? job.providerState : "",
+      providerError: providerError || null,
       kling: {
         outputUrl,
         error: errorText,
@@ -4074,11 +4090,169 @@ function renderReferenceVideoCard() {
   return card;
 }
 
+let carouselPreHoverScrollLeft = null;
+let carouselHoveredCard = null;
+
+function getTrendCardScrollTarget(card) {
+  const viewport = card?.closest?.(".trendCarouselViewport");
+  if (!viewport) return null;
+
+  const nextCard = card.nextElementSibling?.classList.contains("trendCard")
+    ? card.nextElementSibling
+    : null;
+
+  const vRect = viewport.getBoundingClientRect();
+  const cRect = card.getBoundingClientRect();
+  const maxScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
+
+  let shift = 0;
+
+  if (nextCard) {
+    const nRect = nextCard.getBoundingClientRect();
+    const desiredNextRight = nRect.left + (nRect.width * 0.30);
+    const rightDiff = desiredNextRight - (vRect.right - 10);
+    if (rightDiff > 1) {
+      shift = rightDiff;
+    }
+  } else {
+    // Last card: ensure entire card right edge clears viewport right boundary with 24px padding
+    const rightDiff = cRect.right - (vRect.right - 24);
+    if (rightDiff > 1) {
+      shift = rightDiff;
+    }
+  }
+
+  let targetScrollLeft = viewport.scrollLeft + shift;
+
+  // Ensure card's own left edge doesn't get scrolled out of view on the left
+  const cardLeftAfterScroll = cRect.left - shift;
+  if (cardLeftAfterScroll < vRect.left + 8) {
+    targetScrollLeft = viewport.scrollLeft + (cRect.left - vRect.left - 8);
+  }
+
+  // If card was initially cut off on the left, scroll rightwards to reveal it
+  if (cRect.left < vRect.left + 8) {
+    targetScrollLeft = viewport.scrollLeft + (cRect.left - vRect.left - 8);
+  }
+
+  return Math.max(0, Math.min(maxScrollLeft, Math.round(targetScrollLeft)));
+}
+
+function isTrendCardEdgeHidden(card) {
+  const viewport = card?.closest?.(".trendCarouselViewport");
+  if (!viewport) return false;
+
+  const vRect = viewport.getBoundingClientRect();
+  const cRect = card.getBoundingClientRect();
+
+  const nextCard = card.nextElementSibling?.classList.contains("trendCard")
+    ? card.nextElementSibling
+    : null;
+
+  if (!nextCard) {
+    // Last card: edge-hidden if its right edge is near or past viewport right boundary
+    return cRect.right > (vRect.right - 24);
+  }
+
+  // Card itself is cut off on the right
+  if (cRect.right > (vRect.right - 24)) {
+    return true;
+  }
+
+  // Next card is visible by less than 28% of its width
+  const nRect = nextCard.getBoundingClientRect();
+  const visibleWidth = Math.max(
+    0,
+    Math.min(nRect.right, vRect.right) - Math.max(nRect.left, vRect.left)
+  );
+  return (visibleWidth / nRect.width) < 0.28;
+}
+
+function alignTrendCardInViewport(card, { isPermanent = false } = {}) {
+  const viewport = card?.closest?.(".trendCarouselViewport");
+  if (!viewport) return;
+
+  if (isPermanent) {
+    carouselPreHoverScrollLeft = null;
+    carouselHoveredCard = null;
+  }
+
+  const targetLeft = getTrendCardScrollTarget(card);
+  if (targetLeft !== null && Math.abs(viewport.scrollLeft - targetLeft) > 2) {
+    viewport.scrollTo({ left: targetLeft, behavior: "smooth" });
+  }
+}
+
+function handleTrendCardMouseEnter(card) {
+  if (card.classList.contains("isSelected")) return;
+  if (!isTrendCardEdgeHidden(card)) return;
+
+  const viewport = card.closest(".trendCarouselViewport");
+  if (!viewport) return;
+
+  if (carouselPreHoverScrollLeft === null) {
+    carouselPreHoverScrollLeft = viewport.scrollLeft;
+  }
+  carouselHoveredCard = card;
+
+  const targetLeft = getTrendCardScrollTarget(card);
+  if (targetLeft !== null && Math.abs(viewport.scrollLeft - targetLeft) > 2) {
+    viewport.scrollTo({ left: targetLeft, behavior: "smooth" });
+  }
+}
+
+function handleTrendCardMouseLeave(card, event) {
+  if (card.classList.contains("isSelected")) {
+    carouselPreHoverScrollLeft = null;
+    carouselHoveredCard = null;
+    return;
+  }
+
+  const relatedCard = event.relatedTarget?.closest?.(".trendCard");
+  if (relatedCard && relatedCard !== card) {
+    return;
+  }
+
+  if (carouselPreHoverScrollLeft !== null) {
+    const viewport = card.closest(".trendCarouselViewport");
+    if (viewport) {
+      viewport.scrollTo({ left: carouselPreHoverScrollLeft, behavior: "smooth" });
+    }
+    carouselPreHoverScrollLeft = null;
+  }
+  carouselHoveredCard = null;
+}
+
+function handleTrendCarouselViewportMouseLeave() {
+  if (carouselPreHoverScrollLeft !== null) {
+    const viewport = document.querySelector(".trendCarouselViewport");
+    if (viewport) {
+      if (!carouselHoveredCard || !carouselHoveredCard.classList.contains("isSelected")) {
+        viewport.scrollTo({ left: carouselPreHoverScrollLeft, behavior: "smooth" });
+      }
+    }
+    carouselPreHoverScrollLeft = null;
+    carouselHoveredCard = null;
+  }
+}
+
+function handleTrendCarouselManualScroll() {
+  carouselPreHoverScrollLeft = null;
+  carouselHoveredCard = null;
+}
+
 function renderTemplateCard(template) {
   const card = document.createElement("div");
   card.className = "tplCard trendCard";
   card.style.cursor = "pointer";
   card.dataset.templateId = template.id;
+
+  card.addEventListener("mouseenter", () => {
+    handleTrendCardMouseEnter(card);
+  });
+  card.addEventListener("mouseleave", (e) => {
+    handleTrendCardMouseLeave(card, e);
+  });
 
   const thumbUrl = safeUrl(template.preview?.thumbnailUrl || "");
   const videoUrl = safeUrl(template.preview?.previewVideoUrl || "");
@@ -4113,6 +4287,8 @@ function renderTemplateCard(template) {
 
   const meta = document.createElement("div");
   meta.className = "muted";
+  meta.style.marginTop = "4px";
+  meta.style.marginBottom = "16px";
   meta.textContent = buildTemplateCostLabel(template);
 
   const useBtn = document.createElement("button");
@@ -4142,6 +4318,8 @@ function renderTemplateCard(template) {
     selectedTrendKind = TREND_SELECTION_TEMPLATE;
     updateSelectedTrendField();
     selectTrendCard(card);
+    alignTrendCardInViewport(card, { isPermanent: true });
+    refreshGenerateButtonState();
 
     stopAllTemplateVideos(videoEl);
     if (videoEl) {
@@ -4242,6 +4420,15 @@ async function loadTemplates() {
     availableTemplates.forEach((template) => {
       container.appendChild(renderTemplateCard(template));
     });
+
+    const carouselViewport = container.closest(".trendCarouselViewport");
+    if (carouselViewport && !carouselViewport.dataset.edgeHoverBound) {
+      carouselViewport.dataset.edgeHoverBound = "true";
+      carouselViewport.addEventListener("mouseleave", handleTrendCarouselViewportMouseLeave);
+      carouselViewport.addEventListener("wheel", handleTrendCarouselManualScroll, { passive: true });
+      carouselViewport.addEventListener("touchstart", handleTrendCarouselManualScroll, { passive: true });
+    }
+
     if (referenceMount) {
       referenceMount.appendChild(renderReferenceVideoCard());
     }
@@ -4362,19 +4549,43 @@ function syncReferenceResumeStateWithLatestJobs() {
   refreshGenerateButtonState();
 }
 
+function isProviderBalanceError(errorText) {
+  if (typeof errorText !== "string") return false;
+  const normalized = errorText.toLowerCase();
+  return (
+    normalized.includes("account balance not enough") ||
+    normalized.includes("balance not enough") ||
+    normalized.includes("insufficient balance")
+  );
+}
+
 async function maybeShowJobFailureNotice(jobId, job) {
   if (!jobId || !job || job.status !== "failed" || wasJobNoticeShown(jobId)) {
     return;
   }
 
-  const errorText = String(job?.kling?.error || "");
-  const refundAmount = Number(job?.refund?.amount || 0);
-  const refunded = job?.refund?.applied === true && refundAmount > 0;
+  const errorText = String(job?.kling?.error || job?.providerError || "");
+  const refundAmount = Number(job?.refund?.amount || job?.refundCredits || 0);
+  const refunded = (job?.refund?.applied === true || Number(job?.refundCredits || 0) > 0) && refundAmount > 0;
   const uploadTimedOut = errorText.includes("Upload timed out before finalize.");
+  const providerBalanceIssue = isProviderBalanceError(errorText);
 
   let message = "";
-  if (refunded) {
+  if (providerBalanceIssue) {
+    const isRu = (
+      typeof navigator !== "undefined" &&
+      typeof navigator.language === "string" &&
+      navigator.language.toLowerCase().startsWith("ru")
+    );
+    if (isRu) {
+      message = `Приносим искренние извинения!\n\nПроизошел временный технический сбой на стороне видеогенерации. Ваши кредиты (${refundAmount || "списанные за попытку"}) уже возвращены на баланс.\n\nМы уже работаем над устранением неполадки, сервис восстановится в ближайшее время.`;
+    } else {
+      message = `We sincerely apologize!\n\nA temporary technical issue occurred with video generation. Your credits (${refundAmount || "debited for this attempt"}) have been refunded to your balance.\n\nWe are already working on the fix, and service will be restored shortly.`;
+    }
+    void refreshPlatformMotrendProfile({silent: true});
+  } else if (refunded) {
     message = `Failed. ${refundAmount} credits returned.`;
+    void refreshPlatformMotrendProfile({silent: true});
   } else if (uploadTimedOut && !(Number(job?.debitedCredits || 0) > 0)) {
     message = "Upload failed. No credits charged.";
   }
@@ -4391,7 +4602,7 @@ async function maybeShowJobFailureNotice(jobId, job) {
 function updateLatestJobUI(jobId, job) {
   const status = job?.status || "";
   const outputUrl = safeUrl(job?.kling?.outputUrl || "");
-  const error = job?.kling?.error || "";
+  const error = job?.kling?.error || job?.providerError || "";
   const trackedCurrentJob = (
     estimatedProgressActive &&
     !!estimatedProgressJobId &&
@@ -4452,7 +4663,13 @@ function updateLatestJobUI(jobId, job) {
     if (trackedCurrentJob) {
       stopEstimatedProgress();
     }
-    setStatus(`Failed: ${error || "try another photo/template"}`);
+    if (isProviderBalanceError(error)) {
+      const refundAmount = Number(job?.refund?.amount || job?.refundCredits || 0);
+      const refundNotice = refundAmount > 0 ? ` (${refundAmount} credits refunded)` : " (credits refunded)";
+      setStatus(`Temporary generation outage${refundNotice}. Fix in progress.`);
+    } else {
+      setStatus(`Failed: ${error || "try another photo/template"}`);
+    }
     setStatusHintVisible(false);
   } else {
     if (trackedCurrentJob) {
@@ -5139,7 +5356,7 @@ $("btnGenerate").onclick = async () => {
     showFormError(callableErrorMessage(error));
   } finally {
     generateSubmissionInFlight = false;
-    btn.disabled = false;
+    refreshGenerateButtonState();
   }
 };
 

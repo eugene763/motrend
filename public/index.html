@@ -96,6 +96,7 @@ a{color:#fff}
   overflow-x:auto;
   overflow-y:hidden;
   overscroll-behavior-x:contain;
+  scroll-behavior:smooth;
   scrollbar-width:thin;
   scrollbar-color:rgba(255,255,255,.22) transparent;
   padding:2px 0 12px;
@@ -122,13 +123,11 @@ a{color:#fff}
   gap:14px;
   width:max-content;
   max-width:none;
-  scroll-snap-type:x mandatory;
   padding:0 54px 2px 0;
 }
 .trendCard{
   flex:0 0 clamp(180px,18vw,220px);
   width:clamp(180px,18vw,220px);
-  scroll-snap-align:start;
 }
 .customReferenceCard{
   width:100%;
@@ -155,13 +154,13 @@ a{color:#fff}
 .customReferenceFormats{font-size:16px;color:var(--muted);overflow-wrap:anywhere;}
 .customReferenceCard .tplUse{margin-top:auto;align-self:flex-start;min-width:170px;}
 
-/* Template cards */
-.tplCard{border:1px solid transparent;display:flex;flex-direction:column;height:100%;}
+.tplCard{border:1px solid transparent;border-radius:16px;padding:4px;display:flex;flex-direction:column;height:100%;}
 .tplCard.isHot{border-color:var(--accent);}
 .tplCard.isSelected{border-color:var(--accent);box-shadow:0 0 0 2px rgba(139,255,176,.25);}
 .tplMedia{border-radius:12px;overflow:hidden;background:#000;}
+.trendCard .muted{margin-top:4px;margin-bottom:16px;}
 .tplUse{margin-top:auto;}
-.refCostEstimate{min-height:1.25em;}
+.refCostEstimate{min-height:1.25em;margin-bottom:12px;}
 .tplCard[data-trend-role='reference'] .tplMedia{position:relative;aspect-ratio:9/16;}
 .tplMedia img,.tplMedia video{
   width:100%;
@@ -583,23 +582,23 @@ a{color:#fff}
       </div>
 
       <div class="card" id="generateCard">
-        <div style="font-weight:700;margin-bottom:8px">Generate</div>
+        <div style="font-weight:700;margin-bottom:16px">Generate</div>
         <div class="grid">
           <div>
-            <div class="muted">Selected trend</div>
+            <div class="muted" style="margin-bottom:10px">Selected trend</div>
             <input id="selTemplate" disabled placeholder="Choose a template above"/>
           </div>
           <div>
-            <div class="muted">Upload photo</div>
+            <div class="muted" style="margin-bottom:10px">Upload photo</div>
             <input id="filePhoto" type="file" accept="image/*"/>
           </div>
         </div>
-        <div style="margin-top:10px" class="row">
+        <div style="margin-top:16px" class="row">
           <button id="btnGenerate" class="btn">Generate</button>
           <div id="status" class="muted"></div>
         </div>
-        <div id="statusHint" class="muted" style="display:none;margin-top:6px">Usually takes 10–20 minutes</div>
-        <div id="uploadSafetyHint" class="muted" style="display:none;margin-top:6px"></div>
+        <div id="statusHint" class="muted" style="display:none;margin-top:14px">Usually takes 10–20 minutes</div>
+        <div id="uploadSafetyHint" class="muted" style="display:none;margin-top:10px"></div>
         <div id="formError" class="formError muted" style="display:none" role="alert"></div>
       </div>
 

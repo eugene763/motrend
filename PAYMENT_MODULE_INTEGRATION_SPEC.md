@@ -1,5 +1,7 @@
 # MoTrend Payment Module Integration Spec
 
+> Historical specification, reclassified 2026-09-11. Provider setup instructions below are not current authority or permission to change payments. Current runtime ownership is documented in README.md and the platform canonical docs. Preserve this specification for requirements/history; revalidate individual requirements against current code before implementation.
+
 Last updated: 2026-03-30 (Asia/Tbilisi)
 
 This document is a practical handoff spec for continuing payment integration work in a separate branch without replaying prior chat context.

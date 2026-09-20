@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
+echo "Error: deploy-prod.sh is deprecated and unsafe." >&2
+echo "Use ./deploy-prod-frontend.sh for production frontend deployments." >&2
+exit 1
+
 cd "$(dirname "$0")"
 
 resolve_node22_bin() {

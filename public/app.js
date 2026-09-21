@@ -4110,16 +4110,14 @@ function getTrendCardScrollTarget(card) {
   if (nextCard) {
     const nRect = nextCard.getBoundingClientRect();
     const desiredNextRight = nRect.left + (nRect.width * 0.30);
-    const rightDiff = desiredNextRight - (vRect.right - 10);
+    const rightDiff = desiredNextRight - vRect.right;
     if (rightDiff > 1) {
       shift = rightDiff;
     }
   } else {
-    // Last card: ensure entire card right edge clears viewport right boundary with 24px padding
-    const rightDiff = cRect.right - (vRect.right - 24);
-    if (rightDiff > 1) {
-      shift = rightDiff;
-    }
+    // Last card: between it and the right frame of the block there must be NO empty space
+    // Align card's right edge flush with the viewport right edge
+    shift = cRect.right - vRect.right;
   }
 
   let targetScrollLeft = viewport.scrollLeft + shift;
@@ -4150,12 +4148,12 @@ function isTrendCardEdgeHidden(card) {
     : null;
 
   if (!nextCard) {
-    // Last card: edge-hidden if its right edge is near or past viewport right boundary
-    return cRect.right > (vRect.right - 24);
+    // Last card: edge-hidden if its right edge is not flush with viewport right boundary
+    return Math.abs(cRect.right - vRect.right) > 2;
   }
 
   // Card itself is cut off on the right
-  if (cRect.right > (vRect.right - 24)) {
+  if (cRect.right > (vRect.right - 2)) {
     return true;
   }
 

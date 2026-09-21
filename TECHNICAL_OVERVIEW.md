@@ -1,6 +1,6 @@
 # MoTrend Technical Overview
 
-> Historical overview, reclassified 2026-09-11. Do not treat legacy Firebase Functions/provider descriptions below as current runtime ownership. Start with README.md and ../moads-platform/docs/platform-current-state.md. Unique historical requirements are retained for reconciliation; this file is not a deployment runbook.
+> Updated 2026-09-21. Current backend runtime is hosted in `moads-platform` (`moads-api` Fastify service on Cloud Run, PostgreSQL via Prisma, Cloud Tasks queues, Kling AI direct & Omni via Fal.ai). This repository (`motrend`) hosts the static frontend on Firebase Hosting (`trend.moads.agency`). Refer to `../moads-platform/docs/platform-current-state.md` and `docs/MOTREND_TECHNICAL_ARCHITECTURE_AND_ROADMAP_SPEC.md` for full platform architecture.
 
 This document is intended for a new developer or another AI agent that needs to understand how the project works across product behavior, frontend, backend, data model, billing, queues, and platform caveats.
 

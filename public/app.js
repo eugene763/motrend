@@ -2512,17 +2512,110 @@ function buildTemplateCostLabel(template) {
 
 function updateSelectedTrendField() {
   const selectedTrendInput = $("selTemplate");
-  if (!selectedTrendInput) return;
+  if (selectedTrendInput) {
+    if (
+      selectedTrendKind === TREND_SELECTION_REFERENCE &&
+      selectedReferenceVideoName
+    ) {
+      selectedTrendInput.value = `Your video reference (${selectedReferenceVideoName})`;
+    } else {
+      selectedTrendInput.value = buildTemplateSelectionLabel(selectedTemplate);
+    }
+  }
+  syncSelectedSceneCardUi();
+}
 
-  if (
-    selectedTrendKind === TREND_SELECTION_REFERENCE &&
-    selectedReferenceVideoName
-  ) {
-    selectedTrendInput.value = `Your video reference (${selectedReferenceVideoName})`;
+function syncSelectedSceneCardUi() {
+  const card = $("selectedSceneCard");
+  const thumb = $("selectedSceneThumb");
+  const placeholder = $("selectedScenePlaceholder");
+  const title = $("selectedSceneTitle");
+  const meta = $("selectedSceneMeta");
+  const costTag = $("selectedSceneCostTag");
+  const costVal = $("selectedSceneCostVal");
+  if (!card) return;
+
+  if (selectedTrendKind === TREND_SELECTION_REFERENCE) {
+    card.classList.add("has-selection");
+    if (thumb) thumb.style.display = "none";
+    if (placeholder) {
+      placeholder.style.display = "block";
+      placeholder.textContent = "📹";
+    }
+    if (title) title.textContent = selectedReferenceVideoName || "Your video reference";
+    if (meta) meta.textContent = "Custom motion reference · 1 photo required";
+    const refCredits = getSelectedReferenceVideoCostCredits();
+    if (costTag && costVal) {
+      costVal.textContent = refCredits ?? "—";
+      costTag.style.display = "inline-flex";
+    }
     return;
   }
 
-  selectedTrendInput.value = buildTemplateSelectionLabel(selectedTemplate);
+  if (selectedTemplate) {
+    card.classList.add("has-selection");
+    const thumbUrl = selectedTemplate.preview?.thumbnailUrl;
+    if (thumb && thumbUrl) {
+      thumb.src = thumbUrl;
+      thumb.style.display = "block";
+      if (placeholder) placeholder.style.display = "none";
+    } else {
+      if (thumb) thumb.style.display = "none";
+      if (placeholder) {
+        placeholder.style.display = "block";
+        placeholder.textContent = "🎬";
+      }
+    }
+    if (title) title.textContent = selectedTemplate.title || selectedTemplate.name || "Selected trend";
+    const duration = selectedTemplate.durationSec ? `${selectedTemplate.durationSec}s trend` : "Viral trend";
+    if (meta) meta.textContent = `${duration} · 1 photo required`;
+    const costCredits = getTemplateCostCredits(selectedTemplate);
+    if (costTag && costVal) {
+      costVal.textContent = costCredits ?? "—";
+      costTag.style.display = "inline-flex";
+    }
+    return;
+  }
+
+  // No selection
+  card.classList.remove("has-selection");
+  if (thumb) {
+    thumb.src = "";
+    thumb.style.display = "none";
+  }
+  if (placeholder) {
+    placeholder.style.display = "block";
+    placeholder.textContent = "🎬";
+  }
+  if (title) title.textContent = "No trend selected";
+  if (meta) meta.textContent = "Choose a trend from the catalog above";
+  if (costTag) costTag.style.display = "none";
+}
+
+function setCustomReferenceExpanded(expanded) {
+  const toggleBtn = $("btnToggleCustomRef");
+  const mount = $("customReferenceMount");
+  if (!toggleBtn || !mount) return;
+
+  if (expanded) {
+    toggleBtn.setAttribute("aria-expanded", "true");
+    mount.classList.remove("is-collapsed");
+  } else {
+    toggleBtn.setAttribute("aria-expanded", "false");
+    mount.classList.add("is-collapsed");
+  }
+}
+
+function initCustomReferenceCollapse() {
+  const toggleBtn = $("btnToggleCustomRef");
+  const mount = $("customReferenceMount");
+  if (!toggleBtn || !mount) return;
+
+  toggleBtn.onclick = (e) => {
+    e.preventDefault();
+    const isExpanded = toggleBtn.getAttribute("aria-expanded") === "true";
+    setCustomReferenceExpanded(!isExpanded);
+  };
 }
 
 function syncTrendSelectionUi() {
@@ -2530,6 +2623,7 @@ function syncTrendSelectionUi() {
     selectedTrendKind === TREND_SELECTION_REFERENCE &&
     (selectedReferenceVideoFile || selectedReferenceVideoUploadedReferencePath)
   ) {
+    setCustomReferenceExpanded(true);
     const referenceCard = document.querySelector(
       ".tplCard[data-trend-role='reference']"
     );
@@ -2572,6 +2666,7 @@ function hasUploadedReferenceVideo() {
 
 function refreshGenerateButtonState() {
   const btn = $("btnGenerate");
+  const btnText = $("btnGenerateText") || btn;
   if (!btn) return;
 
   const referencePending = (
@@ -2585,15 +2680,25 @@ function refreshGenerateButtonState() {
     "";
 
   if (!generateSubmissionInFlight) {
+    const hasPhoto = Boolean($("filePhoto")?.files?.[0]);
+    const hasScene = Boolean(selectedTemplate || (selectedTrendKind === TREND_SELECTION_REFERENCE && hasUploadedReferenceVideo()));
+
+    let costCredits = null;
     if (selectedTrendKind === TREND_SELECTION_REFERENCE) {
-      const refCredits = getSelectedReferenceVideoCostCredits();
-      btn.textContent = refCredits ? `Generate · ${refCredits} credits` : "Generate";
+      costCredits = getSelectedReferenceVideoCostCredits();
     } else if (selectedTemplate) {
-      const costCredits = getTemplateCostCredits(selectedTemplate);
-      btn.textContent = costCredits ? `Generate · ${costCredits} credits` : "Generate";
-    } else {
-      btn.textContent = "Generate";
+      costCredits = getTemplateCostCredits(selectedTemplate);
     }
+
+    if (!hasScene) {
+      btnText.textContent = "Select a trend above";
+    } else if (!hasPhoto) {
+      btnText.textContent = "Upload your photo";
+    } else {
+      btnText.textContent = costCredits ? `Create video · ${costCredits} credits` : "Create video";
+    }
+  } else {
+    btnText.textContent = "Preparing video…";
   }
 }
 
@@ -2681,8 +2786,8 @@ function refreshReferenceVideoCardMediaUi() {
     selectedReferenceVideoUploadState === "error";
 
   let placeholderState = "idle";
-  let placeholderPrimary = "Your video reference";
-  let placeholderSecondary = "Choose mp4 or mov";
+  let placeholderPrimary = "Your video";
+  let placeholderSecondary = "Tap to choose";
 
   if (selectedReferenceVideoUploadState === "uploading") {
     placeholderState = "busy";
@@ -3259,10 +3364,7 @@ async function generateReferenceVideoPreview(file) {
 }
 
 function scrollToPhotoUploadField() {
-
-  const fileInput = $("filePhoto");
-  const fieldWrap = fileInput?.closest("div");
-  const target = fieldWrap || fileInput || $("generateCard") || $("btnGenerate");
+  const target = $("generateCard") || $("photoDropZone") || $("filePhoto") || $("btnGenerate");
   if (!target) return false;
 
   target.scrollIntoView({behavior: "smooth", block: "center"});
@@ -3917,6 +4019,13 @@ $("btnWallet").onclick = () => {
   openWallet();
 };
 
+const btnHeaderLogin = $("btnHeaderLogin");
+if (btnHeaderLogin) {
+  btnHeaderLogin.onclick = () => {
+    openAuth();
+  };
+}
+
 if ($("btnWalletClose")) {
   $("btnWalletClose").onclick = () => {
     closeWalletModal();
@@ -3939,6 +4048,8 @@ function stopAllTemplateVideos(exceptEl = null) {
       video.pause();
       video.currentTime = 0;
       video.muted = true;
+      const audioBtn = video.closest(".tplCard")?.querySelector(".mo-audio-toggle .mo-audio-icon");
+      if (audioBtn) audioBtn.textContent = "🔇";
     } catch {
       // no-op
     }
@@ -3963,10 +4074,10 @@ function renderReferenceVideoCard() {
   placeholderContent.className = "refPlaceholderContent";
   const placeholderTitle = document.createElement("div");
   placeholderTitle.className = "refPlaceholderTitle";
-  placeholderTitle.textContent = "Your video reference";
+  placeholderTitle.textContent = "Your video";
   const placeholderSub = document.createElement("div");
   placeholderSub.className = "refPlaceholderSub";
-  placeholderSub.textContent = "Choose mp4 or mov";
+  placeholderSub.textContent = "Tap to choose";
   placeholderContent.appendChild(placeholderTitle);
   placeholderContent.appendChild(placeholderSub);
   placeholder.appendChild(placeholderContent);
@@ -3991,11 +4102,15 @@ function renderReferenceVideoCard() {
 
   const title = document.createElement("div");
   title.className = "customReferenceTitle";
-  title.textContent = "Upload your motion reference";
+  title.textContent = "Upload reference";
+
+  const hint = document.createElement("div");
+  hint.className = "customReferenceHint";
+  hint.textContent = "Upload any dance or clip to animate your photo.";
 
   const formats = document.createElement("div");
   formats.className = "customReferenceFormats";
-  formats.textContent = "Formats: mp4 / mov • Max size: ≤100MB";
+  formats.textContent = "MP4, MOV · Max 100MB";
 
   const meta = document.createElement("div");
   meta.className = "muted refMetaName";
@@ -4014,7 +4129,7 @@ function renderReferenceVideoCard() {
 
   const actionBtn = document.createElement("button");
   actionBtn.className = "btn tplUse";
-  actionBtn.textContent = "Upload";
+  actionBtn.textContent = "Upload video";
 
   const picker = $("fileReferenceVideo");
 
@@ -4078,12 +4193,13 @@ function renderReferenceVideoCard() {
   }
 
   details.appendChild(title);
+  details.appendChild(hint);
   details.appendChild(formats);
   details.appendChild(meta);
   details.appendChild(estimate);
-  details.appendChild(actionBtn);
   inner.appendChild(media);
   inner.appendChild(details);
+  inner.appendChild(actionBtn);
   card.appendChild(inner);
   refreshReferenceVideoCardUi();
 
@@ -4097,43 +4213,97 @@ function getTrendCardScrollTarget(card) {
   const viewport = card?.closest?.(".trendCarouselViewport");
   if (!viewport) return null;
 
-  const nextCard = card.nextElementSibling?.classList.contains("trendCard")
-    ? card.nextElementSibling
-    : null;
-
   const vRect = viewport.getBoundingClientRect();
   const cRect = card.getBoundingClientRect();
   const maxScrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
 
+  const prevCard = card.previousElementSibling?.classList.contains("trendCard")
+    ? card.previousElementSibling
+    : null;
+  const nextCard = card.nextElementSibling?.classList.contains("trendCard")
+    ? card.nextElementSibling
+    : null;
+
+  // Determine whether this card is oriented toward the left edge or right edge
+  const cardCenter = cRect.left + (cRect.width / 2);
+  const vCenter = vRect.left + (vRect.width / 2);
+  const isCutOffLeft = cRect.left < vRect.left + 2;
+  const isCutOffRight = cRect.right > vRect.right - 2;
+  const isLeftSide = isCutOffLeft || (!isCutOffRight && cardCenter < vCenter);
+
   let shift = 0;
 
-  if (nextCard) {
-    const nRect = nextCard.getBoundingClientRect();
-    const desiredNextRight = nRect.left + (nRect.width * 0.30);
-    const rightDiff = desiredNextRight - vRect.right;
-    if (rightDiff > 1) {
-      shift = rightDiff;
+  if (isLeftSide) {
+    // --- LEFT-EDGE ALIGNMENT ---
+    if (prevCard) {
+      // Reveal card fully, and let prevCard peek in by 30% from the left boundary
+      const pRect = prevCard.getBoundingClientRect();
+      const desiredPrevRight = vRect.left + (pRect.width * 0.30);
+      const leftDiff = pRect.right - desiredPrevRight;
+      if (leftDiff < -1) {
+        shift = leftDiff;
+      }
+    } else {
+      // First card: align its left edge flush with viewport left boundary
+      shift = cRect.left - vRect.left;
     }
+
+    // If card was initially cut off on the left, scroll rightwards to reveal it
+    if (cRect.left < vRect.left + 8) {
+      shift = Math.min(shift, cRect.left - (vRect.left + 8));
+    }
+
+    let targetScrollLeft = viewport.scrollLeft + shift;
+
+    // Safety: ensure card's own right edge doesn't get scrolled out of view on the right
+    const cardRightAfterScroll = cRect.right - shift;
+    if (cardRightAfterScroll > vRect.right - 8) {
+      targetScrollLeft = viewport.scrollLeft + (cRect.right - (vRect.right - 8));
+    }
+
+    // Safety: ensure card's own left edge doesn't get cut off on the left
+    const cardLeftAfterScroll = cRect.left - shift;
+    if (cardLeftAfterScroll < vRect.left) {
+      targetScrollLeft = viewport.scrollLeft + (cRect.left - vRect.left);
+    }
+
+    return Math.max(0, Math.min(maxScrollLeft, Math.round(targetScrollLeft)));
   } else {
-    // Last card: between it and the right frame of the block there must be NO empty space
-    // Align card's right edge flush with the viewport right edge
-    shift = cRect.right - vRect.right;
+    // --- RIGHT-EDGE ALIGNMENT ---
+    if (nextCard) {
+      // Reveal card fully, and let nextCard peek in by 30% from the right boundary
+      const nRect = nextCard.getBoundingClientRect();
+      const desiredNextRight = nRect.left + (nRect.width * 0.30);
+      const rightDiff = desiredNextRight - vRect.right;
+      if (rightDiff > 1) {
+        shift = rightDiff;
+      }
+    } else {
+      // Last card: align its right edge flush with viewport right boundary
+      shift = cRect.right - vRect.right;
+    }
+
+    // If card was initially cut off on the right, scroll leftwards to reveal it
+    if (cRect.right > vRect.right - 8) {
+      shift = Math.max(shift, cRect.right - (vRect.right - 8));
+    }
+
+    let targetScrollLeft = viewport.scrollLeft + shift;
+
+    // Safety: ensure card's own left edge doesn't get scrolled out of view on the left
+    const cardLeftAfterScroll = cRect.left - shift;
+    if (cardLeftAfterScroll < vRect.left + 8) {
+      targetScrollLeft = viewport.scrollLeft + (cRect.left - (vRect.left + 8));
+    }
+
+    // Safety: ensure card's own right edge doesn't get cut off on the right
+    const cardRightAfterScroll = cRect.right - shift;
+    if (cardRightAfterScroll > vRect.right) {
+      targetScrollLeft = viewport.scrollLeft + (cRect.right - vRect.right);
+    }
+
+    return Math.max(0, Math.min(maxScrollLeft, Math.round(targetScrollLeft)));
   }
-
-  let targetScrollLeft = viewport.scrollLeft + shift;
-
-  // Ensure card's own left edge doesn't get scrolled out of view on the left
-  const cardLeftAfterScroll = cRect.left - shift;
-  if (cardLeftAfterScroll < vRect.left + 8) {
-    targetScrollLeft = viewport.scrollLeft + (cRect.left - vRect.left - 8);
-  }
-
-  // If card was initially cut off on the left, scroll rightwards to reveal it
-  if (cRect.left < vRect.left + 8) {
-    targetScrollLeft = viewport.scrollLeft + (cRect.left - vRect.left - 8);
-  }
-
-  return Math.max(0, Math.min(maxScrollLeft, Math.round(targetScrollLeft)));
 }
 
 function isTrendCardEdgeHidden(card) {
@@ -4143,27 +4313,56 @@ function isTrendCardEdgeHidden(card) {
   const vRect = viewport.getBoundingClientRect();
   const cRect = card.getBoundingClientRect();
 
+  const prevCard = card.previousElementSibling?.classList.contains("trendCard")
+    ? card.previousElementSibling
+    : null;
   const nextCard = card.nextElementSibling?.classList.contains("trendCard")
     ? card.nextElementSibling
     : null;
 
-  if (!nextCard) {
-    // Last card: edge-hidden if its right edge is not flush with viewport right boundary
-    return Math.abs(cRect.right - vRect.right) > 2;
-  }
-
-  // Card itself is cut off on the right
-  if (cRect.right > (vRect.right - 2)) {
+  // 1. LEFT EDGE
+  // Card itself is cut off on the left
+  if (cRect.left < vRect.left + 2) {
     return true;
   }
+  // First card: edge-hidden if its left edge is not flush with viewport left boundary
+  if (!prevCard && Math.abs(cRect.left - vRect.left) > 2) {
+    return true;
+  }
+  // Prev card exists and is visible by less than 28% of its width
+  if (prevCard && cRect.left < vRect.left + (cRect.width * 0.6)) {
+    const pRect = prevCard.getBoundingClientRect();
+    const visiblePrevWidth = Math.max(
+      0,
+      Math.min(pRect.right, vRect.right) - Math.max(pRect.left, vRect.left)
+    );
+    if ((visiblePrevWidth / pRect.width) < 0.28) {
+      return true;
+    }
+  }
 
-  // Next card is visible by less than 28% of its width
-  const nRect = nextCard.getBoundingClientRect();
-  const visibleWidth = Math.max(
-    0,
-    Math.min(nRect.right, vRect.right) - Math.max(nRect.left, vRect.left)
-  );
-  return (visibleWidth / nRect.width) < 0.28;
+  // 2. RIGHT EDGE
+  // Card itself is cut off on the right
+  if (cRect.right > vRect.right - 2) {
+    return true;
+  }
+  // Last card: edge-hidden if its right edge is not flush with viewport right boundary
+  if (!nextCard && Math.abs(cRect.right - vRect.right) > 2) {
+    return true;
+  }
+  // Next card exists and is visible by less than 28% of its width
+  if (nextCard && cRect.right > vRect.right - (cRect.width * 0.6)) {
+    const nRect = nextCard.getBoundingClientRect();
+    const visibleNextWidth = Math.max(
+      0,
+      Math.min(nRect.right, vRect.right) - Math.max(nRect.left, vRect.left)
+    );
+    if ((visibleNextWidth / nRect.width) < 0.28) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function alignTrendCardInViewport(card, { isPermanent = false } = {}) {
@@ -4260,6 +4459,9 @@ function renderTemplateCard(template) {
   media.className = "tplMedia";
 
   let videoEl = null;
+  let playFallbackEl = null;
+  let audioToggleBtn = null;
+
   if (videoUrl) {
     videoEl = document.createElement("video");
     videoEl.className = "tplVideo";
@@ -4271,6 +4473,41 @@ function renderTemplateCard(template) {
     videoEl.autoplay = true;
     videoEl.preload = "metadata";
     media.appendChild(videoEl);
+
+    // iOS Low Power Mode play fallback button
+    playFallbackEl = document.createElement("div");
+    playFallbackEl.className = "mo-play-fallback";
+    playFallbackEl.setAttribute("aria-label", "Play trend preview");
+    playFallbackEl.innerHTML = `<svg viewBox="0 0 24 24" width="28" height="28" fill="white"><polygon points="7,5 19,12 7,19"></polygon></svg>`;
+    playFallbackEl.onclick = (e) => {
+      e.stopPropagation();
+      if (!videoEl) return;
+      videoEl.play().then(() => {
+        media.classList.remove("is-autoplay-blocked");
+      }).catch(() => {});
+    };
+    media.appendChild(playFallbackEl);
+
+    // Audio toggle button
+    audioToggleBtn = document.createElement("button");
+    audioToggleBtn.type = "button";
+    audioToggleBtn.className = "mo-audio-toggle";
+    audioToggleBtn.setAttribute("aria-label", "Toggle audio");
+    audioToggleBtn.innerHTML = `<span class="mo-audio-icon">🔇</span>`;
+    audioToggleBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (!videoEl) return;
+      videoEl.muted = !videoEl.muted;
+      audioToggleBtn.innerHTML = `<span class="mo-audio-icon">${videoEl.muted ? "🔇" : "🔊"}</span>`;
+      audioToggleBtn.setAttribute("aria-label", videoEl.muted ? "Unmute preview" : "Mute preview");
+      if (!videoEl.muted) {
+        stopAllTemplateVideos(videoEl);
+        videoEl.play().then(() => {
+          media.classList.remove("is-autoplay-blocked");
+        }).catch(() => {});
+      }
+    };
+    media.appendChild(audioToggleBtn);
   } else if (thumbUrl) {
     const img = document.createElement("img");
     img.src = thumbUrl;
@@ -4278,31 +4515,71 @@ function renderTemplateCard(template) {
     media.appendChild(img);
   }
 
+  // Badges (Duration, NEW)
+  const badgesWrap = document.createElement("div");
+  badgesWrap.className = "mo-media-badges";
+
+  if (template.id === "yung_lean_storm2" || template.isNew || template.tag) {
+    const newBadge = document.createElement("span");
+    newBadge.className = "mo-badge mo-badge-new";
+    newBadge.textContent = "NEW";
+    badgesWrap.appendChild(newBadge);
+  }
+
+  if (template.durationSec) {
+    const durBadge = document.createElement("span");
+    durBadge.className = "mo-badge";
+    durBadge.textContent = `${template.durationSec}s`;
+    badgesWrap.appendChild(durBadge);
+  }
+  media.appendChild(badgesWrap);
+
+  // Floating Cost Pill
+  const costPill = document.createElement("div");
+  costPill.className = "mo-cost-pill";
+  costPill.textContent = buildTemplateCostLabel(template);
+  media.appendChild(costPill);
+
+  // Info Section
+  const info = document.createElement("div");
+  info.className = "mo-trend-info";
+
   const title = document.createElement("div");
-  title.style.fontWeight = "700";
-  title.style.marginTop = "8px";
+  title.className = "mo-trend-title";
   title.textContent = titleText;
 
   const meta = document.createElement("div");
-  meta.className = "muted";
-  meta.style.marginTop = "4px";
-  meta.style.marginBottom = "16px";
-  meta.textContent = buildTemplateCostLabel(template);
+  meta.className = "mo-trend-meta";
+  if (template.id === "yung_lean_storm2") {
+    meta.textContent = "Cyberpunk storm · 1 photo";
+  } else if (template.id === "cwalk") {
+    meta.textContent = "Viral dance flow · 1 photo";
+  } else if (template.id === "guan_yin") {
+    meta.textContent = "Thousand-hand dance · 1 photo";
+  } else if (template.id === "bella") {
+    meta.textContent = "Dynamic trend · 1 photo";
+  } else {
+    meta.textContent = `${template.durationSec ? template.durationSec + "s · " : ""}1 photo`;
+  }
+
+  info.appendChild(title);
+  info.appendChild(meta);
 
   const useBtn = document.createElement("button");
-  useBtn.className = "btn tplUse";
-  useBtn.style.marginTop = "auto";
-  useBtn.style.width = "100%";
-  useBtn.textContent = "Use";
+  useBtn.className = "mo-btn mo-btn-secondary mo-btn-block tplUse";
+  useBtn.textContent = "Choose trend";
 
   card.appendChild(media);
-  card.appendChild(title);
-  card.appendChild(meta);
+  card.appendChild(info);
   card.appendChild(useBtn);
 
   if (videoEl) {
     setTimeout(() => {
-      videoEl.play().catch(() => {});
+      videoEl.play().then(() => {
+        media.classList.remove("is-autoplay-blocked");
+      }).catch(() => {
+        media.classList.add("is-autoplay-blocked");
+      });
     }, 50);
   }
 
@@ -4327,8 +4604,13 @@ function renderTemplateCard(template) {
         } else {
           videoEl.muted = false;
         }
+        if (audioToggleBtn) {
+          audioToggleBtn.innerHTML = `<span class="mo-audio-icon">${videoEl.muted ? "🔇" : "🔊"}</span>`;
+          audioToggleBtn.setAttribute("aria-label", videoEl.muted ? "Unmute preview" : "Mute preview");
+        }
         videoEl.volume = 1;
         await videoEl.play();
+        media.classList.remove("is-autoplay-blocked");
       } catch {
         // no-op
       }
@@ -4344,6 +4626,10 @@ function renderTemplateCard(template) {
     if (didScrollToGenerate && videoEl) {
       try {
         videoEl.muted = true;
+        if (audioToggleBtn) {
+          audioToggleBtn.innerHTML = `<span class="mo-audio-icon">🔇</span>`;
+          audioToggleBtn.setAttribute("aria-label", "Unmute preview");
+        }
       } catch {
         // no-op
       }
@@ -5162,8 +5448,10 @@ $("btnGenerate").onclick = async () => {
     return;
   }
 
-  if (!selectedTemplate) {
-    showFormError("Pick a template first.");
+  if (!selectedTemplate && selectedTrendKind !== TREND_SELECTION_REFERENCE) {
+    showFormError("Pick a trend first.");
+    const catalogEl = $("templates") || $("trendPickerTitle");
+    if (catalogEl) catalogEl.scrollIntoView({ behavior: "smooth", block: "center" });
     return;
   }
 
@@ -5178,6 +5466,7 @@ $("btnGenerate").onclick = async () => {
   const rawFile = $("filePhoto").files?.[0];
   if (!rawFile) {
     showFormError("Upload a photo.");
+    await openPhotoPicker();
     return;
   }
 
@@ -5358,10 +5647,55 @@ $("btnGenerate").onclick = async () => {
   }
 };
 
+function updatePhotoPreviewUi(file) {
+  const emptyState = $("photoEmptyState");
+  const previewState = $("photoPreviewState");
+  const previewImg = $("photoPreviewImg");
+  const nameEl = $("photoFileName");
+  const sizeEl = $("photoFileSize");
+
+  if (!file) {
+    if (emptyState) emptyState.style.display = "flex";
+    if (previewState) previewState.style.display = "none";
+    if (previewImg) previewImg.src = "";
+    refreshGenerateButtonState();
+    return;
+  }
+
+  if (nameEl) nameEl.textContent = file.name;
+  if (sizeEl) sizeEl.textContent = `${formatUploadMegabytes(file.size)} · ready`;
+  if (previewImg) {
+    try {
+      previewImg.src = URL.createObjectURL(file);
+    } catch {
+      // no-op
+    }
+  }
+  if (emptyState) emptyState.style.display = "none";
+  if (previewState) previewState.style.display = "flex";
+  clearFormError();
+  refreshGenerateButtonState();
+}
+
+function handlePhotoFileRemoval(event) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  const fileInput = $("filePhoto");
+  if (fileInput) {
+    fileInput.value = "";
+  }
+  updatePhotoPreviewUi(null);
+}
+
 const fileInput = $("filePhoto");
+const photoDropZone = $("photoDropZone");
+const btnChangePhoto = $("btnChangePhoto");
+const btnRemovePhoto = $("btnRemovePhoto");
+
 if (fileInput) {
   fileInput.addEventListener("click", async (event) => {
-
     if (!(await ensureSignedInForAction("Sign in to upload a photo."))) {
       event.preventDefault();
       return;
@@ -5373,7 +5707,85 @@ if (fileInput) {
     await maybeShowUploadHint(PHOTO_HINT_KEY, PHOTO_HINT_MESSAGE);
     fileInput.click();
   });
+
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    updatePhotoPreviewUi(file || null);
+  });
 }
+
+if (btnChangePhoto) {
+  btnChangePhoto.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openPhotoPicker();
+  });
+}
+
+if (btnRemovePhoto) {
+  btnRemovePhoto.addEventListener("click", (e) => {
+    handlePhotoFileRemoval(e);
+  });
+}
+
+if (photoDropZone) {
+  photoDropZone.addEventListener("click", (e) => {
+    if (e.target.closest("#btnChangePhoto") || e.target.closest("#btnRemovePhoto")) {
+      return;
+    }
+    if (fileInput?.files?.[0]) {
+      return;
+    }
+    openPhotoPicker();
+  });
+
+  photoDropZone.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    photoDropZone.classList.add("is-dragover");
+  });
+
+  photoDropZone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    photoDropZone.classList.add("is-dragover");
+  });
+
+  photoDropZone.addEventListener("dragleave", (e) => {
+    if (!photoDropZone.contains(e.relatedTarget)) {
+      photoDropZone.classList.remove("is-dragover");
+    }
+  });
+
+  photoDropZone.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    photoDropZone.classList.remove("is-dragover");
+
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+
+    if (!(await ensureSignedInForAction("Sign in to upload a photo."))) {
+      return;
+    }
+
+    if (!file.type.startsWith("image/")) {
+      showFormError("Please upload an image file (JPG, PNG, HEIC).");
+      return;
+    }
+
+    if (fileInput) {
+      try {
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileInput.files = dt.files;
+      } catch {
+        // Fallback for environments where DataTransfer constructor is unsupported
+      }
+    }
+
+    updatePhotoPreviewUi(file);
+  });
+}
+
+initCustomReferenceCollapse();
 
 await ensurePreferredAuthPersistence();
 
@@ -5437,9 +5849,11 @@ onAuthStateChanged(auth, async (user) => {
     $("jobsCard").style.display = "none";
     $("btnWallet").style.display = "none";
     $("btnLogout").style.display = "none";
-    $("supportBtn").style.display = "none";
+    $("supportBtn").style.display = "inline-flex";
+    if ($("btnHeaderLogin")) $("btnHeaderLogin").style.display = "inline-flex";
     const restoredGuestCabinet = await restoreGuestCabinetFromCookie();
     if (restoredGuestCabinet) {
+      if ($("btnHeaderLogin")) $("btnHeaderLogin").style.display = "inline-flex";
       closeAuth();
       updateAuthInAppActions();
       setStatus("");
@@ -5487,11 +5901,12 @@ onAuthStateChanged(auth, async (user) => {
   refreshReferenceVideoCardUi();
   refreshGenerateButtonState();
   currentCreditsBalance = Number.NaN;
-  $("userCard").style.display = "block";
+  $("userCard").style.display = "flex";
   $("jobsCard").style.display = "block";
-  $("btnWallet").style.display = "inline-block";
+  $("btnWallet").style.display = "inline-flex";
   $("btnLogout").style.display = "inline-block";
   $("supportBtn").style.display = "inline-flex";
+  if ($("btnHeaderLogin")) $("btnHeaderLogin").style.display = "none";
   $("userLine").textContent = user.email || "Signed in";
   renderLocaleFields();
 

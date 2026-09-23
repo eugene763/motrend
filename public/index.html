@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>MoTrend©</title>
   <link rel="icon" href="/favicon.ico" sizes="any"/>
+  <link rel="stylesheet" href="/styles/tokens.css"/>
 
   <style>
     /* Fonts (Tilda: Coolvetica) */
@@ -100,59 +101,66 @@ a{color:#fff}
   scrollbar-width:thin;
   scrollbar-color:rgba(255,255,255,.22) transparent;
   padding:2px 0 12px;
-  margin:0 -16px 0 0;
+  margin:0;
 }
 .trendCarouselViewport::-webkit-scrollbar{height:6px;}
 .trendCarouselViewport::-webkit-scrollbar-track{background:transparent;}
 .trendCarouselViewport::-webkit-scrollbar-thumb{background:rgba(255,255,255,.2);border-radius:999px;}
-.trendCarouselViewport::after{
-  content:"";
-  position:sticky;
-  right:0;
-  top:0;
-  float:right;
-  width:54px;
-  height:1px;
-  min-height:100%;
-  pointer-events:none;
-  background:linear-gradient(90deg,rgba(21,21,21,0),var(--card));
-}
+.trendCarouselViewport::after{display:none;}
 .trendCarouselTrack{
   display:flex;
   align-items:stretch;
   gap:14px;
   width:max-content;
   max-width:none;
-  padding:0 54px 2px 0;
+  padding:0 0 2px 0;
 }
 .trendCard{
-  flex:0 0 clamp(180px,18vw,220px);
-  width:clamp(180px,18vw,220px);
+  flex:0 0 156px;
+  width:156px;
 }
 .customReferenceCard{
   width:100%;
   max-width:100%;
   margin:0;
   border-color:transparent;
-  background:linear-gradient(180deg,#171717,#111);
+  background:var(--mo-color-surface-secondary);
   overflow:hidden;
 }
 .customReferenceCard .tplMedia{
-  max-width:220px;
-  width:42%;
-  min-width:148px;
+  max-width:110px;
+  width:110px;
+  min-width:88px;
 }
 .customReferenceCardInner{
   display:grid;
-  grid-template-columns:minmax(148px,220px) minmax(0,1fr);
+  grid-template-columns:110px minmax(0,1fr);
   gap:16px;
-  align-items:center;
+  align-items:start;
   min-height:0;
 }
-.customReferenceDetails{display:flex;flex-direction:column;gap:8px;min-width:0;max-width:100%;}
-.customReferenceTitle{font-weight:700;font-size:22px;line-height:1.1;}
-.customReferenceFormats{font-size:16px;color:var(--muted);overflow-wrap:anywhere;}
-.customReferenceCard .tplUse{margin-top:auto;align-self:flex-start;min-width:170px;}
+.customReferenceDetails{display:flex;flex-direction:column;gap:6px;min-width:0;max-width:100%;}
+.customReferenceTitle{font-weight:700;font-size:17px;line-height:1.2;color:#fff;}
+.customReferenceFormats{font-size:12px;color:var(--mo-color-text-tertiary);overflow-wrap:anywhere;}
+.customReferenceHint{font-size:12px;line-height:1.35;color:var(--mo-color-text-secondary);}
+.customReferenceCard .tplUse{
+  grid-column:1 / -1;
+  width:100%;
+  margin-top:10px;
+  background:#26262c;
+  color:#e4e4e7;
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:9999px;
+  padding:10px 16px;
+  font-size:13px;
+  font-weight:600;
+  transition:background 0.15s ease, border-color 0.15s ease;
+}
+.customReferenceCard .tplUse:hover{
+  background:#32323a;
+  border-color:rgba(255,255,255,0.24);
+  color:#fff;
+}
 
 .tplCard{border:1px solid transparent;border-radius:16px;padding:4px;display:flex;flex-direction:column;height:100%;}
 .tplCard.isHot{border-color:var(--accent);}
@@ -179,19 +187,26 @@ a{color:#fff}
   input[type="file"]{width:100%;max-width:100%;}
   .trendSectionTitle{font-size:23px;}
   .trendSectionHint{font-size:15px;}
-  .trendCarouselViewport{margin:0 -14px 0 0;padding-bottom:10px;}
+  .trendCarouselViewport{margin:0;padding-bottom:10px;}
   .trendCarouselViewport::after{display:none;}
-  .trendCarouselTrack{gap:12px;padding-right:0;}
-  .trendCard{flex-basis:min(47vw,182px);width:min(47vw,182px);}
-  .customReferenceCardInner{grid-template-columns:1fr;}
-  .customReferenceCard .tplMedia{
-    width:100%;
-    max-width:169px;
-    min-width:0;
-    justify-self:center;
+  .trendCarouselTrack{gap:10px;padding:0 0 2px 0;}
+  .trendCard{flex:0 0 138px;width:138px;}
+  .customReferenceCardInner{
+    grid-template-columns:88px minmax(0,1fr);
+    gap:12px;
   }
-  .customReferenceTitle{font-size:21px;}
-  .customReferenceCard .tplUse{width:100%;}
+  .customReferenceCard .tplMedia{
+    width:88px;
+    max-width:88px;
+    min-width:0;
+    justify-self:start;
+  }
+  .customReferenceTitle{font-size:15px;}
+  .customReferenceCard .tplUse{
+    grid-column:1 / -1;
+    width:100%;
+    margin-top:8px;
+  }
   .userCardRow{flex-direction:column;align-items:stretch;}
   .userActions{width:100%;flex-direction:column;align-items:stretch;gap:10px;}
   .userActions button{width:100%;}
@@ -482,125 +497,240 @@ a{color:#fff}
 </head>
 
 <body>
-  <div class="wrap">
-    <div class="topBar">
-      <div class="brandBlock">
-        <a class="brandLink" href="/">
-          <h1 class="brandTitle">MoTrend©</h1>
+  <div class="mo-app-shell">
+    <header class="mo-header">
+      <div class="mo-header-inner mo-container-wide">
+        <a class="mo-brand" href="/">
+          <div class="mo-brand-title">
+            <span>MoTrend</span><span class="mo-brand-mark">©</span>
+          </div>
+          <div class="mo-brand-subtitle">AI Video Trends</div>
         </a>
-        <div class="muted brandSubtitle">Turn your photo into a viral trend</div>
-      </div>
-      <a
-        id="supportBtn"
-        class="supportBtn"
-        href="https://wa.me/995574413278?text=Hello%2C%20I%20am%20having%20an%20issue%20with%20the%20MoTrend%C2%A9%20app."
-        target="_blank"
-        rel="noopener noreferrer"
-      >⚙️ Support</a>
-    </div>
-
-    <div id="auth" class="card" style="display:none">
-  <div style="font-weight:700;margin-bottom:6px">Sign in</div>
-
-  <div class="grid">
-    <div>
-      <div class="muted">Email</div>
-      <input id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" />
-    </div>
-    <div>
-      <div class="muted">Password</div>
-      <input id="authPass" type="password" placeholder="••••••••" autocomplete="current-password" />
-    </div>
-  </div>
-
-  <div class="row" style="margin-top:12px">
-    <button id="btnEmailSignUp" class="btn">Sign up</button>
-    <button id="btnEmailSignIn" class="btn2">Log in</button>
-
-    <button id="btnLogin" class="btn2 btnGoogle" style="margin-left:auto">
-      <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
-        <path fill="#4285F4" d="M17.64 9.205c0-.639-.057-1.253-.164-1.841H9v3.482h4.844a4.14 4.14 0 0 1-1.796 2.719v2.258h2.908c1.702-1.567 2.684-3.878 2.684-6.618z"/>
-        <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.177l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.345 0-4.33-1.583-5.038-3.71H.957v2.332A8.996 8.996 0 0 0 9 18z"/>
-        <path fill="#FBBC05" d="M3.962 10.715a5.41 5.41 0 0 1 0-3.43V4.953H.957a8.997 8.997 0 0 0 0 8.094l3.005-2.332z"/>
-        <path fill="#EA4335" d="M9 3.58c1.322 0 2.507.454 3.44 1.345l2.58-2.58C13.463.891 11.426 0 9 0A8.996 8.996 0 0 0 .957 4.953l3.005 2.332C4.67 5.158 6.655 3.58 9 3.58z"/>
-      </svg>
-      <span>Continue with Google</span>
-    </button>
-  </div>
-
-  <div class="row" style="margin-top:10px">
-    <button id="btnForgotPassword" class="btn2">Forgot password?</button>
-    <a
-      id="btnOpenExternalAuth"
-      class="btnExternalAuth"
-      href="#"
-      target="_blank"
-      rel="noopener noreferrer"
-    >Open in browser</a>
-  </div>
-
-  <div id="authError" class="muted" style="margin-top:10px;display:none"></div>
-  <div class="authLegal">
-    By continuing, I acknowledge the
-    <a href="https://moads.agency/privacy#motrendprivacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
-    and agree to the
-    <a href="https://moads.agency/privacy#motrendterms" target="_blank" rel="noopener noreferrer">Terms of Use</a>.
-    I also confirm that I am at least 18 years old.
-  </div>
-</div>
-
-    <div id="app" style="display:none">
-      <div class="card" id="userCard">
-        <div class="row userCardRow" style="justify-content:space-between">
-          <div>
-            <div id="userLine" style="font-weight:700"></div>
-            <div class="muted"><span id="credits" class="creditsBadge isZero">0 credits</span> • Country: <span id="country">—</span> • Language: <span id="lang">—</span></div>
-            <div class="muted">Support ID: <span id="supportCode">—</span></div>
-          </div>
-          <div class="row userActions">
-            <button id="btnWallet" class="btn2">🪙 Buy credits</button>
-            <button id="btnLogout" class="btn2">Log out</button>
-          </div>
+        <div class="mo-header-actions">
+          <button id="btnHeaderLogin" class="mo-btn mo-btn-secondary mo-btn-sm" type="button">Sign in</button>
+          <button id="btnWallet" class="mo-credit-pill" type="button" aria-label="Open wallet" style="display:none">
+            <span class="mo-credit-coin">🪙</span>
+            <span id="credits" class="creditsBadge isZero">0 credits</span>
+          </button>
+          <a
+            id="supportBtn"
+            class="mo-btn-support"
+            href="https://wa.me/995574413278?text=Hello%2C%20I%20am%20having%20an%20issue%20with%20the%20MoTrend%C2%A9%20app."
+            target="_blank"
+            rel="noopener noreferrer"
+          >Support</a>
         </div>
       </div>
+    </header>
 
-      <div class="card">
-        <section class="trendSection" aria-labelledby="trendPickerTitle">
-          <div class="trendSectionHeader">
-            <h2 id="trendPickerTitle" class="trendSectionTitle">Choose a trend</h2>
-          </div>
-          <div class="trendCarouselViewport" aria-label="Ready-made trends">
-            <div id="templates" class="trendCarouselTrack"></div>
-          </div>
-        </section>
-        <section class="trendSection" aria-labelledby="customReferenceTitle">
-          <div class="trendSectionHeader">
-            <h2 id="customReferenceTitle" class="trendSectionTitle">Or use your own reference</h2>
-          </div>
-          <div id="customReferenceMount"></div>
-        </section>
-        <input id="fileReferenceVideo" type="file" accept="video/mp4,video/quicktime,.mp4,.mov" style="display:none"/>
-      </div>
+    <div class="mo-container">
+      <section class="mo-hero">
+        <div class="mo-hero-eyebrow">
+          <span class="mo-pulse-dot"></span>
+          <span>AI Video Trends</span>
+        </div>
+        <h1 class="mo-hero-title">Turn your photo into a viral trend</h1>
+        <p class="mo-hero-sub">Pick a trend, upload 1 photo, get your video.</p>
+        <div class="mo-steps-pill">
+          <span class="mo-step-item"><strong class="mo-step-num">1</strong> Choose trend</span>
+          <span class="mo-step-arrow">→</span>
+          <span class="mo-step-item"><strong class="mo-step-num">2</strong> Upload photo</span>
+          <span class="mo-step-arrow">→</span>
+          <span class="mo-step-item"><strong class="mo-step-num">3</strong> Watch video</span>
+        </div>
+      </section>
 
-      <div class="card" id="generateCard">
-        <div style="font-weight:700;margin-bottom:16px">Generate</div>
+      <div id="auth" class="card" style="display:none">
+        <div style="font-weight:700;margin-bottom:6px">Sign in</div>
+
         <div class="grid">
           <div>
-            <div class="muted" style="margin-bottom:10px">Selected trend</div>
-            <input id="selTemplate" disabled placeholder="Choose a template above"/>
+            <div class="muted">Email</div>
+            <input id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" />
           </div>
           <div>
-            <div class="muted" style="margin-bottom:10px">Upload photo</div>
-            <input id="filePhoto" type="file" accept="image/*"/>
+            <div class="muted">Password</div>
+            <input id="authPass" type="password" placeholder="••••••••" autocomplete="current-password" />
           </div>
         </div>
-        <div style="margin-top:16px" class="row">
-          <button id="btnGenerate" class="btn">Generate</button>
-          <div id="status" class="muted"></div>
+
+        <div class="row" style="margin-top:12px">
+          <button id="btnEmailSignUp" class="btn">Sign up</button>
+          <button id="btnEmailSignIn" class="btn2">Log in</button>
+
+          <button id="btnLogin" class="btn2 btnGoogle" style="margin-left:auto">
+            <svg viewBox="0 0 18 18" aria-hidden="true" focusable="false">
+              <path fill="#4285F4" d="M17.64 9.205c0-.639-.057-1.253-.164-1.841H9v3.482h4.844a4.14 4.14 0 0 1-1.796 2.719v2.258h2.908c1.702-1.567 2.684-3.878 2.684-6.618z"/>
+              <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.177l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.345 0-4.33-1.583-5.038-3.71H.957v2.332A8.996 8.996 0 0 0 9 18z"/>
+              <path fill="#FBBC05" d="M3.962 10.715a5.41 5.41 0 0 1 0-3.43V4.953H.957a8.997 8.997 0 0 0 0 8.094l3.005-2.332z"/>
+              <path fill="#EA4335" d="M9 3.58c1.322 0 2.507.454 3.44 1.345l2.58-2.58C13.463.891 11.426 0 9 0A8.996 8.996 0 0 0 .957 4.953l3.005 2.332C4.67 5.158 6.655 3.58 9 3.58z"/>
+            </svg>
+            <span>Continue with Google</span>
+          </button>
         </div>
-        <div id="statusHint" class="muted" style="display:none;margin-top:14px">Usually takes 10–20 minutes</div>
-        <div id="uploadSafetyHint" class="muted" style="display:none;margin-top:10px"></div>
-        <div id="formError" class="formError muted" style="display:none" role="alert"></div>
+
+        <div class="row" style="margin-top:10px">
+          <button id="btnForgotPassword" class="btn2">Forgot password?</button>
+          <a
+            id="btnOpenExternalAuth"
+            class="btnExternalAuth"
+            href="#"
+            target="_blank"
+            rel="noopener noreferrer"
+          >Open in browser</a>
+        </div>
+
+        <div id="authError" class="muted" style="margin-top:10px;display:none"></div>
+        <div class="authLegal">
+          By continuing, I acknowledge the
+          <a href="https://moads.agency/privacy#motrendprivacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+          and agree to the
+          <a href="https://moads.agency/privacy#motrendterms" target="_blank" rel="noopener noreferrer">Terms of Use</a>.
+          I also confirm that I am at least 18 years old.
+        </div>
+      </div>
+
+      <div id="app" style="display:none">
+        <div class="mo-account-banner" id="userCard" style="display:none">
+          <div class="mo-account-info">
+            <div class="mo-account-user">
+              <span class="mo-user-avatar">👤</span>
+              <span id="userLine"></span>
+            </div>
+            <div class="mo-account-meta">
+              <span>Country: <strong id="country">—</strong></span>
+              <span class="mo-meta-divider">•</span>
+              <span>Lang: <strong id="lang">—</strong></span>
+              <span class="mo-meta-divider">•</span>
+              <span>Support ID: <strong id="supportCode">—</strong></span>
+            </div>
+          </div>
+          <div class="mo-account-actions">
+            <button id="btnLogout" class="mo-btn mo-btn-ghost mo-btn-sm" type="button">Log out</button>
+          </div>
+        </div>
+
+        <div class="mo-casting-board">
+          <section class="trendSection" aria-labelledby="trendPickerTitle">
+            <div class="trendSectionHeader mo-section-header">
+              <h2 id="trendPickerTitle" class="mo-type-title-lg">Choose your trend</h2>
+              <div class="mo-type-body-sm mo-section-sub">Tap to preview with sound</div>
+            </div>
+            <div class="trendCarouselViewport" aria-label="Ready-made trends">
+              <div id="templates" class="trendCarouselTrack"></div>
+            </div>
+          </section>
+
+          <section class="trendSection mo-custom-ref-section" aria-labelledby="customReferenceTitle">
+            <button
+              type="button"
+              id="btnToggleCustomRef"
+              class="mo-custom-ref-toggle-btn"
+              aria-expanded="false"
+              aria-controls="customReferenceMount"
+            >
+              <div class="mo-section-header">
+                <h3 id="customReferenceTitle" class="mo-type-title-md">Or use your own video reference</h3>
+                <div class="mo-type-body-sm mo-section-sub">Upload any dance or clip directly.</div>
+              </div>
+              <div class="mo-custom-ref-chevron-btn" aria-hidden="true">
+                <svg class="mo-custom-ref-chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </div>
+            </button>
+            <div id="customReferenceMount" class="mo-custom-ref-body is-collapsed"></div>
+          </section>
+          <input id="fileReferenceVideo" type="file" accept="video/mp4,video/quicktime,.mp4,.mov" style="display:none"/>
+        </div>
+
+      <div class="card mo-casting-studio" id="generateCard">
+        <div class="mo-studio-header">
+          <div class="mo-studio-eyebrow">
+            <span class="mo-pulse-dot"></span>
+            <span>Create Trend</span>
+          </div>
+          <h2 class="mo-type-title-lg">Turn photo into video trend</h2>
+          <p class="mo-type-body-sm mo-studio-sub">Upload 1 photo to become the main character.</p>
+        </div>
+
+        <div class="mo-studio-body">
+          <div class="mo-selected-scene-card" id="selectedSceneCard">
+            <div class="mo-scene-media-wrap">
+              <img id="selectedSceneThumb" class="mo-scene-thumb" src="" alt="" style="display:none;" onerror="this.style.display='none'; const p = document.getElementById('selectedScenePlaceholder'); if(p) p.style.display='block';" />
+              <div id="selectedScenePlaceholder" class="mo-scene-empty-icon">🎬</div>
+            </div>
+            <div class="mo-scene-details">
+              <div class="mo-scene-role-label">Target Trend</div>
+              <div id="selectedSceneTitle" class="mo-scene-name">No trend selected</div>
+              <div id="selectedSceneMeta" class="mo-scene-meta">Choose a trend from the catalog above</div>
+            </div>
+            <div class="mo-scene-cost-tag" id="selectedSceneCostTag" style="display:none;">
+              <span id="selectedSceneCostVal" class="mo-cost-val">20</span>&nbsp;credits
+            </div>
+          </div>
+
+          <input id="selTemplate" disabled placeholder="Choose a template above" class="mo-visually-hidden" aria-hidden="true" />
+
+          <div class="mo-photo-picker-wrap">
+            <div class="mo-photo-picker" id="photoDropZone" role="button" tabindex="0" aria-label="Upload your portrait">
+              <input id="filePhoto" type="file" accept="image/*" class="mo-visually-hidden" />
+
+              <div class="mo-picker-empty" id="photoEmptyState">
+                <div class="mo-picker-icon-circle">
+                  <svg class="mo-picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                    <circle cx="12" cy="13" r="4"></circle>
+                  </svg>
+                </div>
+                <div class="mo-picker-title">Upload your photo</div>
+                <div class="mo-picker-hint">Tap to browse or drop photo here</div>
+                <div class="mo-picker-formats">JPG, PNG, HEIC · Up to 25MB</div>
+              </div>
+
+              <div class="mo-picker-preview" id="photoPreviewState" style="display:none;">
+                <div class="mo-preview-img-wrap">
+                  <img id="photoPreviewImg" class="mo-portrait-thumb" alt="Your portrait preview" />
+                  <span class="mo-photo-ready-badge">✓ Photo ready</span>
+                </div>
+                <div class="mo-preview-meta">
+                  <div id="photoFileName" class="mo-preview-filename">portrait.jpg</div>
+                  <div id="photoFileSize" class="mo-preview-filesize">2.4 MB</div>
+                  <div class="mo-preview-actions">
+                    <button type="button" id="btnChangePhoto" class="mo-btn mo-btn-secondary mo-btn-xs">Change photo</button>
+                    <button type="button" id="btnRemovePhoto" class="mo-btn mo-btn-ghost mo-btn-xs">Remove</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="mo-photo-guidance">
+              <div class="mo-guidance-item">
+                <span class="mo-guidance-check">✓</span>
+                <span>Clear front face</span>
+              </div>
+              <div class="mo-guidance-item">
+                <span class="mo-guidance-check">✓</span>
+                <span>Portrait or waist-up</span>
+              </div>
+              <div class="mo-guidance-item">
+                <span class="mo-guidance-cross">×</span>
+                <span>No sunglasses or masks</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="mo-studio-cta-zone">
+          <button id="btnGenerate" class="mo-btn mo-btn-primary mo-btn-block mo-btn-lg" type="button">
+            <span id="btnGenerateText" class="mo-btn-label">Create video</span>
+          </button>
+          <div id="status" class="mo-type-body-sm mo-studio-status muted"></div>
+        </div>
+
+        <div id="statusHint" class="mo-status-hint muted" style="display:none;">Usually takes 10–20 minutes</div>
+        <div id="uploadSafetyHint" class="mo-upload-safety muted" style="display:none;"></div>
+        <div id="formError" class="formError muted" style="display:none;" role="alert"></div>
       </div>
 
       <div class="card" id="jobsCard">
@@ -620,6 +750,7 @@ a{color:#fff}
       </div>
     </div>
   </div>
+</div>
 
   <div id="uploadHintModal" class="uploadHintModal" role="dialog" aria-modal="true" aria-labelledby="uploadHintText">
     <div class="uploadHintCard">

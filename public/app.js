@@ -3371,6 +3371,34 @@ function scrollToPhotoUploadField() {
   return true;
 }
 
+function scrollToTrendsSection() {
+  const target = $("trendPickerTitle") || $("templates") || document.querySelector(".trendSection");
+  if (!target) return false;
+
+  requestAnimationFrame(() => {
+    target.scrollIntoView({behavior: "smooth", block: "start"});
+  });
+  return true;
+}
+
+async function handleSelectedSceneCardTrigger() {
+  await waitForInitialAuthRestore();
+  const hasSelectedTrend = Boolean(
+    selectedTemplate || selectedTrendKind === TREND_SELECTION_REFERENCE
+  );
+
+  if (!hasSelectedTrend) {
+    if (!currentUser) {
+      openAuth("", {skipPromo: true});
+    } else {
+      scrollToTrendsSection();
+    }
+    return;
+  }
+
+  scrollToTrendsSection();
+}
+
 function getTemplateCostCredits(template) {
   if (!template) return null;
   const configuredCost = Number(template.costCredits);
@@ -5450,8 +5478,7 @@ $("btnGenerate").onclick = async () => {
 
   if (!selectedTemplate && selectedTrendKind !== TREND_SELECTION_REFERENCE) {
     showFormError("Pick a trend first.");
-    const catalogEl = $("templates") || $("trendPickerTitle");
-    if (catalogEl) catalogEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    scrollToTrendsSection();
     return;
   }
 
@@ -5786,6 +5813,19 @@ if (photoDropZone) {
 }
 
 initCustomReferenceCollapse();
+
+const selectedSceneCard = $("selectedSceneCard");
+if (selectedSceneCard) {
+  selectedSceneCard.addEventListener("click", () => {
+    void handleSelectedSceneCardTrigger();
+  });
+  selectedSceneCard.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      void handleSelectedSceneCardTrigger();
+    }
+  });
+}
 
 await ensurePreferredAuthPersistence();
 

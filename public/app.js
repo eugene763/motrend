@@ -1121,7 +1121,7 @@ async function bootstrapPlatformSession(user) {
 
   const bootstrap = await platformRequest("/auth/session-login", {
     method: "POST",
-    body: {idToken},
+    body: {idToken, productCode: "motrend"},
   });
   if (!currentUser || currentUser.uid !== bootstrapUid) {
     return null;

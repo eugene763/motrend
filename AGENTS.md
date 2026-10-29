@@ -148,6 +148,25 @@ pwd && git rev-parse --show-toplevel && git branch --show-current && git status 
 Existing uncommitted changes belong to the user. Never `reset`, `clean`, `checkout --` or
 `stash` work you did not create.
 
+<!-- MOADS-DOCS-LIFECYCLE:START -->
+## Mandatory documentation lifecycle
+
+Before planning or editing, read all applicable instructions plus `README.md`,
+`TECHNICAL_OVERVIEW.md` and the canonical documents relevant to the affected
+frontend, function, environment or release. Reconcile their claims with scoped
+code, configuration, Git state and verified runtime/deployment evidence; label
+unsupported claims `unverified` and do not execute historical plans as current
+instructions.
+
+After verified changes, update the affected canonical docs and current-state
+record to the real result. Distinguish `implemented`, `verified`, `committed`,
+`pushed`, `deployed`, `blocked` and `unverified`, and record material evidence,
+the relevant Git revision and actual deployed revision when independently
+known. The task is not complete while affected canonical docs contradict code
+or observed runtime. New projects must adopt the root workspace standard in
+`../docs/AGENT_DOCUMENTATION_STANDARD.md` at bootstrap.
+<!-- MOADS-DOCS-LIFECYCLE:END -->
+
 ## Scope
 
 | This repo owns | NOT this repo |
